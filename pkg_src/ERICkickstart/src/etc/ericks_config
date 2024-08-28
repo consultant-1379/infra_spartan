@@ -1,0 +1,25 @@
+# This file contains certain parameters that determine how
+## ERICjump behaves.
+#
+# NOTE : DO NOT PUT VALUES INSIDE ""
+
+# Parameter to indicate the  default area under which the
+# main Solaris media directory will be stored. This MUST
+# not be more than 4 chatracters in length
+DEFAULT_LINUX_MEDIA_AREA=/JUMP
+
+# Parameter to indicate the  default area under which the
+# client info stored
+DEFAULT_DHCP_CLIENT_AREA=/JUMP
+
+# Parameter to indicate the media identity file of
+# the RHEL media
+LIN_MEDIA_INFO_FILE=.linux_boot_media
+
+
+# Parameter to indicate that ipfilters are enabled
+#IPFILTERS=disabled
+
+# Ports blocked by IPFilters
+#BLOCKED_PORTS="111 2049"
+

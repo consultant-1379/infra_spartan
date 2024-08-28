@@ -1,0 +1,627 @@
+#!/usr/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : generic_bootstrap
+# Date    : 10/08/2018
+# Revision: A
+# Purpose : The purpose of the script is to perform the post-installation
+#           phases of the Ericsson server
+#
+# Usage   : generic_bootstrap
+#
+# Revision
+# History :
+# ********************************************************************
+
+# ********************************************************************
+#
+#       ERROR CODE DEFINITION
+#
+# ********************************************************************
+# ERROR
+# CODE  EXPLANATION
+#
+
+# ********************************************************************
+#
+#       Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CD=/usr/bin/cd
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DFSHARES=/usr/sbin/dfshares
+DHCPINFO=/sbin/dhcpinfo
+DIRNAME=/usr/bin/dirname
+ECHO=/usr/bin/echo
+EEPROM=/usr/sbin/eeprom
+EGREP=/usr/bin/egrep
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FDISK=/sbin/fdisk
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+GETBOOTARGS=/sbin/getbootargs
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+INIT=/usr/sbin/init
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+LS=/usr/bin/ls
+LN=/usr/bin/ln
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MOUNT=/usr/bin/mount
+MV=/usr/bin/mv
+NETSTAT=/usr/bin/netstat
+PING=/usr/sbin/ping
+PKG=/usr/bin/pkg
+PS=/usr/bin/ps
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+REBOOT=/usr/sbin/reboot
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYNC=/usr/bin/sync
+SYSIDCONFIG=/usr/sbin/sysidconfig
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+UNAME=/usr/bin/uname
+UNLINK=/usr/sbin/unlink
+WC=/usr/bin/wc
+
+_hostname_=`$CAT /var/tmp/.hostfile`
+
+INSTALLROOT=/
+
+_dir1_=`$DIRNAME $0`
+
+SCRIPTHOME=`cd $_dir1_ 2>/dev/null && pwd || $ECHO $_dir1_`
+
+INSTALL_BOOTSTRAP_DIR=`$DIRNAME ${SCRIPTHOME}`
+
+# Path to generic config directory under mounted root
+GENERIC_CONFIG_DIR=/var/tmp/eric_bootstrap/config
+
+CLIENT_DIR=/tmp/kickstart_config/kickstart
+
+TMP_KS_CLIENT_DIR=/tmp/kickstart_config
+
+LIN_MEDIA_INFO_FILE=/tmp/kickstart_config/.linux_boot_media
+
+INSTALL_PATCH_MEDIA_INFO_FILE=/tmp/kickstart_config/.patch_boot_media
+
+# Directory that will contain all the user input params etc.
+PARAM_DIR=/tmp/user_params
+export PARAM_DIR
+
+#
+# Determine absolute path to software
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+}
+
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+$MKDIR -p `$DIRNAME ${LOGFILE}`
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${LOGFILE}`"
+    _abort_script_ "$_err_msg_" 
+fi
+
+$TOUCH -a ${LOGFILE}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE}"
+    _abort_script_ "$_err_msg_" 
+fi
+}
+
+# Read and save the boot arguments
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+save_boot_args()
+{
+# Make a directory that will contain all the user input params etc.
+
+
+$MKDIR -p ${PARAM_DIR}
+
+$CAT ${SW_CONF_DIR}/${_hostname_}_installation_param_details > /tmp/eric_boot_args
+
+_eric_inst_type_=`$CAT /tmp/eric_boot_args | $GREP -w inst_type | $AWK -F\= '{print $2}'`
+
+SI_INST_TYPE=${_eric_inst_type_}
+
+if [ -s /tmp/eric_boot_args ]; then
+    set -- `$CAT /tmp/eric_boot_args 2>/dev/null`
+else
+    $ECHO "Something wrong with arguments" | $TEE -a $LOGFILE
+    exit 1
+fi
+
+if [ $# -gt 0 ] ; then
+    while [ $# -gt 0 ] ; do
+        case $1 in
+        #
+        # Boot flags
+        #
+        bmr_inst)
+                $CAT < /dev/null > ${PARAM_DIR}/bmr_inst
+                shift
+                ;;
+
+        config=*)
+                $ECHO "$1" > ${PARAM_DIR}/ericsson_use_config
+                shift
+                ;;
+
+
+        ${SI_INST_TYPE}_install=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/${SI_INST_TYPE}_install
+                shift
+                ;;
+
+        ${SI_INST_TYPE}_sw_locate=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/${SI_INST_TYPE}_sw_locate
+                shift
+                ;;
+
+        inst_type=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/inst_type
+                shift
+                ;;
+
+        list_disks|list_hw)
+                $CAT < /dev/null > ${PARAM_DIR}/list_hw
+                shift
+                ;;
+
+        mdisk=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/mdisk_config
+                shift
+                ;;
+
+
+        noflash)
+                $CAT < /dev/null > ${PARAM_DIR}/noflash_install
+                shift
+                ;;
+
+
+        om_sw_locate=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/om_sw_locate
+                shift
+                ;;
+
+        rdisk=*)
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${PARAM_DIR}/rdisk_config
+                shift
+                ;;
+
+        rmirr)
+                $CAT < /dev/null > ${PARAM_DIR}/mirr_root
+                shift
+                ;;
+
+        rhelonly)
+                $CAT < /dev/null > ${PARAM_DIR}/rhelonly
+                shift
+                ;;
+
+        *=*)
+                _dir_=${PARAM_DIR}/extra_params
+                $MKDIR -p ${PARAM_DIR}/extra_params
+                _file_=`$ECHO "$1" | $AWK -F'=' '{print $1}'`
+                $ECHO "$1" | $AWK -F'=' '{print $2}' > ${_dir_}/${_file_}
+                shift
+                ;;
+
+        *)
+                shift
+                ;;
+
+        esac
+    done
+fi
+
+##
+## Adding the saving of bootargs for traceability when debugging
+## and/or troubleshooting. Has to be caught and saved in the
+##kickstart finish scripts
+##
+if [ -s /tmp/eric_boot_args ]; then
+    $ECHO "Copying eric_boot_args" | $TEE -a $LOGFILE
+    $CP /tmp/eric_boot_args ${PARAM_DIR}/bootargs
+else
+    ${GETBOOTARGS} > ${PARAM_DIR}/bootargs
+fi
+}
+
+
+### Function: save_inst_params ###
+#
+# Save Install Patameters
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+save_inst_params()
+{
+$ECHO "Save installation Parameters" | $TEE -a $LOGFILE
+
+# If BMR, not really interested in any other params
+if [ -f ${PARAM_DIR}/bmr_inst ]; then
+    return 0
+fi
+
+# Save all the parameters
+cd ${PARAM_DIR}
+$ECHO "Copying user parameters to ${SW_CONF_DIR}" | $TEE -a $LOGFILE
+$FIND . -depth -print|$CPIO -pdmu ${SW_CONF_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error copying user parameters to ${SW_CONF_DIR}"
+    _abort_script_ "$_err_msg_" 
+fi
+
+cd ${SCRIPTHOME}
+# Save the client information (if any)
+if [ -s ${CLIENT_DIR}/${_hostname_}/${_hostname_}_jmp_cfg.txt ]; then
+    $ECHO "Saving client information" | $TEE -a $LOGFILE
+    $CP -rp ${CLIENT_DIR}/${_hostname_} ${SW_CONF_DIR}
+fi
+
+# Save SW location parameters from boot.
+if [ -s ${PARAM_DIR}/${SI_INST_TYPE}_sw_locate ]; then
+    # Set up INSTALL_SERVER file
+    $ECHO "Creating INSTALL SERVER file" | $TEE -a $LOGFILE
+    _chk_ip_=${KS_IP_ADDRESS}
+    $ECHO $_chk_ip_ > ${SW_CONF_DIR}/INSTALL_SERVER
+    if [ $? -ne 0 ]; then
+            _err_msg_="Failed to create file ${SW_CONF_DIR}/INSTALL_SERVER"
+            _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+    if [ ! -s  ${PARAM_DIR}/om_sw_locate ]; then
+        # Save this for later use.
+        $ECHO "Copying ${PARAM_DIR}/${SI_INST_TYPE}_sw_locate ${SW_CONF_DIR}/om_sw_locate" | $TEE -a $LOGFILE
+            $CP ${PARAM_DIR}/${SI_INST_TYPE}_sw_locate ${SW_CONF_DIR}/om_sw_locate
+            if [ $? -ne 0 ]; then
+                _err_msg_="Failed to create file ${SW_CONF_DIR}/om_sw_locate"
+                _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+            fi
+    fi
+fi
+
+# Save Linux Media info.
+if [ -s ${LIN_MEDIA_INFO_FILE} ]; then
+    $ECHO "Saving Linux Media Information"  | $TEE -a $LOGFILE
+    $CP -rp ${LIN_MEDIA_INFO_FILE} ${SW_CONF_DIR}/lin_media_info
+fi
+
+# Save Patch media info.
+if [ -s ${INSTALL_PATCH_MEDIA_INFO_FILE} ]; then
+    $ECHO "Saving Install Patch Media Information"  | $TEE -a $LOGFILE
+    $CP -rp ${INSTALL_PATCH_MEDIA_INFO_FILE} ${SW_CONF_DIR}/install_patch_media_info
+fi
+
+
+}
+
+create_yum_repo()
+{
+
+OM_MEDIA_PATH=${OM_LOCATE}/om_linux
+
+$CAT >/etc/yum.repos.d/ericDDC.repo <<EOL
+[ericDDC]
+name=Ericsson DDC
+baseurl=file:///net/${KS_IP_ADDRESS}/${OM_MEDIA_PATH}/ddc
+gpgcheck=0
+enabled=1
+EOL
+
+
+$CAT >/etc/yum.repos.d/ericEMC.repo <<EOL
+[ericEMC]
+name=Ericsson EMC
+baseurl=file:///net/${KS_IP_ADDRESS}/${OM_MEDIA_PATH}/EMC
+gpgcheck=0
+enabled=1
+EOL
+
+$CAT >/etc/yum.repos.d/ericINSTALLPATCH.repo <<EOL
+[ericINSTALLPATCH.repo]
+name=Ericsson patch
+baseurl=file://${MOUNT_PACKAGE_PATH}/
+gpgcheck=0
+enabled=1
+EOL
+}
+
+# ********************************************************************
+#
+#       functions
+#
+# ********************************************************************
+### Function: _abort_script_ ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+_abort_script_()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="Script aborted.......\n"
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "$_err_msg_"|$TEE -a ${LOGFILE}
+else
+    $ECHO -e "$_err_msg_"
+fi
+
+cd $SCRIPTHOME
+$RM -rf ${TEM_DIR}
+
+if [ "$2" ]; then
+    ${2} 
+    exit 1 >> /dev/null 2>&1
+else
+    exit 1
+fi
+}
+
+
+# ********************************************************************
+#
+#       Main body of program
+#
+# ********************************************************************
+#
+# Determine absolute path to software
+get_absolute_path
+
+# Cmd to exec a shell and drop user to it in case of an error
+EXEC_SHELL_CMD="exec /bin/bash -o emacs"
+
+# Log file
+if [ ! "${LOGFILE}" ]; then
+    LOGFILE="/var/log/generic_finish.log"
+fi
+#Check for 2nd reboot
+if [[ ( -e /tmp/.reboot_check) && ($(cat /tmp/.reboot_check) == "FIRST") ]]; then
+	$ECHO "System is already upto to date and Patch update  is done "
+	#Exiting the  script since it is already up to date
+	exit 0
+fi	
+# Create a temporary Directory
+TEM_DIR=/tmp/generic_finish.$$.$$
+$RM -rf ${TEM_DIR}
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory $TEM_DIR"
+    _abort_script_ "${_err_msg_}" "${EXEC_SHELL_CMD}"
+fi
+
+SCRIPT_NAME=`$BASENAME $0`
+$ECHO -e  "\nExecuting script $SCRIPT_NAME"
+
+
+# IP of MWS server
+KS_IP_ADDRESS=`$CAT /etc/.ks_serv_ip`
+
+# Arch of Solaris MWS server
+#server_type=`$CAT /etc/.ks_serv_type`
+
+# linux media location
+LIN_MEDIA_LOC=`$CAT /etc/.tmp_lin_media`
+
+# patch media location
+INSTALL_PATCH_MEDIA_LOC=`$CAT /etc/.tmp_install_patch_media`
+
+# Mount KS server and copy across client config file
+$MKDIR -p $TMP_KS_CLIENT_DIR
+
+if [ $? -ne 0 ]; then
+    $ECHO "Error creating the directory $TMP_KS_CLIENT_DIR" | $TEE -a $LOGFILE
+fi
+
+$MOUNT |  $GREP -w $TMP_KS_CLIENT_DIR  >/dev/null
+if [ $? -eq 1 ]; then
+    $MOUNT $KS_IP_ADDRESS:$LIN_MEDIA_LOC $TMP_KS_CLIENT_DIR
+    if [ $? -ne 0 ]; then
+        $ECHO "Error mounting $KS_IP_ADDRESS:$LIN_MEDIA_LOC $TMP_KS_CLIENT_DIR" | $TEE -a $LOGFILE
+    fi
+else
+    $ECHO "Directory $TMP_KS_CLIENT_DIR already mounted" | $TEE -a $LOGFILE
+fi
+
+
+# Find out is this eniq or rhelonly
+$CAT $TMP_KS_CLIENT_DIR/kickstart/${_hostname_}/${_hostname_}_ks_cfg.txt | $GREP -w "CLIENT_APPL_TYPE" | awk -F= '{print $2}' > /tmp/install_check
+
+if [[ `cat /tmp/install_check` == "eniq_stats" ]]; then
+        SW_MAIN_DIR=/eniq
+        SW_CONF_DIR=/eniq/installation/config
+else
+        SW_MAIN_DIR=/ericsson
+        SW_CONF_DIR=/ericsson/config
+fi
+
+
+SW_MAIN_DIR=${SW_MAIN_DIR}
+SW_CONF_DIR=${SW_CONF_DIR}
+
+
+$RM -rf ${SW_CONF_DIR}
+$MKDIR -p ${SW_CONF_DIR}
+
+if [ $? -ne 0 ]; then
+    _err_msg_="Failed to create directory ${SW_CONF_DIR}"
+    _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+$CP $TMP_KS_CLIENT_DIR/kickstart/${_hostname_}/${_hostname_}_installation_param_details ${SW_CONF_DIR}
+
+# Save all boot arguments
+save_boot_args
+
+# Save Install Patameters
+save_inst_params
+
+OM_LOCATE=`$CAT ${SW_CONF_DIR}/om_sw_locate`
+CLIENT_OM_LOCATION=${KS_IP_ADDRESS}@${OM_LOCATE}
+$RM -rf ${SW_CONF_DIR}/om_sw_locate
+$ECHO $CLIENT_OM_LOCATION >> ${SW_CONF_DIR}/om_sw_locate
+
+if [[ `cat /tmp/install_check` != "rhelonly" ]]; then
+APPL_LOCATE=`$CAT ${SW_CONF_DIR}/${SI_INST_TYPE}_sw_locate`
+
+CLIENT_APPL_LOCATION=${KS_IP_ADDRESS}@${APPL_LOCATE}
+$RM -rf ${SW_CONF_DIR}/${SI_INST_TYPE}_sw_locate
+$ECHO $CLIENT_APPL_LOCATION >> ${SW_CONF_DIR}/${SI_INST_TYPE}_sw_locate
+fi
+
+# As per NMI request removing AWK cmd
+#CONFIG_FILE=`$CAT ${SW_CONF_DIR}/ericsson_use_config | $AWK -F'=' '{print $2}'`
+CONFIG_FILE=`$CAT ${SW_CONF_DIR}/ericsson_use_config`
+$RM -rf ${SW_CONF_DIR}/ericsson_use_config
+$ECHO $CONFIG_FILE >>${SW_CONF_DIR}/ericsson_use_config
+
+ # Save the config directory for bootstrap
+if [ -d ${SW_CONF_DIR} ]; then
+            cd ${SW_CONF_DIR}
+                $ECHO "Copying user parameters to ${GENERIC_CONFIG_DIR}" | $TEE -a $LOGFILE
+            $FIND . -depth -print|$CPIO -pdmu ${GENERIC_CONFIG_DIR}
+            if [ $? -ne 0 ]; then
+                _err_msg_="Error copying user parameters to ${GENERIC_CONFIG_DIR}"
+                _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+            fi
+            cd ${SCRIPTHOME}
+fi
+$MKDIR -p ${SW_CONF_DIR}/${_hostname_}
+
+$CP ${TMP_KS_CLIENT_DIR}/kickstart/${_hostname_}/${_hostname_}_ks_cfg.txt ${SW_CONF_DIR}/${_hostname_}/
+$CP $TMP_KS_CLIENT_DIR/kickstart/${_hostname_}/${_hostname_}_installation_param_details ${SW_CONF_DIR}/${_hostname_}/
+
+if [ -s ${TMP_KS_CLIENT_DIR}/kickstart/${_hostname_}/${_hostname_}_ks_cfg.txt ]; then
+        $ECHO "Copying ${TMP_KS_CLIENT_DIR}/kickstart/${_hostname_}/${_hostname_}_ks_cfg.txt to ${GENERIC_CONFIG_DIR}" | $TEE -a $LOGFILE
+        $CP ${TMP_KS_CLIENT_DIR}/kickstart/${_hostname_}/${_hostname_}_ks_cfg.txt ${GENERIC_CONFIG_DIR}
+
+fi
+
+
+$MKDIR -p /install_patch_media
+$MOUNT ${KS_IP_ADDRESS}:${INSTALL_PATCH_MEDIA_LOC} /install_patch_media
+$ECHO "/install_patch_media" > /etc/mountpath
+#MOUNT_PATH="/install_patch_media"
+PACKAGE_PATH=`ls /install_patch_media/RHEL/ | $GREP -w "RHEL[^_]"`
+MOUNT_PACKAGE_PATH="/install_patch_media/RHEL/$PACKAGE_PATH"
+create_yum_repo || _abort_script_ "$_err_msg_"  "${EXEC_SHELL_CMD}"
+#if [[ ${server_type} == "Linux" ]]; then
+#        create_yum_repo 1 || _abort_script_ "$_err_msg_"  "${EXEC_SHELL_CMD}"
+#else
+#        create_yum_repo 0 || _abort_script_ "$_err_msg_"  "${EXEC_SHELL_CMD}"
+#fi
+
+$ECHO "###################RHEL PATCH UPDATE#############################################"
+$ECHO $KS_IP_ADDRESS
+$MKDIR -p /tmp/om_media
+$MOUNT ${KS_IP_ADDRESS}:${OM_MEDIA_PATH} /tmp/om_media
+UPGRADE_RHEL_SCRIPT=/tmp/om_media/patch/bin/upgrade_patchrhel.bsh
+
+whitelist=/tmp/om_media/patch/etc/whitelistfile
+
+# Check that the patch update script exists
+if [ ! -f ${UPGRADE_RHEL_SCRIPT} ]; then
+     _err_msg_="Failed to find patch update script ${UPGRADE_RHEL_SCRIPT}" 
+     _abort_script_ "$_err_msg_"  "${EXEC_SHELL_CMD}"
+fi
+
+PATCH_LOG_PATH="/var/ericsson/log/patch"
+
+# Find out is this eniq or rhelonly
+#Execution of update patch script for updating RHEL patches
+if [[ `cat /tmp/install_check` == "eniq_stats" ]]; then
+        $ECHO "Using console based installation environment for Installing Patches on ENIQ-s..." | $TEE -a $LOGFILE
+        ${UPGRADE_RHEL_SCRIPT} -a install -w ${whitelist}  
+        if [ $? -ne 0 ] ; then
+                _err_msg_="RHEL patch update failed... please refer $PATCH_LOG_PATH"  | $TEE -a ${LOGFILE}
+                _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+        else
+		$(echo "FIRST" > /tmp/.reboot_check)
+		$ECHO "Server is going for reboot"
+                $INIT 6
+        fi
+else
+        $ECHO "Using console based installation environment for Installing Patches on MWS..." | $TEE -a $LOGFILE
+        ${UPGRADE_RHEL_SCRIPT} -a install  
+        if [ $? -ne 0 ] ; then
+                _err_msg_="RHEL patch update failed.... please refer $PATCH_LOG_PATH" | $TEE -a ${LOGFILE}
+                _abort_script_ "$_err_msg_" "${EXEC_SHELL_CMD}"
+        else
+                $(echo "FIRST" > /tmp/.reboot_check)
+                $ECHO "Server is going for reboot"
+                $INIT 6
+        fi
+
+
+fi
+
+$ECHO -e "\n$RUN_TIME Successfully finished executing generic_finish latest" | $TEE -a $LOGFILE
+exit 0

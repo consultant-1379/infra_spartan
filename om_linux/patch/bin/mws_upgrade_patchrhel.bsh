@@ -1,0 +1,369 @@
+#!/bin/bash
+#PIPELINE DEMO__7
+#Red Hat Linux Patching Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : mws_upgrade_patchrhel.bsh
+# Date    : 27/02/2019
+# Revision: A
+# Purpose : MWS wrapper script for RHEL patch update
+#
+#
+# Version Information:
+#       Version Who                           Date            Comment
+#       0.1     xanjgop & xkumvig         27/02/2019      Initial draft
+#
+#
+# ********************************************************************
+ARGS=("$@")
+setVars() {
+#####################################
+# Function to set up global Variables
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0 or exits
+#####################################
+
+# Commands
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+DATE=/usr/bin/date
+DATETIME="$(date +%d-%m-%Y_%H-%M-%S)"
+ECHO=/usr/bin/echo
+GREP=/usr/bin/grep
+HOSTNAME=/usr/bin/hostname
+MKDIR=/usr/bin/mkdir
+TOUCH=/usr/bin/touch
+TEE=/usr/bin/tee
+SCRIPT_NAME=$( "$BASENAME" "$0" )
+SCRIPT_DIR=$( cd "$( dirname "$0" )" && pwd || exit 1 )
+LS=/usr/bin/ls
+LIB_DIR=$( cd "$( dirname "$0" )" && pwd -P || exit 1 )
+LIB_DIR="$LIB_DIR/../lib/"
+LOG_DIR=/var/ericsson/log/patch
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+LIB_COMM=common_functions.lib
+RM=/usr/bin/rm
+MWS=/ericsson/config
+BASH=/usr/bin/bash
+######################
+# Load common library
+######################
+SOURCE=source
+[[ -f "${LIB_DIR}/${LIB_COMM}" ]] && $SOURCE "${LIB_DIR}/${LIB_COMM}"
+[[ -f "${SCRIPT_DIR}/${LIB_COMM}" ]] && $SOURCE "${SCRIPT_DIR}/${LIB_COMM}"
+[[ ! -f "${LIB_DIR}/${LIB_COMM}" && ! -f "${SCRIPT_DIR}/${LIB_COMM}" ]] && {
+                $ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+                 exit 2
+        }
+return 0
+
+}
+
+usage_msg()
+{
+#####################################
+# Function to output usage help
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+$CAT << EOF
+
+For update/upgrade :
+Usage: "$($BASENAME "$0")" -p <CACHED_PATH> -a <ACTION_TYPE> -o <OMLINUX_PATH>
+
+For post_upgrade :
+Usage: "$($BASENAME "$0")" -a <ACTION_TYPE>
+
+options:
+
+
+-p  : Mandatory parameter referring to the directory where the linux Upgrade kit is extracted.
+
+-a  : Mandatory parameter specifying the action type to perform.
+
+-o  : Mandatory parameter referring to the O&M media location.
+
+<CACHED_PATH>  Patch ISO cached path
+
+<ACTION_TYPE>
+
+<OMLINUX_PATH>  OM Linux Softare path
+update :  for patch update
+postupgrade: for post update
+
+EOF
+return 0
+
+}
+
+
+# ********************************************************************
+#
+#   Functions
+#
+# ********************************************************************
+
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+msg=$2
+err_code=$1
+_err_time_="$($DATE '+%Y-%b-%d_%H.%M.%S')"
+if [  "$err_code" == 0 ] || [ "$err_code" == 1 ]; then
+        $ECHO "$msg" | $TEE -a "$LOG"
+        $ECHO "-------------------------------------------------------" | $TEE -a "$LOG"
+        $ECHO "Log file for reference : $LOG" | $TEE -a "$LOG"
+        $ECHO "-------------------------------------------------------" | $TEE -a "$LOG"
+        exit "$err_code"
+fi
+$ECHO  "wrong param" | $TEE -a "$LOG"
+$ECHO "Log file for reference : $LOG" | $TEE -a "$LOG"
+exit
+}
+
+
+### Function: do_pre_upgrade ###
+#
+# To Check patch update is required or not
+#
+# Arguments:
+#    none
+# Return Values:
+#    none
+do_pre_upgrade()
+{
+        pre_upg="$SCRIPT_DIR/pre_upgrade_patchrhel.bsh"
+        [ ! -f "$pre_upg" ] && abort_script 1 "pre_upgrade_patchrhel.bsh script is not exist"
+        $ECHO  "checking if patch update is required or not" | $TEE -a "$LOG"
+        $BASH "$pre_upg" "${PATCH_PATH}" "${OMLINUX_PATH}"
+        _upgrade_needed_=$?
+        local upgrade_script_log
+        upgrade_script_log="$($LS /var/ericsson/log/patch/ | $GREP -Ew "^pre_upgrade_patchrhel.bsh_[0-9]+.+.log" | tail -1)"
+        if [ ${_upgrade_needed_} -eq 0 ]; then
+                $ECHO "Update is Required"
+                $ECHO -e "********************************************************\n" >>  "$LOG"
+		echo
+                $ECHO "Check pre_upgrade log for more info: ${LOG_DIR}/$upgrade_script_log"  >> "$LOG"
+                $ECHO -e "********************************************************\n" >>  "$LOG"
+		echo
+		$ECHO "Setting up RHEL Patch upgrade flag"  >> "$LOG"
+                $TOUCH /var/rhel_patch_upgrade_in_progress
+        elif [ ${_upgrade_needed_} -eq 1 ]; then
+                $ECHO  "Update is not required" | $TEE -a "$LOG"
+                $ECHO -e "********************************************************\n" >> "$LOG"
+		echo
+                $ECHO "pre_upgrade Log file for reference : ${LOG_DIR}/$upgrade_script_log"  >>  "$LOG"
+                $ECHO -e "********************************************************\n" >>  "$LOG"
+                abort_script 0 ""
+                exit 0
+        else
+		$ECHO -e "Pre upgrade failed" >>  "$LOG"
+                $ECHO -e "********************************************************\n" >>  "$LOG"
+	        echo	
+                $ECHO "Check pre_upgrade log for more info: ${LOG_DIR}/$upgrade_script_log >> $LOG"
+                $ECHO -e "********************************************************\n" >>  "$LOG"
+                abort_script 1 "pre-upgrade failed due to mount path or repo creation or version of bundle"
+                exit 1
+        fi
+}
+
+### Function: do_upgrade ###
+#
+# To call patch update script
+#
+# Arguments:
+#    none
+# Return Values:
+#    none
+
+do_upgrade()
+{
+        option=$1
+        #Function to perform the actual update/upgrade
+        local  upgrade_script="$SCRIPT_DIR/upgrade_patchrhel.bsh"
+        #check whether is scrpt is exist or not
+        [ -f "$upgrade_script" ] || $ECHO  "upgrade_patchrhel.bsh script  does not exist" | $TEE -a "$LOG"
+	$ECHO "Executing upgrade_patchrhel.bsh script"  >> "$LOG"
+        $BASH "$upgrade_script" -a "$option"
+        res=$?
+        local upgrade_script_log
+        upgrade_script_log="$($LS /var/ericsson/log/patch |  $GREP  -Ew "^upgrade_patchrhel.bsh_[0-9]+.*.log" | tail -1)"
+        if [ $res == 0 ]; then
+                $ECHO -e "********************************************************\n"  >> "$LOG"
+		echo
+                $ECHO "Check $option script log for more info: ${LOG_DIR}/$upgrade_script_log"  >> "$LOG"
+                $ECHO -e "********************************************************\n"  >> "$LOG"
+		#Cleaning up rhel patch upgrade flag
+                $RM -rf /var/rhel_patch_upgrade_in_progress
+                $ECHO  "Rebooting the server to complete patch update" | $TEE -a "$LOG"
+		sleep 20
+                init 6
+        else
+                $ECHO "$option failed" | $TEE -a "$LOG"
+                $ECHO "Check update log for failure" | $TEE -a "$LOG"
+		$ECHO -e "********************************************************\n
+		  Check $option script log for more info: ${LOG_DIR}/$upgrade_script_log
+		  ********************************************************\n"  >> "$LOG"
+                abort_script 1 ""
+                exit 1
+        fi
+}
+### Function: do_post_kernel_check ###
+#
+# To call post kernel check
+#
+# Arguments:
+#    none
+# Return Values:
+#    none
+do_post_kernel_check()
+{
+        $ECHO "Performing Kernel check on server $(${HOSTNAME})" | $TEE -a "$LOG"
+        local post_kernel="$SCRIPT_DIR/post_kernel_check.bsh"
+        $BASH "${post_kernel}"
+        _kernel_check_=$?
+        if [ ${_kernel_check_} -eq 0 ]; then
+                $ECHO "Kernel is up to date with latest version" | $TEE -a "$LOG"
+                $ECHO ""
+        else
+                $ECHO "Kernel version is not up to date with latest, go for Rollback" | $TEE -a "$LOG"
+                abort_script 1 ""
+                exit 1
+        fi
+}
+
+check_LIN_or_Patch()
+{
+        if [ "${ACTION_TYPE}" == "upgrade" ]; then
+                if [ ! -d "$PATCH_PATH"/Packages ]; then
+                    $ECHO  "Wrong LINUX media path" | $TEE -a "$LOG"
+                    abort_script 2 ""
+                    exit 2
+                fi
+
+        else
+                if [ ! -d "$PATCH_PATH"/RHEL ]; then
+                    $ECHO "Wrong Patch  media path" | $TEE -a "$LOG"
+                    abort_script 2 ""
+                    exit 2
+                fi
+        fi
+}
+
+#############
+#
+#       MAIN
+#
+#############
+###################
+#preupgrade
+##################
+setVars
+$MKDIR -p "$LOG_DIR" ||  abort_script 1  "Unable to create $LOG_DIR"
+$ECHO "*********************************************************************************************" | $TEE -a "$LOG"
+$ECHO "Host:$(${HOSTNAME})                                              $DATETIME" | $TEE -a "$LOG"
+#shellcheck disable=SC2128
+$ECHO "Command: $SCRIPT_NAME "  "${ARGS[@]}" | $TEE -a "$LOG"
+$ECHO "*********************************************************************************************" | $TEE -a "$LOG"
+trap ' ' 2
+#shellcheck disable=SC2128
+[[  -z "${ARGS[*]}" ]] && {
+        usage_msg
+        $ECHO "No command line options supplied!" | $TEE -a "$LOG"
+        abort_script 1 ""
+        exit 1
+}
+while getopts ":p:a:o:h:" arg; do
+   case $arg in
+     p)
+         PATCH_PATH="$OPTARG"
+        ;;
+     a)
+        ACTION_TYPE="$OPTARG"
+        ;;
+     o)
+        OMLINUX_PATH="$OPTARG"
+        ;;
+     h) usage_msg
+        ;;
+    \?) usage_msg
+        $ECHO -e "Invalid option \"-$OPTARG\" supplied." | $TEE -a "$LOG"
+        abort_script 1 ""
+        exit 1
+        ;;
+   esac
+ done
+
+# Should be no extra stuff on the command line
+shift $((OPTIND - 1))
+#shellcheck disable=SC2145
+[ $# -ne 0 ] && abort_script  1 "Invalid command line option detected:[$@]\n\n$(usage_msg)" | $TEE -a "$LOG"
+if [ -z "$ACTION_TYPE" ];  then
+        $ECHO -e "Missing command line option. Specify an Action.\n\n$(usage_msg)" | $TEE -a "$LOG"
+        abort_script 1 "Missing command line option"
+        exit 1
+fi
+
+
+if [ ! -d $MWS ] ; then
+        abort_script 1 "$(hostname) is not configured as MWS"
+        exit 1
+fi
+if [ "${ACTION_TYPE}" == "upgrade" ] || [ "${ACTION_TYPE}" == "update" ]; then
+        $ECHO  "Performing patch ${ACTION_TYPE} on $(${HOSTNAME})" | $TEE -a "$LOG"
+        $ECHO "------------------------------------------------------" | $TEE -a "$LOG"
+        $ECHO "Server will go for reboot once after patch update" | $TEE -a "$LOG"
+        $ECHO "------------------------------------------------------" | $TEE -a "$LOG"
+        while :
+        do
+                $ECHO  -e  "Do you wish to continue Yes/No: "| $TEE -a "$LOG"
+                read -rp "" decision
+                $ECHO "$decision" >> "$LOG"
+                [ "$decision" == "Yes" ] || [ "$decision" == "No" ] || continue
+                [ "$decision" == "Yes" ] && break || [ "$decision" == "No" ] && abort_script 1 "Exited the script"
+        done
+        check_LIN_or_Patch
+	if [ ! -f /var/rhel_patch_upgrade_in_progress ];then
+            do_pre_upgrade
+        fi
+        if [ -f /var/rhel_patch_upgrade_in_progress ];then
+            do_upgrade "${ACTION_TYPE}"
+        fi
+elif [ "${ACTION_TYPE}" == "postupgrade" ]; then
+        #Script for kernel patch validation
+        do_post_kernel_check
+else
+    $ECHO -e "*******************************************************************"
+    $ECHO "Choose the proper action type : update or postupgrade" | $TEE -a "$LOG"
+    usage_msg
+
+fi
+$RM -rf /var/rhel_patch_upgrade_in_progress
+##
+exit 0

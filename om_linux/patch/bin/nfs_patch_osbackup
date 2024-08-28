@@ -1,0 +1,242 @@
+#!/usr/bin/bash
+####################################################################
+#                                                                  #
+# This script will provide rw access to /OS_BACK_UP directory      #
+# also remove the hostname from /etc/exports file                  #
+# and create new directory to store the OS backup of the           #
+# Client while doing patch upgrade                                 #
+#                                                                  #
+####################################################################
+
+
+ARGS="${@}"
+
+setVars() {
+CUT=/usr/bin/cut
+ECHO=/usr/bin/echo
+BASENAME=/bin/basename
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+RMDIR=/usr/bin/rmdir
+HOSTNAME=/usr/bin/hostname
+MKDIR=/usr/bin/mkdir
+SED=/usr/bin/sed
+
+EXPORTFS=/usr/sbin/exportfs
+SCRIPT_NAME=$( $BASENAME $0 )
+SCRIPT_DIR=$( cd $( dirname $0 ); pwd )
+LIB_DIR=$( cd $( dirname $0 ); pwd -P )
+LIB_DIR="$LIB_DIR/../lib"
+LOG_DIR=/var/ericsson/log/patch
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+LIB_COMM=common_functions.lib
+
+######################
+# Load common library
+######################
+[[ -f ${LIB_DIR}/${LIB_COMM} ]] && . ${LIB_DIR}/${LIB_COMM}
+[[ -f ${SCRIPT_DIR}/${LIB_COMM} ]] && . ${SCRIPT_DIR}/${LIB_COMM}
+[[ ! -f ${LIB_DIR}/${LIB_COMM} && ! -f ${SCRIPT_DIR}/${LIB_COMM} ]] && {
+                $ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+                exit 1
+        }
+
+return 0
+
+}
+
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$ECHO "
+Usage:  `$BASENAME $0` -a {add|remove}
+
+add - To add the hostname in /etc/exports file 
+remove - To remove the hostname from /etc/exports file
+"
+}
+
+check_already()
+{
+        server_host=$1
+        res=`$GREP -w $server_host /etc/exports 2> /dev/null | $GREP -w OS_BACK_UP`
+        if [ -z "$res" ]; then
+                return 0
+        fi
+        logOut "WARN" "$server_host already present in the /etc/exports file"
+        return 1
+}
+add_client()
+{
+    export_log="${LOG_DIR}/client_share_add_${DATETIME}.log"
+    server_host=$1
+    HOST_DIR=/OS_BACK_UP/$server_host
+    if [ ! -d $HOST_DIR ]; then
+        $(${MKDIR} -p ${HOST_DIR})
+        if [ $? -ne 0 ]; then
+                exitOut 1 "Problem in creating the client directory ${HOST_DIR}"
+        fi
+        logOut "INFO" "${HOST_DIR} directory created successfully"
+    fi
+    check_already $server_host
+    if [ $? == 1 ]; then
+        return 0
+    fi      	       		
+    $ECHO "/OS_BACK_UP $server_host(rw,sync,no_root_squash)" >> /etc/exports
+    logOut "INFO" "Adding $server_host in /etc/exports file"
+    $EXPORTFS -a 2>/dev/null
+    $EXPORTFS -a > $export_log 2>&1
+    if [[ ! -s "$export_log" ]]; then
+	rm -f "$export_log"
+	logOut "INFO" "/OS_BACK_UP is successfully exported to $server_host "
+    else
+	isfailed=`$GREP -Ew 'Failed|warning' $export_log`
+        if [[ $isfailed != "" ]]; then
+            rm_host $server_host
+	fi
+    fi
+}
+
+add_hostname()
+{
+   
+    if [ "$USER_CLIENT" ];then
+	CLIENT=$USER_CLIENT
+    else
+	read -p "Enter client hostname :" CLIENT
+    fi    
+	for host in ${CLIENT}
+        do
+	       if [[ ${host} =~ ^([0-9]{1,3}\.){1,3}[0-9]{1,3}$ ]]; then
+			exitOut "2" "Please provide client hostname"
+	       fi		
+               check_host_ip $host
+	 done
+}
+
+##########################################################
+#
+# Function :  remove_exports
+# this function will check and comment out nfs share with hostip in
+#  #EQEV-65793 19.4.7 #xanjgop
+#
+############################################################
+check_host_ip()
+{
+    server_host=$1
+    hostip=`getent hosts $server_host`
+    hostip_stat=$?
+    if [ $hostip_stat != 0 ]; then
+        exitOut "2" "Client details are not available in /etc/hosts"
+    else
+        add_client $server_host
+    fi
+}
+
+rm_host()
+{
+        server_host=$1
+        res=`$GREP -w -ho $server_host /etc/exports 2> /dev/null`
+        if [ ! -z $res ]; then
+	    logOut "ERROR" "Failed to export /OS_BACK_UP, cleaning up the exports. Please check the log file on MWS for more info: $export_log"
+            logOnly "INFO" "Removing $res from /etc/exports file "
+	    $SED -i /$server_host/d /etc/exports
+           
+	    if [ ! "$(ls -A /OS_BACK_UP/$server_host)" ]; then
+	 	logOnly "INFO" "Removing /OS_BACK_UP/$server_host directory"
+                $RMDIR /OS_BACK_UP/$server_host
+            fi
+        else
+            logOut "INFO" "$server_host does not exist in /etc/exports file"
+
+        fi
+
+}
+
+check_hostname()
+{
+        exportrm_log="${LOG_DIR}/exportfs_remove_${DATETIME}.log"
+        server_host=$1
+        res=`$GREP -w -oi "OS_BACK_UP $server_host" /etc/exports 2> /dev/null`
+        if [ ! -z "$res" ]; then
+                logOut "INFO" "Removing $res from /etc/exports file "
+                $SED -i /$server_host/d /etc/exports
+		$EXPORTFS -a 2>/dev/null
+                $EXPORTFS -a > $exportrm_log  2>&1
+		if [[ ! -s "$exportrm_log" ]]; then
+                   rm -f "$exportrm_log"
+		else
+                   isfailedrm=`$GREP -Ew 'Failed|warning' $exportrm_log`
+                        if [[ $isfailedrm != "" ]]; then
+                        	logOut "ERROR" "Failed to remove $res entry, please check the log file on MWS for more info: $exportrm_log"
+			fi
+                fi
+        else
+                logOut "WARN" "$server_host does not exist in /etc/exports file"
+        fi
+
+}
+remove_hostname()
+{
+    if [ "$USER_CLIENT" ];then
+	CLIENT=$USER_CLIENT
+    else
+	read -p "Enter client hostname :" CLIENT
+    fi
+    for host in ${CLIENT}
+    do
+	if [[ ${host} =~ ^([0-9]{1,3}\.){1,3}[0-9]{1,3}$ ]]; then
+    	    exitOut "2" "Please provide hostname"
+        fi
+	    check_hostname $host 
+    done
+}
+
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+setVars
+$MKDIR -p "$LOG_DIR" || exitOut "1" "Unable to create $LOG_DIR"
+header "MAIN" "Host: $($HOSTNAME)" "$(datestamp 2)" "Command: \"${SCRIPT_NAME} $ARGS\""
+[[ -z "$ARGS" ]] && {
+        usage_msg
+        exitOut 1 "No command line options supplied!"
+        }
+while getopts ":a:c:" arg; do
+  case $arg in
+    a) ARGS="$OPTARG"   
+       ;;
+    c) USER_CLIENT="$OPTARG"
+       ;;
+    \?) usage_msg
+        exit 1
+       ;;
+  esac
+done
+
+case "${ARGS}" in
+
+    add)        add_hostname
+                ;;
+
+    remove)     remove_hostname
+                ;;
+
+    *)          usage_msg
+                exit 1
+                ;;
+esac
+exitOut

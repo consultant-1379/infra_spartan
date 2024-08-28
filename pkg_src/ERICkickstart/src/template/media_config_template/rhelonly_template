@@ -1,0 +1,59 @@
+###########################################################
+#
+# This file describes the properties of the ENIQ EVENTS 
+# STATISTICS Base SW media. It describes
+#
+###########################################################
+# Media Identity Type
+MEDIA_TYPE=rhelonly
+
+# File that ensures we are looking at the correct media
+MEDIA_FILE=.rhelonly_base_sw
+
+# Media label. It is the default directory that the media 
+# will be installed in
+MEDIA_LABEL=rhelonly_base_sw
+
+# Media Designation. Used primarily for printouts
+MEDIA_DESIG=RHELONLY
+
+# String for Main menu title associated with this media
+MEDIA_MAIN_MENU_TITLE=Profile
+
+# Media Action List. The list order in the variable will
+# indicate the order of the menu. This actions are
+# reserved words and MUST not be altered. These keywords
+# signify different actions in the scripts that read them.
+#MEDIA_ACT_LIST=add::list::remove
+MEDIA_ACT_LIST=::list::
+
+# Parent Directory under which all ENIQ EVENT STATISTICS media will be stored
+MEDIA_AREA=/JUMP
+
+# Directory under which all ENIQ EVENT STATISTICS media will be stored. This
+# directory is relative to MEDIA_AREA
+MEDIA_DIRECTORY=RHELONLY
+
+# Flag to determine whether we should allow more that one media
+# in an NFS area. EG. OSS-RC can have 2 media images associated 
+# with one NFS area (i386,sparc)
+MULTIPLE_MEDIA=N
+
+# Flag to determine whether this media is considered to be an 
+# an application media or not. Will a user select this media
+# to install a particular OSS application/function
+APPLICATION_MEDIA_FLAG=Y
+
+# Flag to determine whether we should decompress the contents 
+# of the media or not
+DECOMPRESS_FLAG=N
+
+# IP address of server serving out the media. Must be IP address 
+# or 'local'
+MEDIA_NFS_IP=local
+
+# Parameter indicating the string that the installation framework
+# will use to identify file holding network path to required media.
+# This only is relevant to Application Medias but MUST be defined
+MEDIA_PATH_ID_FILE=rhelonly_sw_locate
+

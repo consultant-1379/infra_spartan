@@ -1,0 +1,10 @@
+
+i pkginfo
+
+d none opt 0755 root root
+d none opt/ericsson 0755 root root
+d none opt/ericsson/hw_comm 0755 root root
+d none opt/ericsson/hw_comm/etc 0755 root root
+f none opt/ericsson/hw_comm/etc/eniq_hw_template 0644 root root
+d none opt/ericsson/hw_comm/bin 0755 root root
+f none opt/ericsson/hw_comm/bin/assign_unityip.sh 0644 root root

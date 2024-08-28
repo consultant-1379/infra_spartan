@@ -1,0 +1,76 @@
+# Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : linux_bmr.cfg.template
+# Date    : 25/10/2018
+# Revision: A
+# Purpose : This is the generic modular kickstart template used by
+#           manage_linux_dhcp_clients.bsh to cater for build of all
+#           kickstart files, irrespective of application type or
+#           versions of any software.
+#
+# Usage   : Used directly by manage_linux_dhcp_clients.bsh
+#
+# ********************************************************************
+
+# Install OS instead of upgrade
+rescue
+
+# Use network installation
+nfs --server=<CHANGE><KICK_SERV_IP> --dir=<CHANGE><CLIENT_KICK_LOC>
+
+# Use text mode install
+text
+
+#Root password
+rootpw --iscrypted $6$rqDISpVr$Xh74lVhoFpx1DjdoZ171hua.s0hw/RPm4QUYObLrEDf8AsycokmcLYdkRelf2.M6XLN7vgdK8v30W8.aQ/0Kr.
+auth  --useshadow  --passalgo=sha512
+
+# System keyboard
+keyboard uk
+
+# System language
+lang C
+
+# Network configuration
+network --noipv6  --bootproto=static --gateway=<CHANGE><CLIENT_GATEWAY> --ip=<CHANGE><CLIENT_IP_ADDR> --nameserver=<CHANGE><CLIENT_DNSSERVER> --netmask=<CHANGE><CLIENT_NETMASK> --device=<CHANGE><CLIENT_MAC_ADDR> --activate --hostname=<CHANGE><CLIENT_HOSTNAME>
+
+%pre --log=/tmp/ks-pre.log
+
+# To Create the OMBS related packages
+
+dd if=/dev/zero of=/tmp/openv.img bs=1024 count=7168000
+losetup -fP /tmp/openv.img
+mkfs.ext4 -F /tmp/openv.img
+mkdir /usr/openv
+mount /dev/loop3 /usr/openv
+
+dd if=/dev/zero of=/tmp/opt.img bs=1024 count=2048000
+losetup -fP /tmp/opt.img
+mkfs.ext4 -F /tmp/opt.img
+mkdir /opt
+mount /dev/loop4 /opt
+
+dd if=/dev/zero of=/tmp/tmp.img bs=1024 count=2048000
+losetup -fP /tmp/tmp.img
+mkfs.ext4 -F /tmp/tmp.img
+mkdir /var/tmp
+mount /dev/loop5 /var/tmp
+
+# Install packages for BMR
+
+cd /run/install/repo/Packages
+rpm -ivh util-linux*.x86_64.rpm --nodeps
+rpm -ivh bash*.x86_64.rpm --nodeps
+rpm -ivh glibc*.x86_64.rpm --nodeps
+rpm -ivh grub2-efi-x64-modules-*.rpm --nodeps
+cd
+
+%end

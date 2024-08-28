@@ -1,0 +1,3125 @@
+#!/usr/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Product : Storage Manager NAS API, CXP  903 6743  
+# Name    : nascli
+# Written : Niklas Nordlund
+# Modified: xkeerbv (Modified for linux porting) 
+# Purpose : An API towards the NAS storage.
+#           Calls available plugin to specific NAS.
+#
+# Usage   : nascli [flags] [function] [params]
+#
+# ********************************************************************
+
+version="R1A01 2018-08-25"
+
+#---------------------------< Command Section >----------------------------
+
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CHGRP=/usr/bin/chgrp
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GETTEXT=/usr/bin/gettext
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+AWK=/usr/bin/awk
+PGREP=/usr/bin/pgrep
+PING=/usr/bin/ping
+PKGADD=/usr/sbin/pkgadd
+PKGINFO=/usr/bin/pkginfo
+PRTCONF=/usr/sbin/prtconf
+PSTREE=/usr/bin/pstree
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+ROLES=/usr/bin/roles
+ED=/usr/bin/ed
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+SCP=/usr/bin/scp
+SU=/usr/bin/su
+SVCADM=/usr/sbin/svcadm
+SVCCFG=/usr/sbin/svccfg
+SVCS=/usr/bin/svcs
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+USERADD=/usr/sbin/useradd
+WC=/usr/bin/wc
+
+#--------------------------< Generic Functions >---------------------------
+
+#----------------------
+#   h e a d e r _ 1
+#----------------------
+# $1 = Text to be printed centered
+header_1()
+{
+   $ECHO -e "\007"
+   $ECHO "$*" | $AWK '{n1=length($0);n2=36-n1/2-n1%2;n3=36-n1/2;for(n=1;n<n2;n++)printf("-");printf("< %s >",$0);for(n=1;n<n3;n++)printf("-");printf("\n")}'
+
+   $ECHO -e $(p_date) $(hostname) $$ "\n"
+}
+
+#----------------------
+#   h e a d e r _ 2
+#----------------------
+# $* = Text to be printed
+header_2()
+{
+   $ECHO -e "===> $*"
+}
+
+#----------------------
+#   h e a d e r _ 3
+#----------------------
+# $* = Text to be printed
+header_3()
+{
+   $ECHO "-> $*"
+}
+ 
+#----------------------
+#   h e a d e r _ x 
+#----------------------
+# $1 = Header level (0=none/1-4)
+# $2-n = Text to be printed
+header_x()
+{
+   local x=$1
+   shift
+   if [ $x -gt 0 -a $x -lt 4 ]; then
+      eval header_$x "$*"
+   else
+      [ $x = 4 ] && $ECHO "    $*" 
+   fi
+}
+
+#----------------------------
+#   g e t _ r o w _ c o l 
+#----------------------------
+# Reads stdin, and returns specified column in rows.
+# $1 = {first|all} First row under column header, or all next rows
+# $2-n = Column Header. Specify as String (with space) or Regexp.
+# $3 = [space] Col-header is only $2 (one word), and col width until next col. (optional)
+get_row_col()
+{
+   local row=";exit" pat
+   [ "$1" = "all" ] && row=""
+   shift
+   if [ "$2" = "space" ]; then
+      pat="${1}[ ]*"
+   else
+      pat="$*"
+   fi
+
+   $AWK 'RSTART!=0&&/^$/{exit}RSTART!=0{a=substr($0,RSTART,RLENGTH);sub(/\(.*/,"",a);print a'"$row"'}/'"$pat"'/{match($0,/'"$pat"'/)}'
+}
+
+# Example stdin:
+#NAME                     TYPE           SNAPDATE            CHANGED_DATA   SYNCED_DATA
+#xb1140b-eba_rtt-dump     spaceopt       2011/01/31 12:08    256K(1.2%)     256K(1.2%)
+#xb1140b-eba_rtt-snap3    spaceopt       2011/01/33 12:03    253K(1.2%)     253K(1.2%)
+#|get_row_col first CHANGED_DATA => 256K(1.2%)
+#|get_row_col all NAME space => xb1140b-eba_rtt-dump and xb1140b-eba_rtt-snap3
+#|get_row_col first "TYPE    " => spaceopt
+
+#--------------------------------
+#   g e t _ r o w s _ c o l s
+#--------------------------------
+# Reads stdin, and returns all rows for specified columns.
+# Limitation: the column header has to be one word. 
+# But the data doesn't need to be one work.
+# $1-n = Column Header(s). Which columns to list. Each one word. Width until next col.
+get_rows_cols()
+{
+   local colList=$(echo $*|sed 's/ /|/g')
+
+   $AWK -v cl=$colList 'BEGIN{m=split(cl,ca,"|");a=0}
+      a==1&&/^$/{exit}
+      a==1{for (i=1;i<=m;i+=1) {printf("%s ",substr($0,rstart[ca[i]],rlength[ca[i]]))};print ""}
+      /'"$colList"'/{a=1;for (i in ca) {match($0,ca[i]" *");rstart[ca[i]]=RSTART;rlength[ca[i]]=RLENGTH}}'
+}
+# Example stdin:
+#NAME                     TYPE           SNAPDATE            CHANGED_DATA   SYNCED_DATA
+#xb1140b-eba_rtt-dump2    spaceopt       2011/01/31 12:08    256K(1.2%)     256K(1.2%)
+#xb1140b-eba_rtt-snap3    spaceopt       2011/01/33 12:03    253K(1.2%)     253K(1.2%)
+#|get_rows_cols CHANGED_DATA NAME SNAPDATE
+#256K(1.2%)      xb1140b-eba_rtt-dump2     2011/01/31 12:08    
+#253K(1.2%)      xb1140b-eba_rtt-snap3     2011/01/33 12:03
+
+#------------
+#   a s k
+#------------
+# Asks the user for an answer.
+# Sets the variable ANS.
+# Uses SCREEN_LOG, SILENT
+#
+# Purpose: To be able to have also the typed input in the log file,
+# this procedure has to be used, instead of "read".
+#
+# $1 = Prompt
+# $2 = Default answer (optional)
+ask()
+{
+   local defstr=""
+
+   [ "$2" != "" ] && defstr=" [$2]"
+   while :; do
+      $ECHO -e " ${1}${defstr}: \c "
+      if [ "$SILENT" = "y" -a "$2" != "" ]; then
+         ANS="$2"
+         $ECHO $ANS
+         break
+      fi
+      if [ ! -t 0 ]; then
+         if [ "$2" != "" ]; then
+            ANS="$2"
+            $ECHO $ANS
+            break
+         else
+            $ECHO -e "No connection to terminal. Exiting!"
+            p_exit 1
+         fi
+      fi
+      read ANS
+      $ECHO $ANS >>$SCREEN_LOG
+      [ "$ANS" = "" ] && ANS="$2"
+      [ "$ANS" != "" ] && break
+   done
+}
+
+#--------------------
+#   a s k _ n u m 
+#--------------------
+# Asks the user for a number.
+# Sets the variable ANS.
+# Uses SCREEN_LOG
+# $1 = Prompt
+# $2 = Default answer (option)
+ask_num()
+{
+   while :; do
+      ask "$1" "$2"
+      [ "$($ECHO $ANS|egrep '^[0-9]*$')" != "" ] && break
+      $ECHO -e "\007   Please enter only numbers!"
+   done
+}
+
+#------------------
+#   a s k _ y n
+#------------------
+# Asks the user for either yes or no.
+# Sets the variable YESNO to 'y' or 'n'.
+# Uses SCREEN_LOG, SILENT
+#
+# $1 = Prompt
+# $2 = Default answer (y/n) (option)
+ask_yn()
+{
+   defstr=""
+   [ "$2" != "" ] && defstr=" [$2]"
+   while :; do
+      $ECHO -e "$1 (y/n)?${defstr} "
+      if [ "$SILENT" = "y" -a "$2" != "" ]; then
+         YESNO="$2"
+         $ECHO $YESNO
+         break
+      fi
+      if [ ! -t 0 ]; then
+         if [ "$2" != "" ]; then
+            YESNO="$2"
+            $ECHO $YESNO
+            break
+         else
+            $ECHO -e "No connection to terminal. Exiting!"
+            p_exit 1
+         fi
+      fi
+      read YESNO
+      $ECHO $YESNO >>$SCREEN_LOG
+      [ "$YESNO" = "" ] && YESNO="$2"
+      case "$YESNO" in
+         [yY]|[yY][eE][sS]) YESNO=y ; break ;;
+         [nN]|[nN][oO]) YESNO=n ; break ;;
+      esac
+   done
+}
+
+#--------------------------------------
+#   a s k _ p r e s s _ r e t u r n 
+#--------------------------------------
+# Uses SILENT
+ask_press_return()
+{
+   $ECHO -e "  Press Return to continue"
+   if [ ! -t 0 -o "$SILENT" = "y" ]; then
+      $ECHO
+      return 0
+   fi
+   read ANS
+}
+
+#------------------
+#   p _ e x i t
+#------------------
+# $1 = Return code
+p_exit()
+{
+   $ECHO $1 >$EXIT_FILE
+   kill -QUIT $$
+   exit $1
+}
+
+#------------------
+#   p _ e d i t
+#------------------
+# Edits a file with 'ed' commands.
+#
+# $1 = filename
+# $2 = 'ed' command(s)
+#
+# If many 'ed' commands are put into $2,
+# they have to be separated by \n.
+p_edit()
+{
+   efile=$1
+   shift
+   $ECHO $(p_date) "Edit $efile: $*" >>$CMD_LOG
+   printf "$*\nw" | $ED -s $efile
+}
+# Examples:
+# p_edit testfile "/CNA START/,/CNA END/d"
+# p_edit $file '/^MSC\$/
+# -1r /tmp/nad_msc
+# +1,$g/^MSC\$/d'
+
+#----------------
+#   p _ s e d
+#----------------
+# Edits a file with 'sed' commands.
+# $1 = filename
+# $2 = 'sed' command(s)
+p_sed()
+{
+   local efile=$1
+   shift
+   sed "$*" $efile >$TMP_FILE
+   [ $? -eq 0 ] && cp $TMP_FILE $efile
+}
+
+#------------------
+#   p _ d a t e
+#------------------
+# Returns the date in this format: '1999-12-31 23:59:59'
+# $1 = nospace (optional) Replaces the space with an underscore
+p_date()
+{
+   local d="%Y-%m-%d" c=" " t="%H:%M:%S"
+
+   [ "$1" = "nospace" ] && c="_"
+   date +${d}"${c}"${t}
+}
+
+#------------------
+#   p _ m o r e 
+#------------------
+# Uses 'more' to portion out the text
+# Also makes sure the text comes to the log file
+# Note: All these problems due to that all normal output is piped to 
+# $SCREEN_LOG, which makes 'more' not work. 
+# '&4' = stdout to cmdtool
+# '&5' = stderr to cmdtool
+p_more()
+{
+   tee -a $SCREEN_LOG | more 1>&4 2>&5
+}
+
+#--------------------------
+#   i s _ m o u n t e d 
+#--------------------------
+# Returns mount point if mounted, otherwise nothing
+# $1 = Mount point or file system to check
+is_mounted()
+{
+   mount | $AWK -v m=$1 '$1==m||$3==m{print $1}'
+}
+
+#----------------------
+#   p _ u m o u n t 
+#----------------------
+# Tries to umount, if not possible, tries to kill user.
+# $* = Device to be mounted, or Mount points
+p_umount()
+{
+   local mnt s=0 _s arg
+   for arg
+   do
+      mnt=$(is_mounted $arg)
+      if [ "$mnt" != "" ]; then
+         doo /bin/sync
+         doo umount $mnt >/dev/null 2>&1
+         _s=$?
+         if [ $_s -ne 0 ]; then
+            doo umount -f $mnt >/dev/null 2>&1
+            _s=$?
+         fi
+         if [ $_s -ne 0 ]; then
+            doo fuser -ck $mnt >/dev/null 2>&1
+            sleep 3
+            doo umount -f $mnt
+            _s=$?
+            [ $_s -eq 0 ]
+            print_on_err - "Problem unmounting $mnt"
+         fi
+         let s+=_s
+      fi
+   done
+   return $s
+}
+
+#--------------------
+#   p _ m o u n t 
+#--------------------
+# $1 = FS to be mounted
+# $2 = Mount point
+# $3-n = Options to mount
+p_mount()
+{
+   local fs=$1 mp=$2 opt
+   shift 2
+   opt=$*
+
+   if [ "$($ECHO $opt|grep F)" = "" -o "$($ECHO $opt|grep -w ufs)" != "" ]; then
+      if [ "$($ECHO $opt|grep logging)" = "" ]; then
+         # Add 'nologging' for ufs FS
+         if [ "$($ECHO $opt|grep '\-o')" = "" ]; then
+            opt="$opt -o nologging"
+         else
+            opt="$($ECHO $opt),nologging"
+         fi
+      fi
+   fi
+
+   cd /
+   p_umount $fs $mp
+   cmd="mount $opt $fs $mp"
+   do_cmd bailout "Problem mounting!"
+}
+
+#------------------
+#   p _ f s c k 
+#------------------
+# Runs fsck on specified device, if containing a valid FS.
+# Also mounts on specified mount point.
+# $1 = Device
+# $2 = Header level (0=none/1-4)
+# $3 = Mount point (optional)
+# Returns 0=ok / >0=nok from fsck or mount / -1=no FS
+p_fsck()
+{
+   local dev=$($ECHO $1|sed 's#/dsk/#/rdsk/#') mnt=$3
+   local fstype opt="" status=-1 n=0
+
+   fstype=$(fstyp $dev 2>&1|$AWK '{print $1}')
+   [ "$($ECHO $fstype|grep vxfs)" != "" ] && fstype=vxfs
+
+   if [ "$fstype" != "Unknown_fstyp" -a "$fstype" != "fstyp:" ]; then
+      header_x ${2:-0} fsck $($ECHO $dev|sed 's#.*dsk/##')
+#HG50396      [ "$fstype" = "vxfs" ] && opt="-o full"
+
+      cmd="fsck -F $fstype -y $opt $dev"
+      while :; do
+         do_cmd print "Problem checking FS $dev!"
+         status=$?
+         [ "$($ECHO "$cmdout"|grep RERUN)" = "" -o "$($ECHO "$cmdout"|grep 'NO WRITE')" != "" ] && break
+         let n+=1
+         [ $n -gt 10 ] && $ECHO -e "LOOPING: Exiting loop, exceeded 10 times." && break
+         $ECHO -e " [$n] Re-Running $cmd!" 
+         $ECHO "    [$n] Re-Running $cmd!" >&4
+      done
+
+      if [ $status -eq 0 -a "$mnt" != "" ]; then
+         [ ! -d $mnt ] && mkdir -p $mnt
+         header_x ${2:-0}  Mounting on $mnt
+         p_mount $($ECHO $dev|sed 's#/rdsk/#/dsk/#') $mnt -F $fstype
+         status=$?
+      fi
+   fi
+
+   return $status
+}
+
+#--------------------------
+#   i f _ f i l e _ m v 
+#--------------------------
+# $1 = File name
+# $2 = Extension
+if_file_mv()
+{
+   [ -f $1 ] && doo mv $1 ${1}$2
+}
+
+#----------------------------------
+#   i f _ n o t _ f i l e _ c p 
+#----------------------------------
+# $1 = File name
+# $2 = Extension
+if_not_file_cp()
+{
+   [ ! -f ${1}$2 ] && doo cp $1 ${1}$2
+}
+
+
+#----------------------------------------------------------
+# Functions to operate on LISTS.
+# A list is just a string of words. "item1 item2 ..."
+# I.e. it is not the bash Array
+#----------------------------------------------------------
+
+#------------------------------
+#   l i s t _ s e c t i o n
+#------------------------------
+# Returns items found in both lists, on stdout.
+# $1 = Name of first list
+# $2 = Name of second list
+# (A snitt B)
+list_section()
+{
+   local nr=$RANDOM
+   eval $ECHO \$$1 | tr -s ' ' '\n' | sort >/tmp/a1.$nr
+   eval $ECHO \$$2 | tr -s ' ' '\n' | sort >/tmp/b1.$nr
+   comm -12 /tmp/a1.$nr /tmp/b1.$nr | sort | egrep -v '^$'
+   rm /tmp/a1.$nr /tmp/b1.$nr
+}
+# Examples:
+# commonInterest=`list_section myHobby yourHobby`
+
+#--------------------------
+#   l i s t _ m i n u s
+#--------------------------
+# Returns items in A, not found in B.
+# $1 = Name of first list
+# $2 = Name of second list
+# (A - B)
+list_minus()
+{
+   local nr=$RANDOM
+   eval $ECHO \$$1 | tr -s ' ' '\n' | sort >/tmp/a1.$nr
+   eval $ECHO \$$2 | tr -s ' ' '\n' | sort >/tmp/b1.$nr
+   comm -23 /tmp/a1.$nr /tmp/b1.$nr | sort | egrep -v '^$'
+   rm /tmp/a1.$nr /tmp/b1.$nr
+}
+# Examples:
+# restList=`list_minus toDoList doneList`
+
+#--------------------------
+#   l i s t _ u n i o n
+#--------------------------
+# Return items in both lists, not duplicated.
+# $1 = Name of first list
+# $2 = Name of second list
+list_union()
+{
+   local nr=$RANDOM
+   eval $ECHO \$$1 | tr -s ' ' '\n' | sort >/tmp/a1.$nr
+   eval $ECHO \$$2 | tr -s ' ' '\n' | sort >/tmp/b1.$nr
+   (comm -23 /tmp/a1.$nr /tmp/b1.$nr | sort | egrep -v '^$'
+   $CAT /tmp/b1.$nr )| sort
+   rm /tmp/a1.$nr /tmp/b1.$nr
+}
+ 
+#------------------------------
+#   l i s t _ p r o c e s s
+#------------------------------
+# Returns the list, where all items have been "processed":
+# $1 = In-List
+# $2 = Command, for sed-substitute (sxxxg) e.g. '/bad/good/'
+list_process()
+{
+   eval aList=\$$1
+   $ECHO $aList | tr -s ' ' '\n' | sed -e 's'"$2"'g'
+}
+# Add $SUFFIX to all element:
+# dbList=`list_process dbList "/\([^ ]*\)/\1$SUFFIX/"`
+# Remove $SUFFIX from all element:
+# dbList=`list_process dbList "/$SUFFIX//"`
+
+#------------------------
+#   l i s t _ u n i q 
+#------------------------
+# Returns items sorted and unique.
+# $1 = In-List
+list_uniq()
+{
+   eval $ECHO \$$1 | tr -s ' ' '\n' | sort -u
+}
+
+#--------------------
+#   l i s t _ n r
+#--------------------
+# Counts the number of items in the list.
+# $1 = Name of list to be counted
+list_nr()
+{
+   $ECHO $(eval $ECHO \$$1 | wc -w)
+}
+
+#------------------------
+#   l i s t _ i t e m
+#------------------------
+# Returns on stdout the item in the list selected by Index.
+# $1 = Name of list
+# $2 = Index (1-n)
+list_item()
+{
+   eval $ECHO \$$1 | tr -s ' ' '\n' | $AWK -v a=$2 'NR==a{print $1;exit}'
+}
+ 
+#--------------------------
+#   l i s t _ i n d e x
+#--------------------------
+# Returns on stdout the index of Item in the list. (1-n, 0=not found)
+# $1 = Name of list
+# $2 = Item
+list_index()
+{
+   eval $ECHO \$$1 | tr -s ' ' '\n' | $AWK -v a=$2 'BEGIN{i=0}$1==a{i=NR;exit}END{print i}'
+}
+
+#------------
+#   d o o 
+#------------
+# Logs and executes a command
+# $* = Command to execute
+# Uses: CMD_LOG
+doo()
+{
+   $ECHO $(p_date) "$*" >>$CMD_LOG
+   eval "$*"
+}
+
+#------------------
+#   d o _ c m d 
+#------------------
+# $* = Explanation text
+# Uses: cmd, CMD_LOG
+do_cmd()
+{
+   local txt="$*" stat status cmdout
+
+   log_cmd
+   exec 6>&1
+   >$TMP_FILE
+   (eval $cmd;echo $?>$TMP_FILE) 2>&1 1>&6 6>&- | tee -a $CMD_LOG 6>&-
+   stat=$?
+   exec 6>&-
+   status=$(cat $TMP_FILE)
+   if [ "$(echo $status|egrep '^[-]*[0-9][0-9]*$')" = "" ]; then
+      status=7
+      [ "$(echo $stat|egrep '^[0-9][0-9]*$')" != "" ] && status=$stat
+   fi
+
+   if [ $status -ne 0 ]; then
+      $ECHO -e "\007 ERROR code $status" "$txt" "$cmd" | tee -a $CMD_LOG
+   fi
+   return $status
+}
+
+#------------
+#   t r y
+#------------
+# Performs a procedure and offers the user to try it again upon failure.
+# $* = Command/procedure to execute
+try()
+{
+   local cmd="$*" stat
+
+   while :; do
+      $cmd
+      stat=$?
+      [ $stat -eq 0 -o $stat -eq 99 ] && break
+      $ECHO -e "\007 FAILED to perform $cmd"
+      ask "Try 'a'gain, 'c'ontinue or 'q'uit"
+      [ "$ANS" = "q" ] && break
+      [ "$ANS" = "c" ] && stat=0 && break
+   done
+
+   return $stat
+}
+
+#------------------
+#   d o _ t e e 
+#------------------
+# $1 = Log file
+# $2-n = Command
+do_tee()
+{
+   local logFile=$1 cmd status tmpFile=/tmp/do_tee.$$
+   shift
+   cmd="$*"
+
+   $ECHO $(p_date) "$cmd" >>$CMD_LOG
+   (eval $cmd 2>&1 ; $ECHO $? >$tmpFile) | tee -a $logFile
+   status=$($CAT $tmpFile)
+   rm $tmpFile
+
+   return $status
+}
+
+#------------
+#   l o g 
+#------------
+# $* = Text to be logged in $CMD_LOG (optional)
+# Logs in-parameter text, OR stdin.
+# Uses: CMD_LOG
+log()
+{
+   if [ "$1" != "" ]; then
+      $ECHO $(p_date) "$*" >>$CMD_LOG
+   else
+      $ECHO $(p_date) >>$CMD_LOG
+      $CAT >>$CMD_LOG
+   fi
+}
+
+#--------------------
+#   l o g _ c m d 
+#--------------------
+# Uses: cmd, CMD_LOG
+log_cmd()
+{
+   $ECHO $(p_date) "$cmd" >>$CMD_LOG
+}
+
+#------------------------------------
+#   b a i l _ o u t _ o n _ e r r 
+#------------------------------------
+# $1 = Name of out-variable (containing result text), or '-' if none.
+# $* = Explanation text
+bail_out_on_err()
+{
+   local status=$? _out=""
+   if [ "$(echo $1|egrep '^[0-9]+$')" != "" ]; then
+      status=$1
+   else
+      [ "$1" != "-" ] && eval _out="\$$1"
+   fi
+   shift
+   if [ -w "$CMD_LOG" -a "$_out" != "" ]; then
+      $ECHO $(p_date) "$*" >>$CMD_LOG
+      $ECHO "$_out" >>$CMD_LOG
+   fi
+   if [ $status -ne 0 ]; then
+      log "ERROR code $status: " "$*" "\n$_out"
+      $ECHO -e "\007ERROR code $status: " "$*" "$_out" >&5
+      YESNO=n
+      if [ -t 0 -a "$SILENT" != "y" ]; then
+         ask_yn "Continue anyway" n >&4 2>&5
+      fi
+      [ "$YESNO" = "n" ] && p_exit $status
+   fi
+   return $status
+}
+ 
+#----------------------
+#   b a i l _ o u t 
+#----------------------
+# $1 = Name of out-variable (containing result text), or '-' if none.
+# $* = Explanation text
+bail_out()
+{
+   [ 1 = 2 ]
+   bail_out_on_err $*
+}
+ 
+#------------------------------
+#   p r i n t _ o n _ e r r 
+#------------------------------
+# $1 = Name of out-variable (containing result text), or '-' if none.
+# $* = Explanation text
+print_on_err()
+{
+   local status=$? _out=""
+   [ "$1" != "-" ] && eval _out="\$$1"
+   shift
+   if [ -w "$CMD_LOG" -a "$_out" != "" ]; then
+      $ECHO $(p_date) "$*" >>$CMD_LOG
+      $ECHO "$_out" >>$CMD_LOG
+   fi
+   if [ $status -ne 0 ]; then
+      $ECHO -e "\007WARNING error code $status: " "$*" "$_out"
+   fi
+   return $status
+}
+
+#------------------------------------
+#   p r i n t _ l i s t _ m e n u 
+#------------------------------------
+# Displays all items in a list.
+# User can answer with item number or item name.
+# Sets variable $ITEM
+# $* = List menu items
+# $n-1 = 'def:' (optional)
+# $n = Default answer (optional)
+# NOTE: Item must be without "spaces". '@' can be used instead of space and '#' for tab.
+print_list_menu()
+{
+   local def="" list origList="$($ECHO "$*"|sed 's/def:.*//'|tr -s ' ' '\n')"
+   list=$(list_process origList '/[#@].*//')
+   [ "$($ECHO $*|grep def:)" != "" ] && def=$($ECHO "$*"|sed 's/.*def://')
+   ITEM=""
+   while :; do
+      (
+      $ECHO -e "$origList" | sed -e 's/#/	/g' -e 's/@/ /g' | $AWK '{printf("        %3d  %s\n",NR,$0)}'
+      )|p_more
+      ask "\n Enter selection (q=quit)" $def
+
+      [ "$ANS" = "q" ] && return 1
+      [ "$(list_section list ANS)" != "" ] && ITEM=$ANS && return
+      ITEM=$($ECHO "$list" | $AWK 'NR=="'"$ANS"'"{print $1;exit}')
+      [ "$ITEM" != "" ] && return
+      $ECHO -e "\007 Pls enter a number 1 -" $($ECHO "$list" | wc -l) "or the name of an item."
+      sleep 2
+   done
+}
+
+#------------------------------------------------
+#   p r i n t _ l i s t _ m e n u _ m u l t i 
+#------------------------------------------------
+# Displays all items in a list.
+# User can answer with a multiple of choices.
+# Sets variable $ITEMS
+# $* = List menu items
+# $n-1 = 'def:' (optional)
+# $n = Default answer (optional)
+# NOTE: Item must be without "spaces". '@' can be used instead of space and '#' for tab.
+print_list_menu_multi()
+{
+   local def="" list origList="$($ECHO -e "$*"|sed 's/def:.*//'|tr -s ' ' '\n')"
+   list=$(list_process origList '/[#@].*//')
+   [ "$($ECHO $*|grep def:)" != "" ] && def=$($ECHO "$*"|sed 's/.*def://')
+   while :; do
+      ITEMS=""
+      (
+      $ECHO -e "$origList" | sed -e 's/#/	/g' -e 's/@/ /g' | $AWK '{printf("        %3d  %s\n",NR,$0)} '
+      )|p_more
+      ask "\n    Enter selections (q=quit)" $def
+
+      [ "$ANS" = "q" ] && return 1
+      for ans in $($ECHO $ANS|sed 's/[,]/ /g')
+      do
+         [ "$(list_section list ans)" != "" ] && ITEMS="$ITEMS $ans" && continue
+         [ "$($ECHO $ans|/usr/bin/egrep '^[0-9-]*$')" = "" ] && ITEMS="NOTFOUND" && break
+         for a in $(from $($ECHO $ans|sed 's/-/ /'|$AWK '{if ($2=="") $2=$1; print $1, $2}'))
+         do
+            ITEMS="$ITEMS $($ECHO "$list" | $AWK 'NR=="'"$a"'"{print $1;x=1;exit}END{if (x==0) print "NOTFOUND"}')"
+         done
+      done
+      [ "$($ECHO $ITEMS|grep NOTFOUND)" = "" ] && return 0
+      $ECHO -e "\007 Pls enter a list of numbers between 1 -" $($ECHO "$list" | wc -l) "or the names of the items."
+      sleep 2
+   done
+}
+
+#--------------------------
+#   p r i n t _ l i s t 
+#--------------------------
+# $* = List items
+print_list()
+{
+   (
+   $ECHO $* | tr -s ' ' '\n' | sed 's/.*/        &/'
+   )|p_more
+#   $ECHO " "$* | sed 's/\([^ ]*\)/        \1#/g'| tr -s '#' '\n'
+}
+
+#------------------------
+#   g e t _ v a l u e 
+#------------------------
+# Returns the value of variable in a file, of this format:
+# VARIABLE=value
+# Double quotes are removed.
+# $1 = file name
+# $2 = "variable name" (reg exp)
+get_value()
+{
+   [ ! -f $1 ] && return 1
+   $AWK -F= -v v=$2 '$1==v{print $2}' $1 | sed 's/\"//g'
+}
+
+#--------------
+#   f r o m
+#--------------
+# Used with for-loops.
+# $1 = start value
+# $2 = stop value
+# $3 = step (optional, default 1)
+from()
+{
+   local _i=$1
+   while [ $_i -le $2 ]
+   do
+      echo $_i
+      let _i+=${3:-1}
+   done
+}
+
+# Copied from /ericsson/core/lib/common_functions.lib
+# Just made some minor formatting
+#------------------
+#   i n i g e t
+#------------------
+# Usage: iniget <block> [-<p|v> <line>] [-f <configfile>] [raw]
+# -p gives whole matching <line>
+# -v gives only value of matching <line>
+# -f defaults to /ericsson/config/storage.ini
+# raw will print even commented (;) lines
+#
+iniget()
+{
+   local INIBLOCK=$1 INIWLINE INILINE INICONFIGFILE INIPRINTTYPE
+
+   if [ -n "$INIBLOCK" ]; then
+      shift 1
+   else
+      echo "Usage: iniget <block> [-<p|v> <line>] [-f <configfile>] [raw]"
+      return 1
+   fi
+   unset INIWLINE INILINE INICONFIGFILE INIPRINTTYPE
+
+   while [ -n "$1" ]; do
+      case $1 in
+         -p) INIWLINE=parameter
+            INILINE=$2
+            shift 2
+            ;;
+         -v) INIWLINE=value
+            INILINE=$2
+            shift 2
+            ;;
+         -f) INICONFIGFILE=$2
+            shift 2
+            ;;
+         raw) INIPRINTTYPE=raw
+            shift 1
+            ;;
+         *)      return 1
+            ;;
+      esac
+   done
+
+   [ -z "$INICONFIGFILE" ] && INICONFIGFILE=$STORAGE_INI
+
+   $AWK -F= -v printtype=$INIPRINTTYPE -v line="$INILINE" -v way=$INIWLINE '
+   { sub(/[       ]*$/,"");      #remove trailing whitespace and tabs
+      if ($1=="['$INIBLOCK']") {
+         while ((getline) > 0) {
+            if ($0 ~ /^ *\[/) exit
+            if (($0 ~ /^ *;/) && (printtype!="raw")) continue
+            if ($1==line) {
+               if (way=="parameter") {print $0; exit}
+               if (way=="value")     {sub(/^[^=]*=/,""); print $0; exit}
+            }
+            else if (! line) print $0
+        }
+      }
+   }' $INICONFIGFILE
+}
+
+# Copied from /ericsson/core/lib/common_functions.lib
+# Just made some minor changes
+#------------------
+#   i n i s e t 
+#------------------
+# iniset <block> [-f <configfile>] [del] <text>
+iniset()
+{
+   local INIBLOCK=$1 INIDEL INICONFIGFILE 
+
+   if [ -n "$1" ]; then
+      INIBLOCK="$1"
+      shift 1
+   else
+      echo "Usage: iniset <block> [-f <configfile>] [del] <param1=value> [<param2=value2>]"
+      return 1
+   fi
+
+   unset INICONFIGFILE INIDEL
+   rm -f /tmp/.file.$$
+   while [ -n "$1" ]
+   do
+      case $1 in
+        -f)     INICONFIGFILE="$2"
+                shift 2
+                ;;
+        del)    INIDEL=y
+                shift 1
+                ;;
+        *)      echo "$1" >> /tmp/.file.$$
+                shift 1
+                ;;
+      esac
+   done
+
+   [ -z "$INICONFIGFILE" ] && INICONFIGFILE=$STORAGE_INI
+   cp $INICONFIGFILE $TMP_FILE || return 1
+
+   $AWK -F= -v del=$INIDEL -v textfile=/tmp/.file.$$ '
+   BEGIN {
+      while((getline < textfile) > 0)
+      {
+        foo=$1
+        sub(/^[^=]*=/,"")
+        line[foo]=$0
+      }
+   }
+
+   {   sub(/[       ]*$/,"");      #remove trailing whitespace and tabs
+      if (($1=="['$INIBLOCK']") && (edited=="done"))
+      {
+        print "ERROR: Multiple instances of ['$INIBLOCK'] found, exiting" > "/dev/stderr"
+        exit 1
+      }
+
+      if ($1=="['$INIBLOCK']") { found="y"; print $0; next }
+      if (! found) { print $0; next }
+      if ($0 ~ /^ *\[/) {
+         # End of block, flush all remaining entries
+         for (entry in line) { print entry "=" line[entry] }
+         found=""; edited="done"; print $0; next
+      }
+      if (! del) {
+         for (entry in line) {
+            if (entry==$1) { print entry "=" line[entry]; delete line[entry]; next }
+         }
+         print $0
+      }
+   }
+
+   END {
+      if (found=="y") {
+         # End of file, flush all remaining entries
+         for (entry in line) { print entry "=" line[entry] }
+      }
+      else if (edited!="done") {
+         # Create new block, flush all entries
+         print ""; print "['$INIBLOCK']"
+         for (entry in line) { print entry "=" line[entry] }
+      }
+  }' $INICONFIGFILE > $TMP_FILE
+
+  [ $? = 0 ] && cp $TMP_FILE $INICONFIGFILE || return 1
+
+  rm -f /tmp/.file.$$
+}
+
+
+
+#---------------------------< Local Functions >----------------------------
+
+#--------------------------------
+#   g e t _ i n i _ p a r a m 
+#--------------------------------
+# Returns values from storage.ini, in the [Storage_NAS_FS_LIST] section.
+# FS_NAME, FS_SIZE, NFS_HOST, MOUNT_PATH, NFS_SHARE_OPTIONS, 
+# EXPORT_TO_ALIAS, SNAP_TYPE
+# $1 = Parameter name (FS_SIZE) | 'BLOCKNAME' (literal)
+# $2 = Parameter=value (FS_NAME=home) | Position (1-n) (optional)
+# - If no position specified, the full list is returned.
+# - If $2 is param, then value is returned from the same position as $2 has.
+# - If $2 is pos [0-9]+, then value of that pos is returned.
+# - If $1 is 'BLOCKNAME', then the name of the block is returned where pos is.
+get_ini_param()
+{
+   local param=$1 pos="" param2="" value2="" list item
+   [ "$1" = "" ] && return 1
+
+   list=$(iniget Storage_NAS_FS_LIST)
+
+   if [ "$2" != "" ]; then
+      if [ "$(echo $2|egrep '^[0-9]+$')" != "" ]; then
+         pos=$2
+         list=$(list_item list $pos)
+      else
+         param2=$(echo $2|sed 's/=.*//')
+         value2=$(echo $2|sed 's/.*=//')
+      fi
+   fi
+
+   for item in $list
+   do
+      if [ "$param2" != "" ]; then
+         if [ "$(iniget $item -v $param2)" = "$value2" ]; then
+            if [ "$param" = "BLOCKNAME" ]; then
+               $ECHO $item
+            else
+               iniget $item -v $param
+            fi
+            return
+         fi
+      else
+         if [ "$param" = "BLOCKNAME" ]; then
+            $ECHO $item
+         else
+            iniget $item -v $param
+         fi
+      fi
+   done
+}
+
+#--------------------------------------------
+#   g e t _ s e c o n d a r y _ s y s i d 
+#--------------------------------------------
+# Outputs on stdout Secondary Sys Id (oss1b)
+# Only supports a->b, b->a, no other pri-sec naming conventions.
+# SYS_ID_SEC is not defined in storage.ini, but used by OSS-RC.
+# $1 = Primary Sys Id (oss1a)
+get_secondary_sysid()
+{
+   local ab ba
+
+   ab=$(echo $1|sed -n 's/.*\([ab]\)$/\1/p')
+   ba=b
+   [ "$ab" = "b" ] && ba=a
+   echo $(echo $1|sed 's/[ab]$//')$ba
+}
+
+#------------------------------
+#   v e r i f y _ s y s i d 
+#------------------------------
+# Returns code 0 if ok, i.e. same as defined in storage.ini.
+# Secondary sysid is also ok.
+# If not ok, user is prompted to confirm continuation.
+# If no terminal, ok (0) is also returned. (so beware)
+# $1 = Sys Id
+verify_sysid()
+{
+   local sysId=$1 mySysId secSysId
+
+   mySysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+   secSysId=$(get_secondary_sysid $mySysId)
+   [ "$sysId" = "$mySysId" -o "$sysId" = "$secSysId" ] && return 0
+   $ECHO -e "\007    WARNING: Specified Sys Id does NOT belong to this system!"
+   [ ! -t 0 -o "$SILENT" = "y" ] && return 0
+   ask_yn "\n   Do you really want to continue"
+   [ "$YESNO" = "n" ] && return 1
+   return 0
+}
+
+#----------------------
+#   s t r i p _ i d 
+#----------------------
+# stdin oss1/home => stdout home
+strip_id()
+{
+   sed 's#^[^/]*/##'
+}
+
+#------------------------
+#   e x p a n d _ i d 
+#------------------------
+# Uses: sysId
+# Expand $id to all FS beginning with eg oss1/*, or returns listed FS
+# $1-n = - | FS name(s) (optional)
+expand_id()
+{
+   local fsList=$*
+
+   if [ "$fsList" = "" -o "$fsList" = "-" ]; then
+      get_all_fs $sysId nosnap
+   else
+      $ECHO $*
+   fi
+}
+
+#----------------------
+#   a s k _ p o o l 
+#----------------------
+# Sets: pool
+# $1 = Default choice Pool name (optional)
+ask_pool()
+{
+   local poolStr=""
+   [ "$1" != "" ] && poolStr="def: $1"
+
+   $ECHO -e " Select a pool among these existing ones:"
+   print_list_menu $(pl_list_pools) $poolStr || return 1
+   pool=$ITEM
+}
+
+#------------------
+#   a s k _ f s 
+#------------------
+# Sets: fsName or fsList
+# $1 = Sys Id
+# $2 = single|multi
+# $3 = 'nosnap' Only for 'multi' (optional)
+ask_fs()
+{
+   local id=$1 mode=$2 filter=$3
+   if [ "$mode" = "single" ]; then
+      $ECHO -e "   Select a FS among these existing ones:\n"
+      print_list_menu $(get_all_fs $id) || return 1
+      fsName=$ITEM
+   else
+      $ECHO -e "    Select (multiple) FS:s among these existing ones:"
+      print_list_menu_multi $(get_all_fs $id $filter) || return 1
+      fsList=$ITEMS
+   fi
+}
+
+#------------------------------
+#   a s k _ s n a p s h o t 
+#------------------------------
+# Sets: snapFix
+# $1 = Sys Id
+# $2 = '-' (optional)
+ask_snapshot()
+{
+   local id=$1
+   $ECHO -e "  Select a snapshot among these existing ones:"
+   print_list_menu $(get_snap_list $id) $2 || return 1
+   snapFix=$ITEM
+}
+
+#----------------------
+#   a s k _ s i z e 
+#----------------------
+# $1 = Default size (optional)
+# Sets: fsSize
+ask_size()
+{
+   while :; do
+      ask "\n  Enter size (eg 100m, 5g, 1t)" $1 || return 1
+      fsSize=$ANS
+      [ "$(echo $fsSize|egrep '^[0-9][0-9]*[mMgGtT]$')" != "" ] && break
+      $ECHO -e "\007Input Error: Pls use '^[0-9][0-9]*[mMgGtT]$'."
+   done
+}
+
+#------------------------
+#   a s k _ s h a r e 
+#------------------------
+# Sets: fsName or fsList
+# $1 = Sys Id
+# $2 = single|multi
+# $3 = 'all' (Only for 'multi') (optional)
+ask_share()
+{
+   local id=$1 mode=$2 list
+   list=$(get_all_shares $id)
+   if [ "$mode" = "single" ]; then
+      $ECHO -e " Select a shared FS among these existing ones:"
+      print_list_menu $list || return 1
+      fsName=$ITEM
+   else
+      $ECHO -e " Select shared FS:s among these existing ones:"
+      print_list_menu_multi $list $3 || return 1
+      fsList=$ITEMS
+   fi
+}
+
+#--------------------------
+#   a s k _ c l i e n t 
+#--------------------------
+# Sets: client or clientList
+# $1 = Sys Id
+# $2 = single|multi
+ask_client()
+{
+   local id=$1 mode=$2
+   if [ "$mode" = "single" ]; then
+      $ECHO -e " Select a client among these existing ones:"
+      print_list_menu $(get_client_list $id) || return 1
+      client=$ITEM
+   else
+      $ECHO -e "Select client(s) among these existing ones:"
+      print_list_menu_multi $(get_client_list $id) || return 1
+      clientList=$ITEMS
+   fi
+}
+
+#--------------------------
+#   g e t _ a l l _ f s 
+#--------------------------
+# Returns all file systems for sysId. 
+# $1 = Sys Id
+# $2 = 'nosnap' (optional)
+get_all_fs()
+{
+   local id=$1 filter=$2
+   if [ "$filter" = "nosnap" ]; then
+      pl_list_fs|egrep "^${id}/"|strip_id|no_snap|sort -u
+   else
+      pl_list_fs|egrep "^${id}/"|strip_id|sort -u
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#--------------------
+#   n o _ s n a p 
+#--------------------
+# Removes any FS that is actually a snapshot.
+# Based on a naming convention, not querying NAS!
+# Real FS is: 
+#   1) No slash in name.
+#   2) Contains slash, but last dir is only numbers (00-99)
+# Reads stdin, and prints on stdout.
+no_snap()
+{
+   $AWK -F/ '/^[^\/]*$/{print}/\//&&$NF~/^[0-9][0-9]$/{print}'
+}
+
+#--------------------------
+#   s t r i p _ s n a p 
+#--------------------------
+# Same as above, but doesn't filters out totally, just strips the snapfix.
+strip_snap()
+{
+   $AWK -F/ 'BEGIN{OFS="/"}/\//&&$NF~/^[^0-9]/{$NF=""}{print}'|sed 's#/$##'
+}
+
+#--------------------------------
+#   g e t _ s n a p _ l i s t 
+#--------------------------------
+# Returns all snap names (postfix) in specified sysid.
+# $1 = Sys Id
+get_snap_list()
+{
+   local id=$1
+   pl_list_snapshots|egrep "^$id/"|$AWK '{print $1}'|sed 's#.*/##'|sort -u
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------
+#   g e t _ f s _ b y _ s n a p 
+#----------------------------------
+# Returns all FS with same snap name.
+# $1 = Sys Id
+# $2 = Snap postfix
+get_fs_by_snap()
+{
+   local id=$1 snapfix=$2
+   pl_list_snapshots|egrep "^$id/[^ ]*/$snapfix "|$AWK '{print $2}'|sort -u|strip_id
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------
+#   g e t _ a l l _ s h a r e s
+#----------------------------------
+# Returns all shares ('any') in specified sysid. (fs or fs/snap format)
+# $1 = Sys Id
+get_all_shares()
+{
+   local id client
+   id=$1 
+   client=$2
+   pl_list_shares $sysId | $AWK '$3==cl {print}' cl="$client" | $AWK '$2~/^'$sysId'\//{print $2}' | strip_id	
+   return ${PIPESTATUS[0]}
+}
+
+#------------------------------------
+#   g e t _ c l i e n t _ l i s t
+#------------------------------------
+# Returns all clients in specified sysid.
+# $1 = Sys Id
+get_client_list()
+{
+   local id=$1
+   list_clients $id|$AWK '{print $1}'|sort -u
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------------
+#   g e t _ c l u s t e r _ n o d e s
+#----------------------------------------
+# Returns all current cluster nodes, on stdout.
+get_cluster_nodes()
+{
+   local sys
+
+   if [ "$SYSTEM_TYPE" = "OSS" ]; then
+      for sys in $(iniget SYSTEM_DEFINITION -f $CLUSTER_INI)
+      do
+         iniget $sys -v systemname -f $CLUSTER_INI
+      done
+   else
+      hostname
+   fi
+}
+
+#------------------------------------------------------
+#   g e t _ a c t i v e _ c l u s t e r _ n o d e s 
+#------------------------------------------------------
+# Returns all active cluster nodes, on stdout.
+get_active_cluster_nodes()
+{
+   local sys myself=$(hostname)
+
+   for sys in $(get_cluster_nodes)
+   do
+      if [ "$sys" = "$myself" ]; then
+         $ECHO $sys
+      else
+         ping -c 2 $sys 5 >/dev/null 2>&1
+         [ $? -eq 0 ] && $ECHO $sys
+      fi
+   done
+   return 0
+}
+
+
+#------------------------------< Procedures >------------------------------
+
+#----------------------------
+#   c r e a t e _ p o o l 
+#----------------------------
+# $1 = Pool name
+# $2-n = Disks
+create_pool()
+{
+   local pool=$1 diskList="" allList usedList
+   header_2 Create Pool
+   [ "$CURR_USER" != "storadm" ] && $ECHO "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = "" ] && usage
+      shift
+      diskList="$*"
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n   Enter Pool name" || return 1
+      pool=$ANS
+
+      allList=$(pl_list_disks) || return $?
+      usedList=$(pl_list_pools raw|$AWK 'a==1&&$1!=""{$1="";print}/\=\=\=/{a=1}') || return $?
+      $ECHO -e " Select Disks:"
+      print_list_menu_multi $(list_minus allList usedList) || return 1
+      diskList="$ITEMS"
+   fi
+   MENU=y
+
+   cmd="pl_create_pool $pool $diskList"
+   do_cmd "ERROR: Failed to create pool!"
+}
+
+#----------------------------
+#   d e l e t e _ p o o l 
+#----------------------------
+# $1 = Pool name
+delete_pool()
+{
+   local pool=$1
+   header_2 Delete Pool
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] && usage
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask_pool || return 1
+   fi
+   MENU=y
+
+   cmd="pl_delete_pool $pool"
+   do_cmd "ERROR: Failed to delete pool!"
+}
+
+#------------------------
+#   c r e a t e _ f s 
+#------------------------
+# $1 = - | Sys Id
+# $2 = - | FS size (m|M|g|G|t|T) (eg 100g => 100GB)
+# $3 = - | Pool[,disk,...]
+# $4-n = - | FS name(s) (dash is wildcard, i.e. 'all' from storage.ini) (optional)
+create_fs()
+{
+   local sysId=$1 fsSize=$2 pool=$3 fsList fsSizeINI=n list
+   header_2 Create Filesystem
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$3" = ""  ] && usage create_fs
+      shift 3
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$pool" = "-" ]; then
+         pool=$(iniget Storage_NAS_GENERAL -v POOL_PRI)
+      fi
+      fsList="$*"
+      if [ "$fsList" = "-" -o "$fsList" = "" ]; then
+         fsList=$(get_ini_param FS_NAME)
+      fi
+      [ $(list_nr fsList) -gt 1 ] && fsSizeINI=y
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return $?
+      sysId=$ANS
+      ask "\n    Enter Filesystem name(s)" all || return $?
+      fsList=$ANS
+      if [ "$fsList" = "all" ]; then
+         fsList=$(get_ini_param FS_NAME)
+         $ECHO "   " $fsList
+      fi
+      if [ $(list_nr fsList) -gt 1 ]; then
+         fsSizeINI=y
+      else
+         ask_size $(get_ini_param FS_SIZE FS_NAME=$fsList) || return $?
+      fi
+      ask_pool $(iniget Storage_NAS_GENERAL -v POOL_PRI) || return $?
+   fi
+   verify_sysid $sysId || return $?
+
+   pl_start_optimize
+   list=$(get_all_fs $sysId nosnap) || return $?
+
+   for fsName in $fsList
+   do
+      [ "$(list_section list fsName)" != "" ] && $ECHO "    File system $fsName already exists." && continue
+
+      if [ "$fsSizeINI" = "y" ]; then
+         fsSize=$(get_ini_param FS_SIZE FS_NAME=$fsName)
+      fi
+      [ "$($ECHO $fsSize|egrep '^[0-9]*[mMgGtT]$')" = "" ] && $ECHO -e "ERROR: FS size incorrect: $fsSize!" && continue
+
+      cmd="pl_create_fs $sysId/$fsName $fsSize $pool"
+      do_cmd "ERROR: Failed to create filesystem!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#------------------------
+#   r e s i z e _ f s 
+#------------------------
+# Resize FS in NAS.
+# Will also update storage.ini with new FS size.
+# $1 = - | Sys Id
+# $2 = FS name
+# $3 = FS size (m|M|g|G|t|T) (eg 100g => 100GB)
+resize_fs()
+{
+   local sysId=$1 fsName=$2 fsSize=$3 stat block fsList host hostList
+   header_2 Resize Filesystem
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$3" = ""  ] && usage resize_fs
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n   Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_fs $sysId single || return 1
+      $ECHO -e "    Current size of $fsName:"
+      pl_list_fs raw|grep -w ${sysId}-${fsName} || return $?   # Note: knowledge of slash2dash...
+      ask_size || return 1
+   fi
+   verify_sysid $sysId || return 1
+
+   cmd="pl_resize_fs $sysId/$fsName $fsSize"
+   do_cmd "ERROR: Failed to resize filesystem!"
+   stat=$?
+
+   fsList=$(get_ini_param FS_NAME)
+   if [ $stat -eq 0 -a $(list_index fsList $fsName) -ne 0 ]; then
+      $ECHO "Updating storage.ini with new size $fsSize for $fsName"
+      block=$(get_ini_param BLOCKNAME FS_NAME=$fsName) || return $?
+      iniset $block FS_SIZE=$fsSize || return $?
+
+      if [ "$SYSTEM_TYPE" = "OSS" ]; then
+         # Update also Admin2 storage.ini
+         myself=$(hostname)
+         hostList=$(get_active_cluster_nodes)
+         for host in $(list_minus hostList myself)
+         do
+            $ECHO "Updating storage.ini on $host"
+            $ECHO copy-storage.ini $host>>$DO_AS_ROOT
+         done
+      fi
+   fi
+   MENU=y
+   return $stat
+}
+
+#------------------------
+#   d e l e t e _ f s 
+#------------------------
+# $1 = - | Sys Id
+# $2-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+delete_fs()
+{
+   local sysId=$1 fsList fsName 
+   header_2 Delete Filesystem
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] && usage delete_fs
+      shift
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      fsList=$(expand_id $*|sort -r)
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask " \n   Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_fs $sysId multi nosnap || return 1
+   fi
+   verify_sysid $sysId || return 1
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      cmd="pl_delete_fs $sysId/$fsName"
+      do_cmd "ERROR: Failed to delete filesystem!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+
+#------------------------------------
+#   c r e a t e _ s n a p s h o t 
+#------------------------------------
+# $1 = - | Sys id
+# $2 = - | 'optim' | 'full' Space-optimized or Full-Sized snapshot
+# $3 = - | Pool name
+# $4 = Snapshot postfix | 'sysid'/<sys-id> (eg 'sysid/oss1b') (latter only 'full')
+# $5-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+create_snapshot()
+{
+   local sysId=$1 type=$2 pool=$3 snapFix=$4 snapName fsList fsName fs
+   local typeINI=n snapList newSysId=""
+   header_2 Create Snapshot
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$pool" = "-" ]; then
+      pool=$(iniget Storage_NAS_GENERAL -v POOL_SEC)
+   fi
+
+   if [ "$MENU" = "n" ]; then
+      [ "$4" = ""  ] && usage create_snapshot
+      shift 4
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      # get all snaps, full names
+      list_snapshots $sysId >$TMP_FILE || return $?
+      snapList=$($AWK '{print $1}' $TMP_FILE)
+      fsList=$(expand_id $*)
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      snapList=$(list_snapshots $sysId|$AWK '{print $1}') || return $?  # get all snaps, full names
+      ask_fs $sysId multi nosnap || return 1
+      while :; do
+         ask "\n   Enter Snapshot Type ('-'|'o'ptim|'f'ull)" - || return 1
+         [ "$ANS" = "-" ] && type=- && break
+         [ "$ANS" = "o" ] && type=optim && break
+         [ "$ANS" = "f" ] && type=full && break
+      done
+      ask_pool $(iniget Storage_NAS_GENERAL -v POOL_SEC) || return 1
+      ask "\n    Enter Snapshot name (postfix)" || return 1
+      snapFix=$ANS
+   fi
+   verify_sysid $sysId || return 1
+
+   if [ "$($ECHO $snapFix|egrep '^sysid/')" != "" ]; then
+      newSysId=$(basename $snapFix)
+      type=full
+   else
+      if [ "$type" = "-" ]; then
+         typeINI=y
+      fi
+   fi
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      fs=$sysId/$fsName
+      if [ "$newSysId" != "" ]; then
+         snapName=$newSysId/$fsName
+      else
+         snapName=$fs/$snapFix
+      fi
+
+      if [ "$typeINI" = "y" ]; then
+         type=$(get_ini_param SNAP_TYPE FS_NAME=$fsName)
+      fi
+
+      if [ "$(list_section snapList snapName)" != "" ]; then
+         cmd="pl_refresh_snapshot $snapName $fs"
+         do_cmd "ERROR: Failed to refresh snapshot!" || return $?
+      else
+         cmd="pl_create_snapshot $type $pool $snapName $fs"
+         do_cmd "ERROR: Failed to create snapshot!" || return $?
+      fi
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#--------------------------------------
+#   r e f r e s h _ s n a p s h o t 
+#--------------------------------------
+# $1 = - | Sys id
+# $2 = Snapshot name (postfix) | 'sysid'/<sys-id>
+# $3-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+refresh_snapshot()
+{
+   local sysId=$1 snapFix=$2 fsList fsName fs newSysId=""
+   header_2 Refresh Snapshot
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage refresh_snapshot
+      shift 2
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$($ECHO $snapFix|egrep '^sysid/')" != "" ]; then
+         newSysId=$(basename $snapFix)
+      fi
+      fsList="$*"
+      if [ "$fsList" = "" -o "$fsList" = "-" ]; then
+         if [ "$newSysId" != "" ]; then
+            fsList=$(pl_list_snapshots|$AWK '{print $1}'|egrep "^$newSysId/"|strip_id) || return $?
+         else
+            $ECHO "    Refresh ALL file systems in $snapFix"
+            fsList=$(get_fs_by_snap $sysId $snapFix)
+         fi
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_snapshot $sysId || return 1
+      $ECHO -e "  Select (multiple) FS:s among these existing ones:\n"
+      print_list_menu_multi $(get_fs_by_snap $sysId $snapFix) || return 1
+      fsList=$ITEMS
+   fi
+   verify_sysid $sysId || return 1
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      fs=$sysId/$fsName
+      if [ "$newSysId" != "" ]; then
+         snapName=$newSysId/$fsName
+      else
+         snapName=$fs/$snapFix
+      fi
+
+      cmd="pl_refresh_snapshot $snapName $fs"
+      do_cmd "ERROR: Failed to refresh snapshot!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#----------------------------------------
+#   r o l l b a c k _ s n a p s h o t 
+#----------------------------------------
+# $1 = - | Sys id
+# $2 = Snapshot name (postfix) | 'sysid'/<sys-id>
+# $3-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+rollback_snapshot()
+{
+   local sysId=$1 snapFix=$2 fsList fsName fs newSysId=""
+   header_2 Rollback Snapshot
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage rollback_snapshot
+      shift 2
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$($ECHO $snapFix|egrep '^sysid/')" != "" ]; then
+         newSysId=$(basename $snapFix)
+      fi
+      fsList="$*"
+      if [ "$fsList" = "" -o "$fsList" = "-" ]; then
+         if [ "$newSysId" != "" ]; then
+            fsList=$(pl_list_snapshots|$AWK '{print $1}'|egrep "^$newSysId/"|strip_id) || return $?
+         else
+            $ECHO "    Rollback ALL file systems with $snapFix"
+            fsList=$(get_fs_by_snap $sysId $snapFix) || return $?
+         fi
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n   Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_snapshot $sysId || return 1
+      $ECHO "  Select (multiple) FS:s among these existing ones:"
+      print_list_menu_multi $(get_fs_by_snap $sysId $snapFix) || return 1
+      fsList=$ITEMS
+   fi
+   verify_sysid $sysId || return 1
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      fs=$sysId/$fsName
+      if [ "$newSysId" != "" ]; then
+         snapName=$newSysId/$fsName
+      else
+         snapName=$fs/$snapFix
+      fi
+
+      cmd="pl_rollback_snapshot $snapName $fs"
+      do_cmd "ERROR: Failed to rollback snapshot!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#----------------------------------
+#   s p l i t _ s n a p s h o t 
+#----------------------------------
+# $1 = - | Sys id  (Normally secondary) (dash means <sysid-a> => <sysid>b)
+# $3-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+split_snapshot()
+{
+   local sysId=$1 fsList fsName fs ab ba
+   header_2 Split Snapshot
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] && usage split_snapshot
+      shift
+      if [ "$sysId" = "-" ]; then
+         sysId=$(get_secondary_sysid $(iniget Storage_NAS_GENERAL -v SYS_ID))
+      fi
+      fsList="$*"
+      if [ "$fsList" = "" -o "$fsList" = "-" ]; then
+         fsList=$(pl_list_snapshots|$AWK '{print $1}'|egrep "^$sysId/"|strip_id) || return $?
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter Sys-Id postfix for snapshot" $(get_secondary_sysid $(iniget Storage_NAS_GENERAL -v SYS_ID)) || return 1
+      sysId=$ANS
+      ask_fs $sysId multi || return 1
+   fi
+   verify_sysid $sysId || return 1
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      fs=$sysId/$fsName
+
+      cmd="pl_split_snapshot $fs"
+      do_cmd "ERROR: Failed to split snapshot!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#------------------------------------
+#   d e l e t e _ s n a p s h o t 
+#------------------------------------
+# $1 = - | Sys id
+# $2 = - | Snapshot name (postfix) | 'sysid'/<sys-id>
+# $3-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+delete_snapshot()
+{
+   local sysId=$1 snapFix=$2 fsList fsName fs newSysId="" snapList
+   header_2 Delete Snapshot
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage delete_snapshot
+      shift 2
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$snapFix" = "-" ]; then
+         $ECHO "    Deleting ALL snapshots"
+      else
+         if [ "$($ECHO $snapFix|egrep '^sysid/')" != "" ]; then
+            newSysId=$(basename $snapFix)
+         fi
+         fsList="$*"
+         if [ "$fsList" = "" -o "$fsList" = "-" ]; then
+            if [ "$newSysId" != "" ]; then
+               fsList=$(pl_list_snapshots|$AWK '{print $1}'|egrep "^$newSysId/"|strip_id) || return $?
+            else
+               $ECHO "    Deleting snapshot $snapFix for ALL file systems"
+               fsList=$(get_fs_by_snap $sysId $snapFix) || return $?
+            fi
+         fi
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_snapshot $sysId - || return 1
+      if [ "$snapFix" = "-" ]; then
+         $ECHO "    Deleting ALL snapshots"
+      else
+         $ECHO -e "   Select (multiple) FS:s among these existing ones:\n"
+         print_list_menu_multi $(get_fs_by_snap $sysId $snapFix) || return 1
+         fsList=$ITEMS
+      fi
+   fi
+   verify_sysid $sysId || return 1
+
+   pl_start_optimize
+   if [ "$snapFix" = "-" ]; then
+      snapList=$(get_snap_list $sysId) || return $?
+      for snapFix in $snapList
+      do
+         fsList=$(get_fs_by_snap $sysId $snapFix) || return $?
+         for fsName in $fsList
+         do
+            fs=$sysId/$fsName
+            snapName=$fs/$snapFix
+      
+            cmd="pl_delete_snapshot $snapName $fs"
+            do_cmd "ERROR: Failed to delete snapshot!" || return $?
+         done
+      done
+   else
+      for fsName in $fsList
+      do
+         fs=$sysId/$fsName
+         if [ "$newSysId" != "" ]; then
+            snapName=$newSysId/$fsName
+         else
+            snapName=$fs/$snapFix
+         fi
+   
+         cmd="pl_delete_snapshot $snapName $fs"
+         do_cmd "ERROR: Failed to delete snapshot!" || return $?
+      done
+   fi
+   pl_stop_optimize
+   MENU=y
+}
+
+#------------------------------
+#   c r e a t e _ s h a r e 
+#------------------------------
+# $1 = - | Sys id
+# $2 = - | NFS options
+# $3-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+create_share()
+{
+   local sysId=$1 nfsOptions=$2 fsList fsName nfsOptionsINI=n list name
+   header_2 Create Share
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage create_share
+      shift 2
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      fsList="$*"
+      [ "$fsList" = "" -o "$fsList" = "-" ] && fsList=$(get_ini_param FS_NAME)
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_fs $sysId multi || return 1
+      ask "\n    Enter NFS options" -,rw,ro || return 1
+      nfsOptions=$ANS
+   fi
+   verify_sysid $sysId || return 1
+
+   [ "$nfsOptions" = "-" ] && nfsOptionsINI=y
+
+   pl_start_optimize
+   list=$(get_all_shares $sysId) || return $?
+
+   for fsName in $fsList
+   do
+      [ "$(list_section list fsName)" != "" ] && $ECHO "    Share ${fsName}:any already exists." && continue
+
+      if [ "$nfsOptionsINI" = "y" ]; then
+         name=$($ECHO $fsName|strip_snap) # If snap, take opt from main fs
+         nfsOptions=$(get_ini_param NFS_SHARE_OPTIONS FS_NAME=$name)
+         if [ "$nfsOptions" = "" ]; then
+            $ECHO -e "ERROR: Failed to get NFS_SHARE_OPTIONS for FS_NAME=$name" 
+            return 1
+         fi
+      fi
+
+      cmd="pl_create_share $sysId/$fsName $nfsOptions"
+      do_cmd "ERROR: Failed to create share!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#------------------------------
+#   d e l e t e _ s h a r e 
+#------------------------------
+# $1 = - | Sys id
+# $2 = - | client
+# $3-n = Fs names (optional)
+delete_share()
+{
+   local sysId clientList fsList fsName
+   sysId=$1 
+   clientList=$2
+   fsName=$3 
+   header_2 Delete Share
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] || [ "$2" = ""  ] || [ "$3" = "" ] && usage delete_share
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_share $sysId multi all || return 1
+      verify_sysid $sysId || return 1
+   fi
+
+   pl_start_optimize
+   if [ "$sysId" = "-" ]; then
+      sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+   else
+      sysId=$1
+   fi
+   if [ "$clientList" = "-" ]; then
+      clientList=$(get_client_list $sysId) || return $?
+   else
+      clientList=$2
+   fi
+   if [ "$fsName" = "-" ]; then
+      fsList=$(get_all_shares $sysId $clientList) || return $?
+   else
+      fsList=$3
+   fi
+
+    echo "FSLIST: $fsList"
+    echo "CLIENT LIST $clientList"
+
+   for fsName in $fsList
+   do
+     for client in $clientList
+     do
+      cmd="pl_delete_share $sysId/$fsName $client"
+      do_cmd "ERROR: Failed to delete share!" || return $?
+     done
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+
+#--------------------------
+#   a d d _ c l i e n t 
+#--------------------------
+# $1 = - | Sys id
+# $2 = Client
+# $3 = - | NFS options
+# $4-n = Fs names (optional)
+add_client()
+{
+   local sysId=$1 client=$2 nfsOptions=$3 fsList fsName nfsOptionsINI=n list name
+   header_2 Add Client
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$3" = ""  ] && usage add_client
+      shift 3
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      [ "$1" = "-" ] && shift
+      fsList="$*"
+      [ "$fsList" = "" ] && fsList=$(get_ini_param FS_NAME)
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask "\n    Enter Client name" || return 1
+      client=$ANS
+      ask_fs $sysId multi || return 1
+      ask "\n    Enter NFS options (or -, rw, ro)" || return 1
+      nfsOptions=$ANS
+   fi
+   verify_sysid $sysId || return 1
+
+   [ "$nfsOptions" = "-" ] && nfsOptionsINI=y
+
+   list=$(list_clients $sysId|$AWK -v c=$client '$1==c{print $2}'|strip_id|sort -u) || return $?
+
+   pl_start_optimize
+   for fsName in $fsList
+   do
+      [ "$(list_section list fsName)" != "" ] && $ECHO "    Share ${fsName}:$client already exists." && continue
+
+      if [ "$nfsOptionsINI" = "y" ]; then
+         name=$($ECHO $fsName|strip_snap) # If snap, take opt from main fs
+         nfsOptions=$(get_ini_param NFS_SHARE_OPTIONS FS_NAME=$name)
+         if [ "$nfsOptions" = "" ]; then
+            $ECHO "ERROR: Failed to get NFS_SHARE_OPTIONS for FS_NAME=$name)" 
+            return 1
+         fi
+      fi
+
+      cmd="pl_add_client $client $sysId/$fsName $nfsOptions"
+      do_cmd "ERROR: Failed to create client!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#--------------------------------
+#   d e l e t e _ c l i e n t 
+#--------------------------------
+# $1 = - | Client
+delete_client()
+{
+   local clientList client
+   clientList=$1
+   header_2 Delete Client
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage delete_client
+      shift 2
+      if [ "$clientList" = "-" ]; then
+         clientList=$(get_client_list $sysId) || return $?
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_client $sysId multi || return 1
+   fi
+
+   pl_start_optimize
+   for client in $clientList
+   do
+      cmd="pl_delete_client $client"
+      do_cmd "ERROR: Failed to delete client!" || return $?
+   done
+   pl_stop_optimize
+   MENU=y
+}
+
+#------------------------
+#   g e t _ s h a r e 
+#------------------------
+# get_share -|<sys_id> <fs_name>
+# $1 = - | Sys id
+# $2 = FS name
+get_share()
+{
+   local sysId=$1 fsName=$2
+
+   if [ "$MENU" = "n" ]; then
+      [ "$2" = ""  ] && usage get_share
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+   else
+      MENU=n	# Turn off for sub-proc-calls
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_share $sysId single || return 1
+   fi
+   MENU=y
+
+   cmd="pl_get_share $sysId/$fsName"
+   do_cmd "ERROR: Failed to get share!"
+}
+
+#------------------------------
+#   c r e a t e _ c a c h e 
+#------------------------------
+# Lets the Plugin create or prepare whatever is needed for snapshots.
+# Must be executed before first space-optimized snapshot to be taken.
+# Default size is: 20% of all FS size of type optim.
+# Default name is <sysid>-cache. Normally 1 cache per system.
+# $1 = - | Sys id
+# $2 = - | Size
+# $3 = - | Pool
+# $4 = - | Cache name (optional)
+create_cache()
+{
+   local sysId=$1 size=$2 pool=$3 name=$4 sizeStr s m type
+   header_2 Create Cache
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$3" = ""  ] && usage create_cache
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$size" = "-" ]; then
+         size=0
+         for fsName in $(get_ini_param FS_NAME)
+         do
+            type=$(get_ini_param SNAP_TYPE FS_NAME=$fsName)
+            sizeStr=$(get_ini_param FS_SIZE FS_NAME=$fsName|tr '[:upper:]' '[:lower:]')
+            s=$($ECHO $sizeStr|sed -e 's/^\([0-9]*\)[mgt]$/\1/')
+            mult=$($ECHO $sizeStr|sed -e 's/.*\([mgt]\)$/\1/' -e 's/m/1024/' -e 's/g/1048576/' -e 's/t/1073741824/')
+            let size+=$((s*mult))
+         done
+         let size=size/5/1024
+         size=${size}m
+      fi
+      if [ "$pool" = "-" ]; then
+         pool=$(iniget Storage_NAS_GENERAL -v POOL_SEC)
+      fi
+      if [ "$name" = "-" -o "$name" = "" ]; then
+         name=${sysId}-cache
+      fi
+   else
+      MENU=n
+      ask "\n    Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+
+      size=0
+      for fsName in $(get_ini_param FS_NAME)
+      do
+         type=$(get_ini_param SNAP_TYPE FS_NAME=$fsName)
+         sizeStr=$(get_ini_param FS_SIZE FS_NAME=$fsName|tr '[:upper:]' '[:lower:]')
+         s=$($ECHO $sizeStr|sed -e 's/^\([0-9]*\)[mgt]$/\1/')
+         mult=$($ECHO $sizeStr|sed -e 's/.*\([mgt]\)$/\1/' -e 's/m/1024/' -e 's/g/1048576/' -e 's/t/1073741824/')
+         let size+=$((s*mult))
+      done
+      let size=size/5/1024
+      size=${size}m
+      ask_size $size || return 1
+      size=$fsSize
+
+      ask_pool $(iniget Storage_NAS_GENERAL -v POOL_SEC) || return 1
+
+      ask "\n   Enter Cache name" ${sysId}-cache || return 1
+      name=$ANS
+   fi
+   verify_sysid $sysId || return 1
+   MENU=y
+
+   cmd="pl_create_cache $name $size $pool"
+   do_cmd "ERROR: Failed to create cache!"
+}
+
+#------------------------------
+#   d e l e t e _ c a c h e 
+#------------------------------
+# $1 = - | Sys id
+# $2 = - | Cache name (optional)
+delete_cache()
+{
+   local sysId=$1 name=$2
+   header_2 Delete Cache
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] && usage delete_cache
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      if [ "$name" = "-" -o "$name" = "" ]; then
+         name=${sysId}-cache
+      fi
+   else
+      MENU=n
+      ask "\n   Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask "\n   Enter Cache name" ${sysId}-cache || return 1
+      name=$ANS
+   fi
+   verify_sysid $sysId || return 1
+   MENU=y
+
+   cmd="pl_delete_cache $name"
+   do_cmd "ERROR: Failed to delete cache!"
+}
+
+#------------------
+#   d e f r a g 
+#------------------
+# Will run defragmantation of specified file systems (if Plugin has implemented it).
+# $1 = - | Sys Id
+# $2-n = - | FS name(s) (dash is wildcard, i.e. 'all' existing) (optional)
+defrag()
+{
+   local sysId=$1 fsList fsName
+   header_2 Defrag Filesystem
+   [ "$CURR_USER" != "storadm" ] && $ECHO -e "\007    Not Authorized" && return 1
+
+   if [ "$MENU" = "n" ]; then
+      [ "$1" = ""  ] && usage defrag
+      shift
+      if [ "$sysId" = "-" ]; then
+         sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+      fi
+      fsList=$(expand_id $*|sort -r)
+   else
+      MENU=n    # Turn off for sub-proc-calls
+      ask "\n   Enter System Identifier" $(iniget Storage_NAS_GENERAL -v SYS_ID) || return 1
+      sysId=$ANS
+      ask_fs $sysId multi nosnap || return 1
+   fi
+   verify_sysid $sysId || return 1
+
+#   pl_start_optimize
+   for fsName in $fsList
+   do
+      cmd="pl_defrag $sysId/$fsName"
+      do_cmd "ERROR: Failed to defrag filesystem!" || return $?
+   done
+#   pl_stop_optimize
+   MENU=y
+}
+
+#--------------------------
+#   l i s t _ c a c h e 
+#--------------------------
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List cache only for sysid.  (optional)
+list_cache()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_cache raw
+      else
+         if [ "$sysId" != "" ]; then
+            doo pl_list_cache|egrep "^${sysId}-"
+         else
+            doo pl_list_cache
+         fi
+      fi
+   else
+      header_2 List Cache
+      doo pl_list_cache raw
+   fi
+}
+
+#--------------------------
+#   l i s t _ d i s k s 
+#--------------------------
+# Gives a plain list of disks.
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List Disks only for sysid.  (optional)
+list_disks()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_disks raw
+      else
+         if [ "$sysId" != "" ]; then
+            fsList=$(pl_list_fs|egrep "^$sysId/") || return $?
+            $ECHO "Disks for Main File Systems\c"
+            list_disks_for_fs $($ECHO "$fsList"|egrep -v '/.*/') # no snaps
+
+            $ECHO "Disks for Snapshots\c"
+            list_disks_for_fs $($ECHO "$fsList"|egrep '/.*/') # only snaps
+         else
+            doo pl_list_disks
+         fi
+      fi
+   else
+      header_2 List Disks
+      doo pl_list_disks raw
+   fi
+}
+
+# Sub-proc for list_disks
+#----------------------------------------
+#   l i s t _ d i s k s _ f o r _ f s 
+#----------------------------------------
+# $1-n = FS names (sysid/fs/snap)
+list_disks_for_fs()
+{
+   local diskList="" fs disks
+
+   for fs in $*
+   do
+      $ECHO ".\c"
+      disks=$(pl_list_disks $fs) || return $?
+      diskList="$diskList $disks"
+   done
+   $ECHO ""
+   list_uniq diskList
+}
+
+#--------------------------
+#   l i s t _ p o o l s 
+#--------------------------
+# Gives a plain list of pools.
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List Pools only for sysid.  (optional)
+list_pools()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_pools raw
+      else
+         if [ "$sysId" != "" ]; then
+            fsList=$(pl_list_fs|egrep "^$sysId/") || return $?
+            $ECHO "Pools for Main File Systems\c"
+            list_pools_for_fs $($ECHO "$fsList"|egrep -v '/.*/') # no snaps
+
+            $ECHO "Pools for Snapshots\c"
+            list_pools_for_fs $($ECHO "$fsList"|egrep '/.*/') # only snaps
+         else
+            doo pl_list_pools
+         fi
+      fi
+   else
+      header_2 List Pools
+      doo pl_list_pools raw
+   fi
+}
+
+# Sub-proc for list_pools
+#----------------------------------------
+#   l i s t _ p o o l s _ f o r _ f s 
+#----------------------------------------
+# $1-n = FS names (sysid/fs/snap)
+list_pools_for_fs()
+{
+   local plList="" fs pools
+
+   for fs in $*
+   do
+      $ECHO ".\c"
+      pools=$(pl_list_pools $fs) || return $?
+      plList="$plList $pools"
+   done
+   $ECHO ""
+   list_uniq plList
+}
+
+#--------------------
+#   l i s t _ f s 
+#--------------------
+# Gives a plain list of file systems. (sysid/fs[/snap])
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List FS only for sysid.  (optional)
+list_fs()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_fs raw
+      else
+         if [ "$sysId" != "" ]; then
+            doo pl_list_fs|egrep "^$sysId/"
+         else
+            doo pl_list_fs
+         fi
+      fi
+   else
+      header_2 List Filesystems
+      doo pl_list_fs raw
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------
+#   l i s t _ s n a p s h o t s 
+#----------------------------------
+# Gives a plain list as: <snap> <fs>
+# $1 = - | Sys Id. List snaps only for sysid. (optional)
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = 'usage' Returns data used for snapshot, in KB. (optional)
+# $2 = Snapshot name. For 'usage'. (optional)
+list_snapshots()
+{
+   local sysId 
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         doo pl_list_snapshots raw
+      elif [ "$1" = "usage" ]; then
+         doo pl_list_snapshots usage $2
+      else
+         if [ "$1" != "" ]; then
+            sysId=$1
+            if [ "$sysId" = "-" ]; then
+               sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+            fi
+            doo pl_list_snapshots|egrep "^$sysId/"
+         else
+            doo pl_list_snapshots
+         fi
+      fi
+   else
+      header_2 List Snapshots
+      doo pl_list_snapshots raw
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------
+#   l i s t _ s h a r e s 
+#----------------------------
+# Gives a plain list of shares. (<share-path> <fs> <any|client>)
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List shares only for sysid. (optional)
+list_shares()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_shares raw
+      else
+         if [ "$sysId" != "" ]; then
+            doo pl_list_shares|$AWK '$2~/^'$sysId'\//{print}'
+         else
+            doo pl_list_shares
+         fi
+      fi
+   else
+      header_2 List Shares
+      doo pl_list_shares raw
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#------------------------------
+#   l i s t _ c l i e n t s 
+#------------------------------
+# Gives a plain list of clients.
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List clients only for sysid. (optional)
+list_clients()
+{
+   local type="" sysId=""
+
+   if [ "$MENU" = "n" ]; then
+      if [ "$1" = "raw" ]; then
+         type=raw
+         shift
+      fi
+      if [ "$1" != "" ]; then
+         sysId=$1
+         shift
+         if [ "$sysId" = "-" ]; then
+            sysId=$(iniget Storage_NAS_GENERAL -v SYS_ID)
+         fi
+      fi
+      if [ "$type" = "raw" ]; then
+         doo pl_list_clients raw
+      else
+         if [ "$sysId" != "" ]; then
+            list_shares $sysId|$AWK '$3!="any"{print $3,$2}'
+         else
+            doo pl_list_clients
+         fi
+      fi
+   else
+      header_2 List Clients
+      doo pl_list_clients raw
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------
+#   l i s t _ a l l 
+#----------------------
+# $1 = 'raw' Gives raw native output (optional)
+# $1 = - | Sys Id. List objects only for sysid. (optional)
+list_all()
+{
+   local opt=$1 myId=$(iniget Storage_NAS_GENERAL -v SYS_ID) menu=$MENU
+
+   if [ "$MENU" = "y" ]; then
+      header_1 "List Objects"
+      ask_yn "\n    List objects in raw native format" n
+      if [ "$YESNO" = "y" ]; then
+         opt=raw
+      else
+         ask_yn "\n    List objects for All Systems" n
+         if [ "$YESNO" = "y" ]; then
+            opt=""
+         else
+            ask_yn "\n    List objects for my system ($myId)" y
+            if [ "$YESNO" = "y" ]; then
+               opt=$myId
+            else
+               ask "\n    Enter System Id"
+               opt=$ANS
+            fi
+         fi
+      fi
+   fi
+
+   if [ "$opt" != "" -a "$opt" != "raw" ]; then
+      if [ "$opt" = "-" ]; then
+         opt=$myId
+      fi
+      header_1 "List Objects for System $opt"
+   fi
+
+   MENU=n
+   header_2 File Systems
+   list_fs $opt || return $?
+   header_2 Snapshots
+   list_snapshots $opt || return $?
+   header_2 Snapshots Cache
+   list_cache $opt || return $?
+   header_2 Shares
+   list_shares $opt || return $?
+   header_2 Clients
+   list_clients $opt || return $?
+   header_2 Pools
+   list_pools $opt || return $?
+   header_2 Disks
+   list_disks $opt || return $?
+   MENU=$menu
+}
+
+#------------------------------
+#   p r i n t _ s t a t u s 
+#------------------------------
+print_status()
+{
+   header_1 "Print Status"
+
+   $ECHO "    API version:" $version
+
+   pl_print_status version status coarse || return 1
+
+   ask_yn "\n    Display more details " n
+   [ "$YESNO" = "n" ] && return 0
+
+   pl_print_status detail 
+
+   return $?
+}
+
+#--------------------------------< Menus >---------------------------------
+
+#--------------------------
+#   p r i n t _ m e n u
+#--------------------------
+print_menu()
+{
+   local v="ver: $version"
+
+   (
+$ECHO -e "\007
+|=----------------------------------------------------------------------=|
+|                    STORAGE MANAGER API - NAS TOOL                      |
+|=----------------------------------------------------------------------=|
+|                                                                        |
+|   lf,ls,lh,lc             List FS, Snaps, Shares, Clients              |
+|   ld,lp,le,la             List Disks, Pools, Cache, ALL                |
+|                                                                        |
+|   cf  Create Filesystem                                                |
+|   cs  Create Snapshot                                                  |
+|   ch  Create Share                                                     |
+|   ac  Add Client                                                       |
+|   ce  Create Cache                                                     |
+|   cp  Create Pool                                                      |
+|                                                                        |
+|   rf  Resize Filesystem                                                |
+|   dg  Defrag Filesystem                                                |
+|   fs  Refresh Snapshot                                                 |
+|   rs  Rollback Snapshot                                                |
+|   gh  Get Share                                                        |
+|                                                                        |
+|   df  Delete Filesystem                                                |
+|   ds  Delete Snapshot                                                  |
+|   dh  Delete Share                                                     |
+|   dc  Delete Client                                                    |
+|   de  Delete Cache                                                     |
+|   dp  Delete Pool                                                      |
+|                                                                        |
+|   st  Status                                                           |
+|                                                                        |
+|=----------------------------------------------------------------------=|
+|   COMMAND GUIDE                                           Ericsson /// |
+|   2-chars for option                                                   |"
+printf "|   q      Quit                                   %22s |\n" "$v"
+$ECHO "|=----------------------------------------------------------------------=|"
+
+   $ECHO
+   )|p_more
+   ask "     Enter selection"
+   OPT="$($ECHO $ANS | sed -e 's/,/ /g' | tr -s ' ' '\n')"
+   $ECHO
+}
+
+#------------------
+#   d o _ o p t
+#------------------
+do_opt()
+{
+   local cmd=$1
+   [ "$cmd" = "" ] && return
+   shift
+
+   case $cmd in
+      ld|LD) proc=list_disks ;;
+      lp|LP) proc=list_pools ;;
+      lf|LF) proc=list_fs ;;
+      ls|LS) proc=list_snapshots ;;
+      lh|LH) proc=list_shares ;;
+      lc|LC) proc=list_clients ;;
+      le|LE) proc=list_cache ;;
+      la|LA) proc=list_all ;;
+
+      cp|CP) proc=create_pool ;;
+      cf|CF) proc=create_fs ;;
+      cs|CS) proc=create_snapshot ;;
+      ch|CH) proc=create_share ;;
+      ac|AC) proc=add_client ;;
+      ce|CE) proc=create_cache ;;
+
+      rf|RF) proc=resize_fs ;;
+      dg|DG) proc=defrag ;;
+      gh|GH) proc=get_share ;;
+      fs|FS) proc=refresh_snapshot ;;
+      rs|RS) proc=rollback_snapshot ;;
+
+      dp|DP) proc=delete_pool ;;
+      df|DF) proc=delete_fs ;;
+      ds|DS) proc=delete_snapshot ;;
+      dh|DH) proc=delete_share ;;
+      dc|DC) proc=delete_client ;;
+      de|DE) proc=delete_cache ;;
+
+      st|ST) proc=print_status ;;
+
+      q|Q) $ECHO "Bye"; p_exit 0 ;;
+      *) proc=$cmd ;;
+   esac
+   $proc $*
+}
+
+
+#--------------------------< Startup procedures >--------------------------
+
+#----------------------------------------
+#   c h e c k _ n o t _ r u n n i n g
+#----------------------------------------
+check_not_running()
+{
+   local pList pidList pid pText files
+ 
+   #pList="$(/usr/bin/pstree $$|$AWK '{print $1}')"
+   pList="$(/usr/bin/pstree $PPID | $AWK '{print $1}')"
+   pidList=$(pgrep $SCRIPT_NAME)
+   pidList=$(list_minus pidList pList)
+   if [ "$pidList" != "" ]; then
+      $ECHO -e "\007    WARNING: There is another $SCRIPT_NAME running!"
+      /usr/bin/pstree $pidList
+      ask_yn "\n    Do you really want to continue" n
+      [ "$YESNO" = "n" ] && return 1
+   fi
+   return 0
+}    
+ 
+#----------------------------------------
+#   s e t u p _ s t o r a g e _ i n i 
+#----------------------------------------
+# Proc resize_fs() needs write perm on INI file.
+# This setup has to be done as 'root'.
+setup_storage_ini()
+{
+   SYSTEM_TYPE=OSS
+   [ -d /eniq ] && SYSTEM_TYPE=ENIQ
+
+   if [ "$1" = "-f" ]; then
+      STORAGE_INI=$2
+   else
+      STORAGE_INI=/ericsson/config/storage.ini
+      [ "$SYSTEM_TYPE" = "ENIQ" ] && STORAGE_INI=/eniq/installation/config/storage.ini
+   fi
+   if [ "$CURR_USER" = "root" ]; then
+      $CHGRP storage $STORAGE_INI
+      $CHMOD g+w $STORAGE_INI
+   fi
+
+   if [ "$SYSTEM_TYPE" = "OSS" ]; then
+      CLUSTER_INI=/ericsson/config/cluster.ini
+   fi
+}
+
+#----------------
+#   s e t u p 
+#----------------
+# Do some basic setup, also for cdrom mode.
+# Called by main
+setup()
+{
+   local tmp
+
+   HWTYPE=$(uname -p)
+   TMP_FILE=/tmp/nas_tmp.$$
+   DO_AS_ROOT=/var/tmp/.nascli_do
+   HA_PATH=/opt/VRTSvcs/bin
+
+   CONFIG=$SCRIPT_HOME/etc/nascli.conf
+   [ ! -f $CONFIG ] && doo cp ${CONFIG}_template $CONFIG
+   [ -f $CONFIG ] && . $CONFIG
+}
+
+#--------------------------------
+#   c h e c k _ s t a r t u p 
+#--------------------------------
+# These checks are done when called without params, i.e. interactive.
+# They are not preformed when called silently from a another script.
+# I.e. checks that are :
+#   - resource consuming 
+#   - verbose
+#   - interactive with the user
+check_startup()
+{
+   # Do checks for the main API
+
+   # Do checks for the plugin
+   pl_check_startup || p_exit $?
+}
+
+#--------------------
+#   c l e a n u p
+#--------------------
+# Called when interrupted
+# $1 = Exit code (optional)
+cleanup()
+{
+   local exitCode=${1:-0} pids out 
+
+   # must be "hardcoded" here
+   TMP_FILE=/tmp/nas_tmp.$$
+   EXIT_FILE=/tmp/nas_exit.$$
+
+   if [ -f $EXIT_FILE ]; then
+      exitCode=$($CAT $EXIT_FILE)
+   fi
+
+   # Remove used files
+   rm $TMP_FILE $EXIT_FILE 2>/dev/null
+
+#   # Kill some sleep, but not any '9' sec!
+#   pids=$(pstree $$|$AWK '/'$SCRIPT_NAME'/{a=1}$2=="sleep"&&$3!="9"&&a==1{print $1}')
+#
+#   # Kill the tee, but only mine!
+#   pids="$pids $(pstree $$|$AWK '/'$SCRIPT_NAME'/{a=1}$2=="tee"&&a==1{print $1}')"
+#
+#   for pid in $pids
+#   do
+#      kill -HUP $pid >/dev/null 2>&1
+#      kill $pid >/dev/null 2>&1
+#   done
+
+   [ "$exitCode" = "" ] && exitCode=-1
+   [ "$exitCode" != "0" ] && trap '' EXIT
+   setup
+   for script in $SCRIPT_PLUGIN_LIST
+	do
+	  [ "$(echo $script|egrep '^/')" = "" ] && script="${SCRIPT_HOME}/$script"
+	  . $script
+	done
+   pl_cleanup
+
+   exit $exitCode
+}
+
+tst()
+{
+:
+}
+
+#----------------
+#   u s a g e
+#----------------
+usage()
+{
+   local filter=${1:-.}
+
+   $ECHO "
+Usage: $SCRIPT_NAME [<flags>] <procedure> [<params>]
+  
+ Where <flags>:
+   -s    : Silent (no questions)
+   -help : This output
+   -menu : Interactive Menus
+   -m <procedure> : Interactive, as via the menu
+   -f <.INI-file> : Specify other storage.ini, full path
+  
+ Where <procedure> [<params>]:
+   create_fs -|<sys_id> -|<size> -|<pool>[,disk,..] -|[<fs_name> ...]
+   resize_fs -|<sys_id> <fs_name> <new_size>
+   delete_fs -|<sys_id> -|[<fs_name> ...]
+   create_snapshot -|<sys_id> -|<optim>|<full> -|<pool> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   refresh_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   rollback_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   split_snapshot -|<sys_id-b> -|[<fs_name> ...]
+   delete_snapshot -|<sys_id> -|<snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   add_client -|<sys_id> <client> -|<nfsoptions> -|[<fs_name> ...]
+   delete_client -|<client>
+   create_share -|<sys_id> -|<nfsoptions> -|[<fs_name> ...]
+   delete_share -|<sys_id>  -|<client> -|[<fs_name> ...]
+   get_share -|<sys_id> <fs_name>
+   create_cache -|<sys_id> -|<size> -|<pool> -|[<cache_name>]
+   delete_cache -|<sys_id> -|[<cache_name>]
+   defrag -|<sys_id> -|[<fs_name> ...]
+   list_fs [raw]|[-|<sys_id>]
+   list_snapshots [raw]|[-|<sys_id>]|[usage <full_snap_name>]
+   list_shares [raw]|[-|<sys_id>]
+   list_clients [raw]|[-|<sys_id>]
+   list_cache [raw]|[-|<sys_id>]
+   list_all [raw]|[-|<sys_id>]
+"|grep $filter
+
+   p_exit 1
+}
+
+
+#---------------------------------< MAIN >---------------------------------
+
+#--------------
+#   M A I N 
+#--------------
+main()
+{
+   SILENT=n
+   [ "$1" = "-s" ] && SILENT=y && shift
+   MENU=n
+   [ "$1" = "-m" ] && MENU=y && shift
+
+   setup
+
+   # Configure SCRIPT_PLUGIN_LIST in file $CONFIG
+   # If starting with '/', full path is used.
+   # If starting with non-'/', $SCRIPT_HOME is added.
+   # Default is plugins/default/lib/nasplugin
+   for script in $SCRIPT_PLUGIN_LIST
+   do
+      [ "$(echo $script|egrep '^/')" = "" ] && script="${SCRIPT_HOME}/$script"
+      . $script
+   done
+
+   tst
+
+   if [ "$1" = "" -o "$1" = "-help" -o "$1" = "help" ]; then
+      usage
+   elif [ "$1" = "-menu" -o "$1" = "menu" ]; then
+      check_startup
+      if [ -t 0 -a "$SILENT" != "y" ]; then
+         while :; do
+            MENU=y
+            print_menu
+            do_opt $OPT
+         done
+      fi
+   else
+      MENU=${MENU:-n}
+      do_opt $* || p_exit $?
+   fi
+}
+
+#--------------------
+#   r o o t _ b g 
+#--------------------
+# Stays in the bg, and runs as root (if started by root).
+# If anything needs to be done as root, this proc will take care of that.
+# Communicates via a file.
+# Dies when main proc exits.
+# $1 = PID of parent
+root_bg()
+{
+   local pid=$1 stat
+   DO_AS_ROOT=/var/tmp/.nascli_do
+
+   [ "$SYSTEM_TYPE" != "OSS" ] && return 0
+   [ "$1" = "" ] && return 1
+
+   while :; do
+      if [ -f $DO_AS_ROOT ]; then # Perform the commands in that file as root
+         $CAT $DO_AS_ROOT | while read cmd args
+         do
+            stat=0
+            case $cmd in 
+               copy-storage.ini) 
+                  log $SCP $STORAGE_INI ${args}:$STORAGE_INI
+                  $SCP -q $STORAGE_INI ${args}:$STORAGE_INI
+                  stat=$?
+                  [ $stat -ne 0 ] && log "ERROR: Failed performing $cmd!"
+                  ;;
+            esac
+            if [ $stat -eq 0 ]; then # If went ok, then remove line from file
+               p_edit $DO_AS_ROOT "/^${cmd} ${args}/d"
+            fi
+         done
+         [ $(cat $DO_AS_ROOT 2>/dev/null|wc -l) -eq 0 ] && doo $RM $DO_AS_ROOT
+      fi
+
+      $PTREE $1 >/dev/null 2>&1
+      [ $? -ne 0 ] && break
+
+      sleep 1
+   done
+   return 0
+}
+
+#---------------------------------< START >--------------------------------
+
+set -a
+set -o pipefail
+
+EXIT_FILE=/tmp/nas_exit.$$
+SCRIPT_NAME=$(basename $0)
+cd $(dirname $0)
+SCRIPT_HOME=$(dirname $(/usr/bin/pwd))
+SCREEN_LOG=$SCRIPT_HOME/log/nas_screen_$(date +'%y%m%d').log
+CMD_LOG=$SCRIPT_HOME/log/nas_cmd_$(date +'%y%m%d').log
+CURR_USER=$(/usr/bin/whoami)
+
+setup_storage_ini $*
+
+if [ "$CURR_USER" = "root" ]; then
+   root_bg $$ </dev/null >/dev/null 2>&1 & # Nothing will be seen, but some msg to cmd.log
+   exec su storadm -c "$0 $*"
+elif [ "$CURR_USER" != "storadm" -a "$CURR_USER" != "storobs" ]; then
+   exit 2
+fi
+
+[ "$1" = "-f" ] && shift 2
+
+if [ ! -d $SCRIPT_HOME/log ]; then
+   mkdir -p $SCRIPT_HOME/log
+   $CHMOD 775 $SCRIPT_HOME/log
+fi
+touch $SCREEN_LOG $CMD_LOG
+[ -h $SCRIPT_HOME/log/nas_screen.log ] && rm $SCRIPT_HOME/log/nas_screen.log
+[ -h $SCRIPT_HOME/log/nas_cmd.log ] && rm $SCRIPT_HOME/log/nas_cmd.log
+ln -s $SCREEN_LOG $SCRIPT_HOME/log/nas_screen.log
+ln -s $CMD_LOG $SCRIPT_HOME/log/nas_cmd.log
+
+$CHMOD 664 $SCRIPT_HOME/log/nas_screen.log $SCRIPT_HOME/log/nas_cmd.log 2>/dev/null
+
+if [ "$1" = "" ]; then
+   check_not_running || exit 1
+fi
+
+# Save stdin, stdout and stderr (do not change fd 3, 4 and 5!)
+exec 3>&0
+exec 4>&1
+exec 5>&2
+
+# Trap interrupts
+trap '' HUP			# Ignore hangup
+trap 'cleanup' INT QUIT TERM	# Exit clean on ctrl-C
+trap 'cleanup 0' EXIT		# Also on exit
+
+main $* 2>&1 | tee -a $SCREEN_LOG
+
+exit 0

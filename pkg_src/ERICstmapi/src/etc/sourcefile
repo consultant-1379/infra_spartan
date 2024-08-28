@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+##
+export SAPASSWD='change1me'

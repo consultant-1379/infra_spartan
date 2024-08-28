@@ -1,0 +1,802 @@
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : linux.cfg.template
+# Date    : 27/02/2019
+# Revision: A.1
+# Purpose : This is the generic modular kickstart template used by
+#           manage_linux_dhcp_clients.bsh to cater for build of all
+#           kickstart files, irrespective of application type or
+#           versions of any software.
+#
+# Usage   : Used directly by manage_linux_dhcp_clients.bsh
+#
+# ********************************************************************
+
+# Install OS instead of upgrade
+install
+
+# Use network installation
+nfs --server=<CHANGE><KICK_SERV_IP> --dir=<CHANGE><CLIENT_KICK_LOC>
+
+# Use text mode install
+text
+
+#Root password
+#rootpw --iscrypted $1$u3kzwYvK$lVSxOaiElLsRmkdHI/vzA/
+rootpw --iscrypted $6$rqDISpVr$Xh74lVhoFpx1DjdoZ171hua.s0hw/RPm4QUYObLrEDf8AsycokmcLYdkRelf2.M6XLN7vgdK8v30W8.aQ/0Kr.
+auth  --useshadow  --passalgo=sha512
+
+# System keyboard
+keyboard uk
+
+# System language
+lang C
+
+# System timezone
+timezone <CHANGE><CLIENT_TZ>
+
+# Do not configure the X Window System
+skipx
+
+# Set the Logging Level
+logging --level=info
+
+# Reboot after installation
+reboot 
+
+# System bootloader configuration
+bootloader --location=mbr
+
+#Firewall configuration
+#%include /tmp/firewall.inc
+firewall --disabled
+
+#Security configuration
+#%include /tmp/security.inc
+selinux --enforcing
+
+# Network info
+#%include /tmp/network.inc
+network --noipv6  --bootproto=static --gateway=<CHANGE><CLIENT_GATEWAY> --ip=<CHANGE><CLIENT_IP_ADDR> --nameserver=<CHANGE><CLIENT_DNSSERVER> --netmask=<CHANGE><CLIENT_NETMASK> --device=<CHANGE><CLIENT_MAC_ADDR> --activate --hostname=<CHANGE><CLIENT_HOSTNAME>
+
+# Partition info
+%include /tmp/part.inc
+
+# Services info
+#%include /tmp/services.inc
+services --disable NetworkManager --enable network
+
+#%include /tmp/repo2include
+
+%packages --ignoremissing
+@Core
+@server-policy
+@Network file system client
+@ftp-server
+bind
+bind-utils
+device-mapper-multipath
+device-mapper-multipath-libs
+dos2unix.x86_64
+emacs
+glibc-*.i686
+nss-softokn-freebl-*.i686
+isomd5sum.x86_64
+libaio
+lsof
+ltrace
+libsss_autofs.x86_64
+net-tools
+net-snmp
+nfs-utils
+ntp
+kernel-devel
+openssh-clients
+expect
+pexpect
+policycoreutils-python
+perl
+perl-Data-Dumper
+psmisc.x86_64
+python-paramiko
+rsync
+screen
+strace
+sysstat
+sysfsutils
+tcpdump
+traceroute
+unzip
+vim-common
+vim-enhanced
+wget
+xinetd
+yum-utils
+zip
+%include /tmp/packages2include
+%end
+
+%pre --log=/tmp/ks-pre.log
+
+vgremove -f vg_root >> /dev/null 2>&1
+
+# Create tmp directories, mount media from mws, source kickstart settings and parameters
+mkdir /tmp/eric_mnt
+mount -o nolock <CHANGE><KICK_SERV_IP>:<CHANGE><CLIENT_KICK_LOC> /tmp/eric_mnt
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_installation_param_details /tmp/params.cfg
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_ks_cfg.txt /tmp/kick_params.cfg
+
+sed 's/rmirr/mirr_req=Y/g; s/list_disks/list_hw=Y/g; s/choose_disks/choose_hw=Y/g; s/label_disks/label_disks=Y/g' /tmp/params.cfg > /tmp/params.cfg.new
+
+mv /tmp/params.cfg /tmp/params.cfg_old
+mv /tmp/params.cfg.new /tmp/params.cfg
+touch /tmp/packages2include
+source /tmp/params.cfg
+source /tmp/kick_params.cfg
+
+
+##################################################################
+# The following section of code is an eniq/cep/cpt specific inclusion
+# to allow them to reuse the existing eniq events media
+# It will have no effect on any other application type
+if [ "${CLIENT_APPL_TYPE}" == "eniq_stats" ] ; then
+    sed 's/inst_type=eniq/inst_type=eniq_linux/' /tmp/params.cfg > /tmp/params.cfg.new
+
+        sed -r 's/CLIENT_APPL_TYPE=eniq_events|CLIENT_APPL_TYPE=eniq_stats/CLIENT_APPL_TYPE=eniq_base_sw/' /tmp/kick_params.cfg > /tmp/kick_params.cfg.new
+        mv /tmp/params.cfg.new /tmp/params.cfg
+        mv /tmp/kick_params.cfg.new /tmp/kick_params.cfg
+fi
+source /tmp/kick_params.cfg
+
+# End of eniq/cep/cpt specific code
+
+if [ "${CLIENT_APPL_TYPE}" != "rhelonly" ]; then
+
+        mkdir /tmp/APP
+        mount -o nolock <CHANGE><KICK_SERV_IP>:<CHANGE><CLIENT_APPL_MEDIA_LOC> /tmp/APP
+        echo "%include /tmp/APP/eniq_base_sw/eniq_sw/packages.inc" >> /tmp/packages2include
+
+fi
+
+#################################################################
+
+# Now we build the partition information
+# If list_hw=Y has been specified, then list the drive and abort
+if [ "${list_hw}" == "Y" ] ; then
+    if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+        chvt 6
+        exec < /dev/tty6 > /dev/tty6
+    else
+        exec < /dev/pts/0 > /dev/pts/0
+    fi
+        echo -e "\n\n\nThere are the disks attached to the system:"
+        list-harddrives
+    echo -e "################################################################"
+    echo -e "#                   The Build will now abort                   #"
+    echo -e "#                                                              #"
+    echo -e "# To proceed, you now need to remove the client configuration  #"
+    echo -e "#       Then re-add it with the appropriate parameters.        #"
+    echo -e "#                                                              #"
+    echo -e "# Then PXE boot the client again and the build will recommence #"
+    echo -e "################################################################"
+
+        while true ; do
+                sleep 30
+        done
+        exit
+fi
+
+mirror_req="N"
+set $(list-harddrives)
+let numd=$#
+   if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+        chvt 6
+        exec < /dev/tty6 > /dev/tty6
+        else
+        exec < /dev/console > /dev/console
+    fi
+
+if [ "${choose_hw}" == "Y" -o "${choose_hw}" == "y" -a ${numd} -ge 2 ] ; then
+    if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+        chvt 6
+        exec < /dev/tty6 > /dev/tty6
+        else
+        exec < /dev/pts/0 > /dev/pts/0
+    fi
+    echo -e "\nThese are the disks attached to the system[diskname size(MB)]:"
+        list-harddrives
+        echo "Type the name of the root disk you want to use"
+    read rdisk
+    rootline=`list-harddrives | grep ${rdisk}`
+    if [ $? != 0 ] ; then
+        echo -e "##################################################################"
+        echo -e "#            Invalid Drive Entered - Build Aborting              #"
+        echo -e "#                                                                #"
+        echo -e "# PXE boot the client again and specify a valid disk combination #"
+        echo -e "##################################################################"
+        while true ; do
+                sleep 30
+        done
+        exit
+    fi
+
+    set ${rootline}
+    rsize=$2
+    rfsize=$((${rsize%.*}))
+
+    if [ ${rfsize} -ge 2048000 ]; then
+        echo -e "##################################################################"
+        echo -e "#            Invalid Drive Entered - Build Aborting              #"
+	echo -e "#              Choose the disk with less than 2TB                #"
+        echo -e "#                                                                #"
+        echo -e "# PXE boot the client again and specify a valid disk combination #"
+        echo -e "##################################################################"
+        while true ; do
+                sleep 30
+        done
+        exit
+    fi
+
+    if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+        chvt 1
+        exec < /dev/tty1 > /dev/tty1
+    fi
+
+elif [ "${mirr_req}" == "Y" ] ; then
+
+    if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+        chvt 6
+        exec < /dev/tty6 > /dev/tty6
+    else
+        exec < /dev/pts/0 > /dev/pts/0
+    fi
+
+    if [ "${rdisk}" -a "${mdisk}" ] ; then
+            rootline=`list-harddrives | grep ${rdisk}`
+            if [ $? != 0 ] ; then
+                echo -e "##################################################################"
+                echo -e "#    Invalid rdisk (${rdisk}) Drive Entered - Build Aborting     #"
+                echo -e "#                                                                #"
+                echo -e "# PXE boot the client again and specify a valid disk combination #"
+                echo -e "##################################################################"
+                while true ; do
+                    sleep 30
+                done
+                exit
+            fi
+            set ${rootline}
+            rsize=$2
+            mirrorline=`list-harddrives | grep ${mdisk}`
+            if [ $? != 0 ] ; then
+                echo -e "##################################################################"
+                echo -e "#    Invalid mdisk (${mdisk}) Drive Entered - Build Aborting     #"
+                echo -e "#                                                                #"
+                echo -e "# PXE boot the client again and specify a valid disk combination #"
+                echo -e "##################################################################"
+                while true ; do
+                                        sleep 30
+                done
+                exit
+            fi
+            set ${mirrorline}
+            msize=$2
+
+            if [ "${rsize}" != "${msize}" ] ; then
+                if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+                    chvt 6
+                    exec < /dev/tty6 > /dev/tty6
+                else
+                    exec < /dev/pts/0 > /dev/pts/0
+                fi
+                echo -e "##################################################################"
+                echo -e "#            Root disk and the Root Mirror Disk                  #"
+                echo -e "#                  Must be the same size                         #"
+                echo -e "#                                                                #"
+                echo -e "#                    The Build will now abort                    #"
+                echo -e "#                                                                #"
+                echo -e "# PXE boot the client again and specify a valid disk combination #"
+                echo -e "##################################################################"
+                while true ; do
+                    sleep 30
+                done
+                exit
+            fi
+
+        mirror_req="Y"
+   else
+        set $(list-harddrives)
+        let numd=$#
+        rdisk=$1
+        rsize=$2
+        mdisk=$3
+        msize=$4
+        if [ "${rsize}" != "${msize}" ] ; then
+                echo -e "##################################################################"
+                echo -e "#            Root disk and the Root Mirror Disk                  #"
+                echo -e "#                  Must be the same size                         #"
+                echo -e "#                                                                #"
+                echo -e "#                    The Build will now abort                    #"
+                echo -e "#                                                                #"
+                echo -e "# PXE boot the client again and specify a valid disk combination #"
+                echo -e "##################################################################"
+                while true ; do
+                       sleep 30
+                done
+                exit
+         fi
+        if [ "${rsize}" == "${msize}" ] ; then
+         mirror_req="Y"
+        fi
+   fi
+
+elif [ ${rdisk} ] ; then
+    rootline=`list-harddrives | grep ${rdisk}`
+    set ${rootline}
+    rsize=$2
+    if [ ${mdisk} ] ; then
+        mirrorline=`list-harddrives | grep ${mdisk}`
+        set ${mirrorline}
+        msize=$2
+
+       echo $rsize $msize
+        if [ "${rsize}" != "${msize}" ] ; then
+            if [ "${CLIENT_DISP_TYPE}" == "VGA" ] ; then
+                chvt 6
+                exec < /dev/tty6 > /dev/tty6
+            else
+                exec < /dev/pts/0 > /dev/pts/0
+            fi
+            echo -e "##################################################################"
+            echo -e "#            Root disk and the Root Mirror Disk                  #"
+            echo -e "#                  Must be the same size                         #"
+            echo -e "#                                                                #"
+            echo -e "#                    The Build will now abort                    #"
+            echo -e "#                                                                #"
+            echo -e "# PXE boot the client again and specify a valid disk combination #"
+            echo -e "##################################################################"
+            while true ; do
+            sleep 30
+            done
+            exit
+        fi
+        mirror_req="Y"
+   fi
+else
+# otherwise, pick up the first disk for rdisk and
+# second disk for mdisk (but only if it the same size as the first disk)
+    set $(list-harddrives)
+    let numd=$#/2
+    rdisk=$1
+    rsize=$2
+    mirror_req="N"
+fi
+
+# We have our rdisk (and possibly an mdisk)
+# If we have a mirror, then we create a raid 1 volume for /, /ericsson and swap
+# otherwise, we just have a simple volume
+# Any hardware raid'ing is not taken into account
+
+ravail=$(((${rsize%.*}-1100)/2))
+rfavail=$((${rsize%.*}-4100))
+
+if [ "${mirror_req}" == "Y" ] ; then
+    if [ "${label_disks}" == "Y" ]; then
+cat > /tmp/part.inc <<EOF
+clearpart --all --initlabel
+zerombr
+EOF
+    else
+cat > /tmp/part.inc <<EOF
+clearpart --all --initlabel
+zerombr
+ignoredisk --only-use=$rdisk,$mdisk
+EOF
+   fi
+
+cat >> /tmp/part.inc <<EOF
+
+part /boot --asprimary --fstype="ext4" --size=1000 --ondisk=${rdisk}
+
+part raid.11 --size=${rfavail} --asprimary --ondrive=${rdisk}
+part raid.12 --size=${rfavail} --asprimary --ondrive=${mdisk}
+
+raid pv.01 --device=md0 --level=1 raid.11 raid.12
+
+volgroup vg_root pv.01
+logvol / --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_root
+logvol swap --vgname=vg_root --fstype="swap" --size=128 --name=lv_swap
+logvol /var --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_var
+EOF
+else
+  if [ "${label_disks}" == "Y" ]; then
+cat > /tmp/part.inc <<EOF
+clearpart --all --initlabel
+zerombr
+EOF
+    else
+cat > /tmp/part.inc <<EOF
+clearpart --all --initlabel
+zerombr
+ignoredisk --only-use=$rdisk
+EOF
+   fi
+if [ -d /sys/firmware/efi ] ; then
+
+cat >> /tmp/part.inc <<EOF
+
+part /boot --asprimary --fstype="ext4" --size=1000 --ondisk=${rdisk}
+part /boot/efi --fstype="efi" --size=1024 --ondisk=${rdisk}
+part pv.01 --size=${rfavail} --asprimary --ondrive=${rdisk}
+volgroup vg_root pv.01
+logvol / --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_root
+logvol /home --vgname=vg_root --fstype="ext4" --size=5120 --name=lv_home
+logvol /tmp --vgname=vg_root --fstype="ext4" --size=5120 --name=lv_tmp
+logvol swap --vgname=vg_root --fstype="swap" --size=128  --name=lv_swap
+logvol /var --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_var
+logvol /var/tmp --vgname=vg_root --fstype="ext4" --size=20480  --name=lv_var_tmp
+logvol /var/log --vgname=vg_root --fstype="ext4" --size=30720 --name=lv_var_log
+
+EOF
+
+else
+
+cat >> /tmp/part.inc <<EOF
+
+part /boot --asprimary --fstype="ext4" --size=1000 --ondisk=${rdisk}
+part pv.01 --size=${rfavail} --asprimary --ondrive=${rdisk}
+volgroup vg_root pv.01
+logvol / --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_root
+logvol swap --vgname=vg_root --fstype="swap" --size=128  --name=lv_swap
+logvol /var --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_var
+EOF
+
+fi
+
+fi
+#cat >> /tmp/part.inc <<EOF
+
+#part /boot --asprimary --fstype="ext4" --size=1000 --ondisk=${rdisk}
+
+#part pv.01 --size=${rfavail} --asprimary --ondrive=${rdisk}
+
+#volgroup vg_root pv.01
+#logvol / --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_root
+#logvol swap --vgname=vg_root --fstype="swap" --size=128  --name=lv_swap
+#logvol /var --vgname=vg_root --fstype="ext4" --size=40960 --name=lv_var
+#EOF
+#fi
+
+rm -rf /tmp/params.cfg
+rm -rf /tmp/kick_params.cfg
+# Pre section is complete
+
+%end
+
+%post --nochroot --log=/mnt/sysimage/root/ks-postnochroot.log
+
+mkdir  /tmp/OM
+mount -o nolock <CHANGE><KICK_SERV_IP>:<CHANGE><CLIENT_OM_LOC> /tmp/OM
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_installation_param_details /tmp/params.cfg
+
+sed 's/rmirr/mirr_req=Y/g; s/list_disks/list_hw=Y/g; s/choose_disks/choose_hw=Y/g; s/label_disks/label_disks=Y/g' /tmp/params.cfg > /tmp/params.cfg.new
+
+mv /tmp/params.cfg /tmp/params.cfg_old
+mv /tmp/params.cfg.new /tmp/params.cfg
+
+source /tmp/params.cfg
+
+mkdir /tmp/INSTALL_PATCH_MEDIA
+mount -o nolock <CHANGE><KICK_SERV_IP>:<CHANGE><CLIENT_INSTALL_PATCH_KICK_LOC> /tmp/INSTALL_PATCH_MEDIA
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_ks_cfg.txt /tmp/kick_params.cfg
+source /tmp/kick_params.cfg
+
+cp /tmp/OM/om_linux/omtools/packages2exclude /mnt/sysimage/var/tmp
+touch /mnt/sysimage/var/tmp/.excluded_packages
+
+cp /tmp/OM/om_linux/bootstrap/generic_finish /mnt/sysimage/var/tmp/
+nsconf_file=`cat /mnt/sysimage/etc/nsswitch.conf | grep myhostname`
+echo $nsconf_file | sed -i 's/hosts:      files dns myhostname/hosts:      files dns/' /mnt/sysimage/etc/nsswitch.conf
+
+KS_SERV_IP=<CHANGE><KICK_SERV_IP>
+echo "${KS_SERV_IP}" >> /mnt/sysimage/etc/.ks_serv_ip
+echo "${KS_SERV_IP}" >> /mnt/sysimage/etc/.ks_serv_ip_patch
+
+echo "<CHANGE><CLIENT_IP_ADDR>  <CHANGE><CLIENT_HOSTNAME> loghost" >> /mnt/sysimage/etc/hosts
+
+#KS_SERV_TYPE=<CHANGE><KICK_SERV_TYPE>
+#echo $KS_SERV_TYPE
+#echo "${KS_SERV_TYPE}"  >> /mnt/sysimage/etc/.ks_serv_type
+
+TMP_OM_MEDIA=<CHANGE><CLIENT_OM_LOC>
+echo "${TMP_OM_MEDIA}" >> /mnt/sysimage/etc/.tmp_om_media
+
+TMP_LIN_MEDIA=<CHANGE><CLIENT_KICK_LOC>
+echo "${TMP_LIN_MEDIA}" >> /mnt/sysimage/etc/.tmp_lin_media
+
+TMP_INSTALL_PATCH_MEDIA=<CHANGE><CLIENT_INSTALL_PATCH_KICK_LOC>
+echo "${TMP_INSTALL_PATCH_MEDIA}" >> /mnt/sysimage/etc/.tmp_install_patch_media
+
+if [ "${inst_type}" != "bmr" ] ; then
+        cp /tmp/OM/om_linux/bootstrap/generic_boot_inst_sw_bundle.tar /mnt/sysimage/var/tmp
+        touch /mnt/sysimage/etc/bootstrap
+        umount /tmp/OM
+fi
+
+%end
+
+
+%post --log=/root/post_script.log
+
+mkdir /tmp/eric_mnt
+mount -o nolock <CHANGE><KICK_SERV_IP>:<CHANGE><CLIENT_KICK_LOC> /tmp/eric_mnt
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_installation_param_details /tmp/params.cfg
+cp /tmp/eric_mnt/kickstart/<CHANGE><CLIENT_HOSTNAME>/<CHANGE><CLIENT_HOSTNAME>_ks_cfg.txt /tmp/kick_params.cfg
+
+sed 's/rmirr/mirr_req=Y/g; s/list_disks/list_hw=Y/g; s/choose_disks/choose_hw=Y/g; s/label_disks/label_disks=Y/g' /tmp/params.cfg > /tmp/params.cfg.new
+
+mv /tmp/params.cfg /tmp/params.cfg_old
+mv /tmp/params.cfg.new /tmp/params.cfg
+
+source /tmp/params.cfg
+source /tmp/kick_params.cfg
+
+#Boot Mode Validation Gen8,Gen9 and Gen10
+
+server_model=`dmidecode -t system|grep -iw "Product Name"|awk -F: '{print $2}'|cut -d' ' -f4,5`
+if [[ -d /sys/firmware/efi ]] && [[ "${CLIENT_BOOT_MODE}" == "UEFI" ]] && [[ "$server_model" == "Gen8" || "$server_model" == "Gen9" ||  "$server_model" == "Gen10" ]] ; then
+# Backup fds in temporal ones
+exec {STDOUTBACK}>&1
+exec {STDERRBACK}>&2
+
+# Go to current terminal for pre% section
+exec 1>>/dev/pts/0
+exec 2>>/dev/pts/0
+
+whiptail --title "Aborting Installation" --msgbox "Boot Mode Validation Failed. Refer MWS installation document to configure the appropriate BIOS Boot Mode which is supported in "$server_model" hardware and similarly re-add the DHCP Kickstart client with Client Boot Mode as Legacy. Press any key to Abort" 10 78
+
+exit
+
+# Restore fds
+exec 1>&$STDOUTBACK
+exec 2>&$STDERRBACK
+
+# Close temporal fds
+exec {STDOUTBACK}>&-
+exec {STDERRBACK}>&-
+
+fi
+
+#Boot Mode Validation Gen10 Plus
+
+server_model=`dmidecode -t system|grep -iw "Product Name"|awk -F: '{print $2}'|cut -d' ' -f4,5`
+if [[ ! -d /sys/firmware/efi ]] && [[ "${CLIENT_BOOT_MODE}" == "Legacy" ]] && [[ "$server_model" == "Gen10 Plus" ]] ; then
+
+# Backup fds in temporal ones
+exec {STDOUTBACK}>&1
+exec {STDERRBACK}>&2
+
+# Go to current terminal for pre% section
+exec 1>>/dev/pts/0
+exec 2>>/dev/pts/0
+
+#whiptail --title "Aborting Installation" --msgbox "Boot Mode Validation Failed. Refer MWS installation document to configure the appropriate BIOS Boot Mode which is supported in "$server_model" hardware and similarly re-add the DHCP kickstart client with Client Boot Mode as UEFI. Press any key to Abort" 10 78
+
+whiptail --title "Aborting Installation" --msgbox "Boot Mode Validation Failed. Refer MWS Installation Document to configure the appropriate BIOS Boot Mode which is supported in "$server_mode1" hardware and similarly re-add the DHCP Kickstart Client with Client Boot Mode as UEFI. Press any Key to Abort" 10 78
+
+exit
+
+# Restore fds
+exec 1>&$STDOUTBACK
+exec 2>&$STDERRBACK
+
+# Close temporal fds
+exec {STDOUTBACK}>&-
+exec {STDERRBACK}>&-
+
+fi
+
+ntp_ip=`grep -i CLIENT_TIMESERVE  /tmp/kick_params.cfg | cut -d'=' -f2 | tr '"' ' '`
+for ip in `echo ${ntp_ip} | tr , '\n'`; do
+echo "server $ip iburst" >> /etc/chrony.conf
+done
+
+echo "logchange 0.5" >> /etc/chrony.conf 
+/usr/bin/systemctl start chronyd.service
+/usr/bin/systemctl enable chronyd.service
+/usr/bin/chronyc sources
+/usr/bin/sleep 2
+/usr/bin/chronyc makestep
+
+echo "<CHANGE><CLIENT_HOSTNAME>" > /var/tmp/.hostfile
+echo "dcuser     soft    nproc     29995" >> /etc/security/limits.d/20-nproc.conf
+touch /var/tmp/fastreboot
+chmod +x /var/tmp/fastreboot
+echo "#!/usr/bin/bash" >> /var/tmp/fastreboot
+echo 'krnl=$(uname -r)' >> /var/tmp/fastreboot
+echo 'kexec /boot/vmlinuz-$krnl --initrd=/boot/initramfs-"$krnl".img --reuse-cmdline' >> /var/tmp/fastreboot
+echo "alias fastreboot='bash /var/tmp/fastreboot'" >> /root/.bashrc
+
+/usr/bin/systemctl enable autofs.service
+
+if [ "${CLIENT_DISP_TYPE}" == "NON-VGA" ] ; then
+        touch /etc/systemd/system/serial-getty@ttyS0.service
+        cp /etc/default/grub /etc/default/grub.org
+        echo "GRUB_CMDLINE_LINUX_DEFAULT=console=ttyS0 console=ttyS0,115200n8" >> /etc/default/grub
+        cat /etc/default/grub | sed -i 's/GRUB_TERMINAL="serial console"/GRUB_TERMINAL="console serial"/' /etc/default/grub
+        cat /etc/default/grub | sed -i 's/GRUB_SERIAL_COMMAND="serial"/GRUB_SERIAL_COMMAND="serial --speed 115200 --unit=0 --word=8 --parity=no --stop=1"/' /etc/default/grub
+        cat /etc/default/grub | sed -i 's/crashkernel=auto/crashkernel=180M rhgb quiet/g' /etc/default/grub
+          if [ ! -d /sys/firmware/efi ]; then
+          grub2-mkconfig -o /boot/grub2/grub.cfg
+          else
+          grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
+          fi
+ 
+else
+        cp /etc/default/grub /etc/default/grub.org
+        echo "GRUB_CMDLINE_LINUX_DEFAULT=console=tty0 console=tty0,115200n8" >> /etc/default/grub
+        cat /etc/default/grub | sed -i 's/crashkernel=auto/crashkernel=180M/g' /etc/default/grub
+          if [ ! -d /sys/firmware/efi ]; then
+          grub2-mkconfig -o /boot/grub2/grub.cfg
+          else
+          grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
+           fi
+ 
+fi
+
+#mkdir /Dump/crash
+#uid=`blkid | grep dump | awk '{print$2}'`
+#uid_value=`echo $uid | sed -e 's/"//g'`
+#sed -i "s/#ext4 UUID=.*$/ext4 $uid_value/g" /etc/kdump.conf
+
+#sed -i 's|/var/crash|crash|g' /etc/kdump.conf
+
+#systemctl restart kdump.service
+#mutipath configuration
+if [ `dmidecode -t chassis | grep "Type" | awk '{print $2}'` == "Rack" ] ; then
+        /usr/bin/systemctl disable  multipathd.service
+else
+	rm -f /etc/multipath.conf
+	cp /usr/share/doc/device-mapper-multipath-0.4.9/multipath.conf /etc/multipath.conf
+	systemctl start multipathd
+	systemctl enable multipathd
+fi
+
+/usr/sbin/dracut --force --add multipath --include /etc/multipath
+
+# Build repo2include and packages2include files, used above
+# Build ericsson.repo containing all repos for the target system, where it will be run
+echo "[ericRHEL]" >> /etc/yum.repos.d/ericRHEL.repo
+echo "name=Ericsson RHEL" >> /etc/yum.repos.d/ericRHEL.repo
+echo "baseurl=file:///net/<CHANGE><KICK_SERV_IP><CHANGE><CLIENT_KICK_LOC>" >> /etc/yum.repos.d/ericRHEL.repo
+echo "enabled=1" >> /etc/yum.repos.d/ericRHEL.repo
+echo "gpgcheck=0" >> /etc/yum.repos.d/ericRHEL.repo
+
+echo "*                 -      core    unlimited" >> /etc/security/limits.conf
+echo "*                 -      nofile  32768" >> /etc/security/limits.conf
+
+
+cat /etc/systemd/journald.conf | sed -i 's/#SystemMaxUse=/SystemMaxUse=8G/' /etc/systemd/journald.conf
+mkdir -p /var/log/journal
+systemctl restart systemd-journald
+
+rm -rf /etc/modprobe.d/anaconda-blacklist.conf
+modprobe lpfc
+modprobe qla2xxx
+modprobe qla3xxx
+modprobe dm_mod
+
+sleep 10
+
+#Removing existing VGs
+
+if [ "${inst_type}" == "eniq" -a "${config}" == "stats" ] ; then
+
+        touch /tmp/vg_exclude
+        vgs |  grep -v 'vg_root\|VG' | awk '{print $1}' >> /tmp/vg_exclude
+
+        while read line; do
+            vgs=$line
+            vgremove -f $vgs
+        done < /tmp/vg_exclude
+
+        pv=`pvs  |  grep -v 'vg_root\|PV' | awk '{print $1}'`
+       echo $pv
+        pvremove $pv
+
+fi
+
+sysctl -w net.ipv4.ip_local_reserved_ports="60001-60005"
+echo "net.ipv4.ip_local_reserved_ports=60001-60005" >> /etc/sysctl.conf
+sysctl -p
+sleep 2
+
+sed -i -E "s/(\/net.*-hosts)\s*$/\1 --timeout=90/" /etc/auto.master
+systemctl restart autofs
+cat /etc/systemd/system.conf | grep -i LimitNOFILE | sed -i 's/#DefaultLimitNOFILE=/DefaultLimitNOFILE=65536/g' /etc/systemd/system.conf
+
+if [ ! -d /sys/firmware/efi ]; then
+    grub2-set-default 0
+    grub2-mkconfig -o /boot/grub2/grub.cfg
+else
+    grub2-set-default 0
+    grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
+fi
+
+list_interfaces=`ls /sys/class/net/ | grep -v lo`
+interface=`echo $list_interfaces | awk '{print $1}'`
+echo $interface
+network_driver=`ls /sys/class/net/$interface/device/driver/module/drivers | awk -F':' '{print $2}'`
+modprobe $network_driver
+sleep 3
+
+existing_interfaces=`ls /sys/class/net/ | grep -v lo`
+for i in `echo $existing_interfaces`
+do
+    interface=$i
+    HWADDRESS=`cat /sys/class/net/${interface}/address`
+    echo "HWADDR=${HWADDRESS}" >> /etc/sysconfig/network-scripts/ifcfg-${interface}
+done
+
+for i in `cat /var/tmp/packages2exclude`; do
+        pkg_name=$i
+        rpm -qi ${pkg_name} >/dev/null 2>&1
+        installed=$?
+        if [ $installed -eq 0 ]; then
+                echo "Removing package ${pkg_name}"
+                rpm -e --nodeps ${pkg_name}
+                if [ $? -eq 0 ]; then
+                        echo "${pkg_name} package removed successfully" >> /var/tmp/.excluded_packages
+                fi
+        fi
+done
+
+if [ "${inst_type}" != "bmr" ] ; then
+        cd /var/tmp;tar -xvf generic_boot_inst_sw_bundle.tar
+        sleep 3
+
+yum remove -y samba*  >> /dev/null 2>&1
+
+        echo -e "\n creating and enabling firstboot service"
+        echo "[Unit]" >> /etc/systemd/system/firstboot.service
+        echo "Description=Description for sample script goes here" >> /etc/systemd/system/firstboot.service
+        echo "ConditionPathExists=/etc/bootstrap" >> /etc/systemd/system/firstboot.service
+        echo "After=basic.target network.target" >> /etc/systemd/system/firstboot.service
+        echo "Requires=multi-user.target" >> /etc/systemd/system/firstboot.service
+        echo " " >> /etc/systemd/system/firstboot.service
+
+        echo "[Service]" >> /etc/systemd/system/firstboot.service
+        echo "Type=simple" >> /etc/systemd/system/firstboot.service
+        echo "ExecStartPre=/usr/bin/sleep 2" >> /etc/systemd/system/firstboot.service
+        echo "ExecStart=/bin/bash /var/tmp/eric_bootstrap/bin/eric_bootstrap_wrapper" >> /etc/systemd/system/firstboot.service
+        echo "StandardInput=tty" >> /etc/systemd/system/firstboot.service
+        echo "TimeoutStartSec=0" >> /etc/systemd/system/firstboot.service
+        echo " " >> /etc/systemd/system/firstboot.service
+
+        echo "[Install]" >> /etc/systemd/system/firstboot.service
+        echo "WantedBy=network.target" >> /etc/systemd/system/firstboot.service
+
+
+        if [ -f /etc/systemd/system/firstboot.service ] ; then
+                /usr/bin/chmod 664 /etc/systemd/system/firstboot.service
+                /usr/bin/systemctl enable firstboot.service
+
+        else
+                echo "firstboot.service file not found"
+        fi
+
+fi
+
+%end

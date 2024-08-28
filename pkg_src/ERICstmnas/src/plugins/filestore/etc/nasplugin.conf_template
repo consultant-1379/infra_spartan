@@ -1,0 +1,45 @@
+#-----------------------------------------------------------------------
+# File: /ericsson|eniq/storage/plugins/filestore/etc/nasplugin.conf
+#
+# This file is sourced upon startup, and used by the NAS Plug-in.
+# The variables set here, can also be set in the shell, manually,
+# depending on if a temporary or permanent behaviour is desired.
+#
+# At the very first startup, it's copied from nasplugin.conf_template.
+#-----------------------------------------------------------------------
+
+#-----------------------------------------------------------------------
+# The IP alias to use by the Plug-in to connect to SFS, with SSH.
+# 'nasconsole' is a virtual IP, floating between the cluster nodes.
+NAS_HOST=nasconsole
+
+#-----------------------------------------------------------------------
+# The user in SFS when logging in with SSH, to execute FileStore commands.
+NAS_USER=master
+
+#-----------------------------------------------------------------------
+# Block size used when creating file systems in SFS.
+# Possible values: 1024 (SFS default), 2048, 4096, 8192
+NAS_BLKSIZE=8192
+
+#-----------------------------------------------------------------------
+# If set, FS is created with layout 'striped', instead of 'simple'.
+# The number of columns, disks to use.
+#NAS_NCOLS=2
+
+#-----------------------------------------------------------------------
+# If NAS_NCOLS is set, the strip unit can also be altered.
+# Specifies a stripe width in kilobytes.
+# Possible values are the following: 128, 256, 512 (SFS default), 1024, 2048
+#NAS_STRIPEUNIT=512
+
+#-----------------------------------------------------------------------
+# More SSH options can be added to this variable string.
+# StrictHostKeyChecking=no makes sure that login is possible even if the
+# key in known_hosts is incorrect. 
+# This happens after a failover of the Management Console in SFS.
+SSH_OPT="-o StrictHostKeyChecking=no"
+
+#-----------------------------------------------------------------------
+# FileStore version. Version 5.5 and 5.6 have different interface.
+SFS_VERSION=5.6

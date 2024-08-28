@@ -1,0 +1,5 @@
+PKGINST=patch 
+NAME=patch 
+ARCH=noarch 
+VERSION=Rev 
+PRODNUM=CXP9037220

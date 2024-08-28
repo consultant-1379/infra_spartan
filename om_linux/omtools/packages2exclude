@@ -1,0 +1,7 @@
+wpa_supplicant
+ntp
+ntpdate
+net-snmp
+net-snmp-agent-libs
+net-snmp-libs
+xorg-x11-server-utils

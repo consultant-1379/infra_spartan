@@ -1,0 +1,3731 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : manage_linux_dhcp_clients.bsh
+# Date    : 31/07/2018
+# Revision: A.1
+# Purpose : This script will set up and configure DHCP Linux clients
+#
+# Usage   : manage_linux_dhcp_clients.bsh
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+ADB=/usr/bin/adb
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CMP=/usr/bin/cmp
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DHCPCONFIG=/usr/sbin/dhcpconfig
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+EXPORTFS=/usr/sbin/exportfs
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+FUSER=/usr/sbin/fuser
+EGREP=/usr/sfw/bin/gegrep
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+INIT=/usr/sbin/init
+LN=/usr/bin/ln
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+AWK=/usr/bin/awk
+NETSTAT=/usr/bin/netstat
+PG=/usr/bin/pg
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PRINTF=/usr/bin/printf
+PWD=/usr/bin/pwd
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+ROUTE=/usr/sbin/route
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+AWK=/usr/xpg4/bin/awk
+DHCPD=/usr/sbin/dhcpd
+SHAREALL=/usr/sbin/shareall
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+SU=/usr/bin/su
+SYSTEMCTL=/usr/bin/systemctl
+SWAP=/usr/sbin/swap
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TR=/usr/bin/tr
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+USERADD=/usr/sbin/useradd
+WC=/usr/bin/wc
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+DEFAULT_USER="root"
+
+# Directory under which all DHCP Client info files are stored. 
+# This directory is relative to the $DEFAULT_DHCP_CLIENT_AREA directory
+DHCP_CLIENT_DIR=DHCP_CLIENTS/LINUX
+
+
+# Directory under which all Linux medias are stored. This directory
+# is relative to the $LINUX_MEDIA_AREA directory
+LINUX_MEDIA_DIR="LIN_MEDIA"
+
+
+# Directory under which all install patch medias are stored. This directory
+# is relative to the $INSTALL_PATCH_MEDIA_AREA directory
+INSTALL_PATCH_MEDIA_DIR="INSTALL_PATCH_MEDIA"
+
+DISPLAY_TYPES="NON-VGA"
+
+TFTPBOOT="/var/lib/tftpboot"
+NETBOOT="/var/lib/tftpboot"
+
+# ISC DHCP IPv4 config file
+DHCP_CONF_FILE=/etc/dhcp/dhcpd.conf
+
+DISTRO_TYPES="RHEL"
+
+# Gathers time&date
+NOW=$($DATE +"%Y-%m-%d-%T")
+
+# ipfilter related variables
+CLIENT_BACKUP_IP_ADDR=none
+#RESTART_IPF=${TEM_DIR}/ok_to_restart_enable_ipf
+
+# Establishes script name used for error mging
+SCRIPT_NAME=$(basename $0)
+
+# ********************************************************************
+#
+#       Functions
+#
+# ********************************************************************
+#### Function: abort_script ####
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="ERROR: Script aborted....\n"
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: Script aborted...$_err_msg_\n" | $TEE -a ${LOGFILE}
+else
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: $_err_msg_\n"
+fi
+
+cd $SCRIPTHOME
+$RM -rf ${TEM_DIR} ${RESTART_IPF}
+
+if [ "$2" ]; then
+  exit ${2}
+else
+  exit 1
+fi
+}
+
+### Function: add_linux_dhcp_client ###
+#
+#   This will add a linux client to DHCP
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+add_linux_dhcp_client()
+{
+local _cnt_ _macro_id_
+
+if [ "${VALIDATE}" != "YES" ] ; then
+    if [ "${BATCH}" != "YES" ] ; then
+	$PRINTF "\033c"
+        echo ""
+    fi
+fi
+
+# Get a list of existing Linux areas if any
+$RM -f ${TEM_DIR}/existing_media_locations ${TEM_DIR}/existing_media_locations_1
+$LS ${LIN_MEDIA_AREA}/*/${LIN_MEDIA_INFO_FILE} 2> /dev/null \
+    |$EGREP -w "${LIN_MEDIA_AREA}/[1-9][0-9]*" > ${TEM_DIR}/existing_media_locations_1
+while read _lin_id_file_; do
+    if [ -s ${_lin_id_file_} ]; then
+	$ECHO ${_lin_id_file_} >>  ${TEM_DIR}/existing_media_locations
+    fi
+done <  ${TEM_DIR}/existing_media_locations_1
+
+# Have we got existing areas managed
+if [ ! -s ${TEM_DIR}/existing_media_locations ]; then
+    $ECHO -e "\nNo kickstart areas created\n"
+    return 0
+fi
+
+local DHCP_SERVICE_NAME="dhcpd.service"
+local DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $AWK '{print $2}')
+if [[ ${DHCP_SERVICE_STATE} == "inactive" ]]; then
+        abort_script "DHCP service is inactive. Check the DHCP network configuration"
+fi
+
+# Check managed networks exist
+is_isc_dhcp_network || return 0
+
+# Get a list of existing NFS media config file(s) if any
+$RM -f ${TEM_DIR}/nfs_config_file_list ${TEM_DIR}/nfs_config_file_list_1
+$LS ${NFS_MEDIA_CONFIG_DIR}/* 2> /dev/null > ${TEM_DIR}/nfs_config_file_list_1
+while read _nfs_media_config_file_; do
+    if [ -s ${_nfs_media_config_file_} ]; then
+        $ECHO ${_nfs_media_config_file_} >> ${TEM_DIR}/nfs_config_file_list
+    fi
+done < ${TEM_DIR}/nfs_config_file_list_1
+# Have we got existing Media area
+if [ ! -s ${TEM_DIR}/nfs_config_file_list ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo NFS media areas seem to be managed\n" | $TEE -a $LOGFILE
+    return 0
+fi
+
+
+# Get a list of existing Install patch areas if any
+$RM -f ${TEM_DIR}/existing_patch_media_locations ${TEM_DIR}/existing_patch_media_locations_1
+$LS ${INSTALL_PATCH_MEDIA_AREA}/*/${INSTALL_PATCH_MEDIA_INFO_FILE} 2> /dev/null \
+   |$EGREP -w "${INSTALL_PATCH_MEDIA_AREA}/[1-9][0-9]*" > ${TEM_DIR}/existing_patch_media_locations_1
+while read _install_patch_id_file_; do
+   if [ -s ${_install_patch_id_file_} ]; then
+        $ECHO ${_install_patch_id_file_} >>  ${TEM_DIR}/existing_patch_media_locations
+    fi
+done <  ${TEM_DIR}/existing_patch_media_locations_1
+
+## Have we got existing areas managed
+if [ ! -s ${TEM_DIR}/existing_patch_media_locations ]; then
+    $ECHO -e "\nNo install patch kickstart areas created\n"
+    return 0
+fi
+
+
+# Get the details of the linux client we wish to add to DHCP	
+get_linux_client_details
+
+if [ "${VALIDATE}" == "YES" ] ; then
+    return 0
+fi
+
+if [ "${BATCH}" == "YES" ] ; then
+     ANS="YES"
+else
+    _msg_="Are you sure you wish to add this kickstart client? (Yes|No)"
+    user_confirm "${_msg_}" $TEM_DIR/client_details.$$
+fi
+if [ "$ANS" == "No" ]; then
+    return 0
+fi
+
+check_client_notexist || abort_script "Client with same MAC Address already exists"
+ADD_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+# No interrupts allowed from now
+trap "no_intr_allowed" 1 2 3 14 15
+
+# Update /etc/hosts
+update_hosts
+
+# Update /etc/exports
+update_exports
+
+# Configure Linux client
+#if [ "${CLIENT_KICK_DISTRO}" == "RHEL" ]; then
+   # configure_rhel_client
+#fi
+# Configure Linux client
+
+if [ "${CLIENT_BOOT_MODE}" != "UEFI" ]
+  then
+          configure_rhel_client ${CLIENT_BOOT_MODE}
+  else
+	  configure_rhel_client ${CLIENT_BOOT_MODE}
+fi
+
+if [ "${BATCH}" != "YES" ] ; then
+    if [ ! "${REMOTE_KICKSTART}" ]; then
+        $ECHO -e "\nAdding ${CLIENT_HOSTNAME} to DHCP"
+    fi
+fi
+
+# Add host declaration to ISC DHCP config file and refresh the DHCP service
+# add_isc_dhcp_host ${CLIENT_HOSTNAME} ${CLIENT_IP_ADDR} ${CLIENT_MAC_ADDR} "${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}/pxelinux.0"
+
+if [ "${CLIENT_BOOT_MODE}" != UEFI ]
+then
+add_isc_dhcp_host ${CLIENT_HOSTNAME} ${CLIENT_IP_ADDR} ${CLIENT_MAC_ADDR} "${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}/pxelinux.0"
+else
+add_isc_dhcp_host ${CLIENT_HOSTNAME} ${CLIENT_IP_ADDR} ${CLIENT_MAC_ADDR} "${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}/uefi/BOOTX64.EFI"
+fi
+
+# Update the ini file with details of kickstart area just added
+add_client_info_details
+
+# Save details of the client for LDAP
+save_client_data $TEM_DIR/client_details.$$
+
+# check for ipfilters and run functions as needed...
+#check_for_ipfilters
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nAdded kickstart client [${CLIENT_HOSTNAME}]: OK\n" | $TEE -a $LOGFILE
+
+# Remove traps on interrupts
+trap 1 2 3 14 15
+}
+
+
+### Function: add_client_info_details ###
+#
+# Update the ini file with details of kickstart area just added
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+add_client_info_details()
+{
+$RM -f ${TEM_DIR}/client_info_file
+
+# Add the Parent tag to the temp ini file
+$ECHO -e "kick_client_hostname=${CLIENT_HOSTNAME}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client IP address
+$ECHO "kick_client_ip_addr=${CLIENT_IP_ADDR}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add IP details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client Netmask
+$ECHO "kick_client_netmask=${CLIENT_NETMASK}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add Netmask details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client MAC address
+$ECHO "kick_client_mac_addr=${CLIENT_MAC_ADDR}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add MAC address details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client Network address
+$ECHO "kick_client_net_addr=${CLIENT_NET_ADDR}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add Network address details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client NTP Server details
+$ECHO "kick_client_timeserve=${CLIENT_TIMESERVE}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add NTP Server details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client DNS Domain
+$ECHO "kick_client_dnsdomain=${CLIENT_DNSDOMAIN}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add DNS Domain details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client DNS Servers
+$ECHO "kick_client_dnsserver=${CLIENT_DNSSERVER}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add DNS Servers details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client gateway Servers
+$ECHO "kick_client_gateway=${CLIENT_GATEWAY}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add gateway Servers details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+
+# Store the client architecture type
+$ECHO "kick_client_arch=${CLIENT_KICK_ARCH}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add client architecture type to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the Kickstart ID
+$ECHO "kick_client_kick_id=${CLIENT_KICK_ID}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add Kickstart ID to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the Kickstart Description
+$ECHO "kick_client_kick_desc=${CLIENT_KICK_DESC}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add Kickstart Description to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the Kickstart Location
+$ECHO "kick_client_kick_loc=${CLIENT_KICK_LOC}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add Kickstart location to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the Client Display type
+$ECHO -e "kick_client_disp_type=${CLIENT_DISP_TYPE}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add display type to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the Client Timezone
+$ECHO -e "kick_client_tz=${CLIENT_TZ}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add timezone to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+#Store Boot mode of the Client
+$ECHO -e "kick_client_boot_mode=${CLIENT_BOOT_MODE}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add client boot mode to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+
+# Store the Application SW Location
+if [ ${CLIENT_APPL_MEDIA_LOC} ]; then
+    $ECHO -e "kick_client_appl_media_loc=${CLIENT_APPL_MEDIA_LOC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+    	_err_msg_="Could not add Application sw location to temporary client kickstart ini file"
+    	abort_script "$_err_msg_"
+    fi
+fi
+
+# Store the Application SW Location
+if [ "${CLIENT_APPL_MEDIA_DESC}" ]; then
+    $ECHO "kick_client_appl_media_desc=${CLIENT_APPL_MEDIA_DESC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+    	_err_msg_="Could not add Application sw description to temporary client kickstart ini file"
+    	abort_script "$_err_msg_"
+    fi
+fi
+
+# Store the Application SW Location
+if [ ${CLIENT_APPL_MEDIA_VER} ]; then
+    $ECHO "kick_client_appl_media_ver=${CLIENT_APPL_MEDIA_VER}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+    	_err_msg_="Could not add Application sw version to temporary client kickstart ini file"
+    	abort_script "$_err_msg_"
+    fi
+fi
+
+# Store the OM SW Location
+if [ ${CLIENT_OM_LOC} ]; then
+    $ECHO "kick_client_om_loc=${CLIENT_OM_LOC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+    	_err_msg_="Could not add OM sw location to temporary client kickstart ini file"
+    	abort_script "$_err_msg_"
+    fi
+fi
+
+
+# Store the OM SW Description
+if [ ${CLIENT_OM_DESC} ]; then
+    $ECHO "kick_client_om_desc=${CLIENT_OM_DESC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+    	_err_msg_="Could not add install patch sw description to temporary client kickstart ini file"
+    	abort_script "$_err_msg_"
+    fi
+fi
+
+# Store the OM SW Version
+if [ ${CLIENT_OM_VER} ]; then
+    $ECHO "kick_client_om_ver=${CLIENT_OM_VER}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add OM sw version to temporary client kickstart ini file"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+
+# Store the install patch SW Location
+if [ ${CLIENT_INSTALL_PATCH_KICK_LOC} ]; then
+    $ECHO "kick_client_install_patch_loc=${CLIENT_INSTALL_PATCH_KICK_LOC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+       _err_msg_="Could not add install patch sw location to temporary client kickstart ini file"
+       abort_script "$_err_msg_"
+    fi
+fi
+# Store the install patch SW sprint
+if [ ${CLIENT_INSTALL_PATCH_KICK_SPRINT_RELEASE} ]; then
+   $ECHO "kick_client_install_patch_sprint=${CLIENT_INSTALL_PATCH_KICK_SPRINT_RELEASE}" >> ${TEM_DIR}/client_info_file
+   if [ $? -ne 0 ]; then
+       _err_msg_="Could not add install patch sw sprint  to temporary client kickstart ini file"
+       abort_script "$_err_msg_"
+    fi
+fi
+# Store the install patch SW  bundle
+if [ ${CLIENT_INSTALL_PATCH_KICK_BUNDLE_VERSION} ]; then
+   $ECHO "kick_client_install_patch_bundle=${CLIENT_INSTALL_PATCH_KICK_BUNDLE_VERSION}" >> ${TEM_DIR}/client_info_file
+   if [ $? -ne 0 ]; then
+       _err_msg_="Could not add install patch sw bundle  to temporary client kickstart ini file"
+       abort_script "$_err_msg_"
+    fi
+fi
+
+
+
+# Store the install patch SW Description
+if [ "${CLIENT_INSTALL_PATCH_KICK_DESC}" ]; then
+    $ECHO "kick_client_install_patch_desc=${CLIENT_INSTALL_PATCH_KICK_DESC}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add install patch sw description to temporary client kickstart ini file"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+
+# Store the install patch SW Version
+if [[ ${CLIENT_INSTALL_PATCH_KICK_ID} ]]; then
+    $ECHO "kick_client_install_patch_id=${CLIENT_INSTALL_PATCH_KICK_ID}" >> ${TEM_DIR}/client_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add install patch sw version to temporary client kickstart ini file"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+
+# Store the client addition time
+$ECHO "kick_client_add_date=${ADD_TIME}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add time addition details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the client installation parameters
+$ECHO "kick_client_install_params@${CLIENT_INSTALL_PARAMS}" >> ${TEM_DIR}/client_info_file
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not add time installation parameter details to temporary client kickstart ini file"
+    abort_script "$_err_msg_"
+fi
+
+if [ "${IPV6_PARAMETER}" = "YES" ]; then
+
+        $ECHO "kick_client_ipv6_parameter=${IPV6_PARAMETER}" >> ${TEM_DIR}/client_info_file
+        if [ $? -ne 0 ]; then
+            _err_msg_="Could not add IPV6 requirement parameter details to temporary client kickstart ini file"
+            abort_script "$_err_msg_"
+        fi
+
+        $ECHO "kick_client_ipv6_address=${CLIENT_IP_ADDR_V6}" >> ${TEM_DIR}/client_info_file
+        if [ $? -ne 0 ]; then
+            _err_msg_="Could not add IPV6 address parameter details to temporary client kickstart ini file"
+            abort_script "$_err_msg_"
+        fi
+
+        $ECHO "kick_client_ipv6_router_address=${ROUTER_IP_ADDR_V6}" >> ${TEM_DIR}/client_info_file
+        if [ $? -ne 0 ]; then
+            _err_msg_="Could not add IPV6 reouter parameter details to temporary client kickstart ini file"
+            abort_script "$_err_msg_"
+        fi
+
+        $ECHO "kick_client_ipv6_hostname=${CLIENT_HOSTNAME_V6}" >> ${TEM_DIR}/client_info_file
+        if [ $? -ne 0 ]; then
+            _err_msg_="Could not add IPV6 host name parameter details to temporary client kickstart ini file"
+            abort_script "$_err_msg_"
+        fi
+
+fi
+
+# Update the main ini file
+$CP ${TEM_DIR}/client_info_file ${DHCP_CLIENT_AREA}/${CLIENT_HOSTNAME}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error updating client kickstart info file ${DHCP_CLIENT_AREA}/${CLIENT_HOSTNAME}"
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_params()
+{
+if [ ! "${ACTION}" ]; then
+    usage_msg
+    $RM -rf ${TEM_DIR} ${RESTART_IPF}
+    exit 1
+fi
+
+case "${ACTION}" in
+    add)	:
+	;;
+    list)	:
+	;;
+    remove)	:
+	;;
+    *) 	usage_msg
+	$RM -rf ${TEM_DIR} ${RESTART_IPF}
+	exit 1
+       	;;
+esac
+
+# Was parameter file specified
+if [ ! "${USER_PARAM_FILE}" ]; then
+    return 0
+fi
+
+# Does file exist
+if [ ! -s ${USER_PARAM_FILE} ]; then
+    _err_msg_="Parameter file not found or empty\n${USER_PARAM_FILE}"
+    abort_script "$_err_msg_"
+fi
+
+# Verify all params
+local _err_=0
+
+# Mandatory Parameter
+CLIENT_HOSTNAME=`$EGREP  -w "CLIENT_HOSTNAME" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_HOSTNAME}" ]; then
+    $ECHO "Failed to read parameter CLIENT_HOSTNAME"
+    _err_=1
+fi
+
+if [ "${ACTION}" == "list" -o "${ACTION}" == "remove" ]; then
+    USER_CLIENT_HOSTNAME=${CLIENT_HOSTNAME}
+    return 0
+fi
+
+# Mandatory Parameter
+CLIENT_IP_ADDR=`$EGREP -w "CLIENT_IP_ADDR" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_IP_ADDR}" ]; then
+    $ECHO "Failed to read parameter CLIENT_IP_ADDR"
+    _err_=1
+fi
+
+# Mandatory Parameter
+CLIENT_NETMASK=`$EGREP -w "CLIENT_NETMASK" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_NETMASK}" ]; then
+    $ECHO "Failed to read parameter CLIENT_NETMASK"
+    _err_=1
+fi
+
+# Mandatory Parameter
+CLIENT_MAC_ADDR=`$EGREP -w "CLIENT_MAC_ADDR" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_MAC_ADDR}" ]; then
+    $ECHO "Failed to read parameter CLIENT_MAC_ADDR"
+    _err_=1
+fi
+
+# Mandatory Parameter
+CLIENT_BOOT_MODE=`$EGREP -w "CLIENT_BOOT_MODE" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_BOOT_MODE}" ]; then
+    $ECHO "Failed to read parameter CLIENT_BOOT_MODE"
+    _err_=1
+fi
+
+# Mandatory Parameter
+CLIENT_TZ=`$EGREP -w "CLIENT_TZ" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_TZ}" ]; then
+    $ECHO "Failed to read parameter CLIENT_TZ"
+    _err_=1
+fi
+
+# Non Parameter
+CLIENT_APPL_MEDIA_LOC=`$EGREP -w "CLIENT_APPL_MEDIA_LOC" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+# Non Parameter
+CLIENT_APPL_TYPE=`$EGREP  -w  "CLIENT_APPL_TYPE" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+# Non Parameter
+CLIENT_ARCH=`$EGREP -w "CLIENT_ARCH" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+# Non Parameter
+CLIENT_OM_LOC=`$EGREP -w "CLIENT_OM_LOC" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+# Non Parameter
+CLIENT_INSTALL_PATCH_KICK_LOC=`$EGREP -w "CLIENT_INSTALL_PATCH_KICK_LOC" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'` 
+
+# Non Parameter
+CLIENT_KICK_LOC=`$EGREP -w "CLIENT_KICK_LOC" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+
+# Mandatory Parameter
+CLIENT_DISP_TYPE=`$EGREP -w "CLIENT_DISP_TYPE" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_DISP_TYPE}" ]; then
+    $ECHO "Failed to read parameter CLIENT_DISP_TYPE"
+    _err_=1
+fi
+
+#EQEV-59457 -to handle new question for patch
+# Non Parameter
+CLIENT_INSTALL_PATCH_KICK_LOC=`$EGREP -w "CLIENT_INSTALL_PATCH_KICK_LOC" ${USER_PARAM_FILE} \
+    |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+
+# Mandatory Parameter
+CLIENT_INSTALL_PATCH_KICK_ID=`$EGREP -w "CLIENT_INSTALL_PATCH_KICK_ID" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+if [ ! "${CLIENT_INSTALL_PATCH_KICK_ID}" ]; then
+    $ECHO "Failed to read parameter CLIENT_INSTALL_PATCH_KICK_ID"
+    _err_=1
+fi
+
+# Mandatory Parameter
+CLIENT_INSTALL_PARAMS=`$EGREP -w "CLIENT_INSTALL_PARAMS" ${USER_PARAM_FILE}`
+CLIENT_INSTALL_PARAMS=`$ECHO ${CLIENT_INSTALL_PARAMS#*=}`
+if [ ! "${CLIENT_INSTALL_PARAMS}" ]; then
+    $ECHO "Failed to read parameter CLIENT_INSTALL_PARAMS"
+    _err_=1
+fi
+
+
+IPV6_PARAMETER=`$EGREP -w  "IPV6_PARAMETER" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+
+CLIENT_IP_ADDR_V6=`$EGREP -w "CLIENT_IP_ADDR_V6" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+
+if [ "${CLIENT_IP_ADDR_V6}" ] ; then
+    if [ "${USER_PARAM_FILE}" ] ; then
+        IPV6_PARAMETER="YES"
+    fi
+fi
+
+ROUTER_IP_ADDR_V6=`$EGREP -w "ROUTER_IP_ADDR_V6" ${USER_PARAM_FILE}|$AWK -F"=" '{print $2}'`
+
+
+if [ ${_err_} -eq 1 ]; then
+    $ECHO "from ${USER_PARAM_FILE}"
+    _err_msg_=""
+    abort_script "$_err_msg_"
+fi
+
+
+}
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+$MKDIR -p `$DIRNAME ${LOGFILE}`
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${LOGFILE}`"
+    abort_script "$_err_msg_"
+fi
+
+$TOUCH -a ${LOGFILE}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE}"
+    abort_script "$_err_msg_"
+fi
+}
+
+
+### Function: chk_valid_mac_addr ###
+#
+# Get MAC address of client
+#
+# Arguments:
+#   $1 : MAC address string to be checked
+# Return Values:
+#     0  : Valid Mac Address
+#   100  : Invalid number of fields specified in MAC address
+#   101  : Invalid field specified in MAC address
+#   102  : Invalid number of fields specified in MAC address
+chk_valid_mac_addr()
+{
+local _client_mac_=${1}
+
+_chk_ether_=`$ECHO ${_client_mac_} | $SED -e 's|:| |g'`
+
+_num_fields_=`$ECHO ${_chk_ether_} | $AWK '{print NF}'`
+if [ ${_num_fields_} -ne 6 ]; then
+    return 100
+fi
+
+_mac_error_=0	
+for _field_ in ${_chk_ether_}; do
+    $ECHO ${_field_} | $EGREP '[^0-9a-fA-F]' >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+	_mac_error_=101
+	break
+    fi
+    
+    _chk_num_=`$ECHO ${_field_} | $SED -e 's| ||g' | $WC -c`
+    if [ ${_chk_num_} -gt 3 ]; then
+	_mac_error_=102
+	break
+    fi
+done
+
+return ${_mac_error_}
+}
+
+### Function: configure_rhel_client ###
+#
+# Confi
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+configure_rhel_client()
+{
+local bootmode=$1
+local _mac_lowercase_ _cfg_file_id_ _macro_id_
+TFTP_DIR=${TFTPBOOT}/${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}
+# Check params
+
+[[ $# -ne 1 ]] && abort_script "$FUNCNAME: Invalid number [$#] of parameters passed, should be 1"
+
+if [ "${bootmode}" != UEFI ]
+then
+if [ ! -d ${TFTP_DIR}/pxelinux.cfg ]; then
+    $MKDIR -p ${TFTP_DIR}/pxelinux.cfg
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not create directory ${TFTP_DIR}/pxelinux.cfg"
+        abort_script "${_err_msg_}"
+    fi
+fi
+else
+   if [ ! -d ${TFTP_DIR}/uefi ]; then
+    $MKDIR -p ${TFTP_DIR}/uefi
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not create directory ${TFTP_DIR}/uefi"
+        abort_script "${_err_msg_}"
+    fi
+fi
+fi
+
+_mac_lowercase_="`$ECHO ${CLIENT_MAC_ADDR} | $TR '[:upper:]' '[:lower:]'`"
+
+if [ "${bootmode}" != UEFI ]
+then
+	if [ ! -s ${TFTP_DIR}/pxelinux.0 ] ; then
+   		$CP ${CLIENT_KICK_LOC}/pxelinux/pxelinux.0 ${TFTP_DIR}/pxelinux.0
+	fi
+else
+	if [ ! -s ${TFTP_DIR}/uefi/BOOTX64.EFI ] ; then
+    	       $CP -r ${CLIENT_KICK_LOC}/EFI/BOOT/BOOTX64.EFI ${TFTP_DIR}/uefi/
+               $CP -r ${CLIENT_KICK_LOC}/EFI/BOOT/grubx64.efi ${TFTP_DIR}/uefi/
+               $CP -r ${CLIENT_KICK_LOC}/EFI/BOOT/mmx64.efi ${TFTP_DIR}/uefi/
+               $CP -r ${CLIENT_KICK_LOC}/EFI/BOOT/fonts  ${TFTP_DIR}/uefi/
+               $CP -r ${CLIENT_KICK_LOC}/EFI/BOOT/TRANS.TBL ${TFTP_DIR}/uefi/	
+	fi
+fi
+
+if [ "${bootmode}" != UEFI ]; then
+	$CP -f ${CLIENT_KICK_LOC}/images/pxeboot/initrd.img ${TFTP_DIR}/initrd.${_mac_lowercase_}
+	$CP -f ${CLIENT_KICK_LOC}/images/pxeboot/vmlinuz* ${TFTP_DIR}/linux.${_mac_lowercase_}
+else
+	if [ ! -d ${TFTP_DIR}/images ]; then
+		${MKDIR} -p ${TFTP_DIR}/images
+		if [ $? == 0 ]; then
+			$CP -f ${CLIENT_KICK_LOC}/images/pxeboot/initrd.img ${TFTP_DIR}/images 
+			$CP -f ${CLIENT_KICK_LOC}/images/pxeboot/vmlinuz* ${TFTP_DIR}/images 
+		fi
+        fi 
+fi
+	
+
+_macro_id_="01`$ECHO ${_mac_lowercase_} | $SED -e 's|:||g'`"
+
+KICK_SERV_TYPE=`/usr/bin/uname`
+
+# Set up Linux kickstart file; not applicable for BMR
+if [ "${CLIENT_APPL_TYPE}" != "bmr" ]; then
+        $CAT ${LIN_PROFILE_TEMPL_FILE}| $SED -e "s|<CHANGE><KICK_SERV_IP>|${KICK_SERV_IP}|g"     \
+		-e "s|<CHANGE><KICK_SERV_TYPE>|${KICK_SERV_TYPE}|g"    \
+                -e "s|<CHANGE><CLIENT_TZ>|${CLIENT_TZ}|g"                                \
+                -e "s|<CHANGE><CLIENT_APPL_TYPE>|${CLIENT_APPL_TYPE}|g" \
+                -e "s|<CHANGE><CLIENT_APPL_MEDIA_LOC>|${CLIENT_APPL_MEDIA_LOC}|g" \
+                -e "s|<CHANGE><CLIENT_OM_LOC>|${CLIENT_OM_LOC}|g" \
+                -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_LOC>|${CLIENT_INSTALL_PATCH_KICK_LOC}|g" \
+                -e "s|<CHANGE><CLIENT_HOSTNAME>|${CLIENT_HOSTNAME}|g" \
+                -e "s|<CHANGE><CLIENT_IP_ADDR>|${CLIENT_IP_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_NETMASK>|${CLIENT_NETMASK}|g" \
+                -e "s|<CHANGE><CLIENT_DNSDOMAIN>|${CLIENT_DNSDOMAIN}|g" \
+                -e "s|<CHANGE><CLIENT_DNSSERVER>|${CLIENT_DNSSERVER}|g" \
+                -e "s|<CHANGE><CLIENT_GATEWAY>|${CLIENT_GATEWAY}|g" \
+                -e "s|<CHANGE><CLIENT_NET_ADDR>|${CLIENT_NET_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_MAC_ADDR>|${CLIENT_MAC_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_KICK_LOC>|${CLIENT_KICK_LOC}|g" > ${TEM_DIR}/${_macro_id_} 
+
+
+        if [ $? -ne 0 ]; then
+                _err_msg_="Could not create temporary cfg file\n${TEM_DIR}/${_macro_id_}"
+                abort_script "${_err_msg_}"
+        fi
+
+        # Copy the Linux Profile
+        if [ ! -d ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME} ]; then
+                $MKDIR -p ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}
+                if [ $? -ne 0 ]; then
+                _err_msg_="Could not create directory ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}"
+                abort_script "$_err_msg_"
+                fi
+        fi
+
+        $CP ${TEM_DIR}/${_macro_id_} ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${_macro_id_}
+        if [ $? -ne 0 ]; then
+                _err_msg_="Could not copy ${_macro_id_} file to ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}"
+                abort_script "$_err_msg_"
+        fi
+
+        KS="nfs:${KICK_SERV_IP}:${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${_macro_id_}"
+
+else
+        $CAT ${LIN_BMR_PROFILE_TEMPL_FILE}| $SED -e "s|<CHANGE><KICK_SERV_IP>|${KICK_SERV_IP}|g"     \
+                -e "s|<CHANGE><CLIENT_TZ>|${CLIENT_TZ}|g"                                \
+                -e "s|<CHANGE><CLIENT_APPL_TYPE>|${CLIENT_APPL_TYPE}|g" \
+                -e "s|<CHANGE><CLIENT_APPL_MEDIA_LOC>|${CLIENT_APPL_MEDIA_LOC}|g" \
+                -e "s|<CHANGE><CLIENT_OM_LOC>|${CLIENT_OM_LOC}|g" \
+                -e "s|<CHANGE><CLIENT_HOSTNAME>|${CLIENT_HOSTNAME}|g" \
+                -e "s|<CHANGE><CLIENT_IP_ADDR>|${CLIENT_IP_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_NETMASK>|${CLIENT_NETMASK}|g" \
+                -e "s|<CHANGE><CLIENT_DNSDOMAIN>|${CLIENT_DNSDOMAIN}|g" \
+                -e "s|<CHANGE><CLIENT_DNSSERVER>|${CLIENT_DNSSERVER}|g" \
+                -e "s|<CHANGE><CLIENT_GATEWAY>|${CLIENT_GATEWAY}|g" \
+                -e "s|<CHANGE><CLIENT_NET_ADDR>|${CLIENT_NET_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_MAC_ADDR>|${CLIENT_MAC_ADDR}|g" \
+                -e "s|<CHANGE><CLIENT_KICK_LOC>|${CLIENT_KICK_LOC}|g" > ${TEM_DIR}/${_macro_id_} 
+
+
+
+        if [ $? -ne 0 ]; then
+                _err_msg_="Could not create temporary cfg file\n${TEM_DIR}/${_macro_id_}"
+                abort_script "${_err_msg_}"
+        fi
+        # Copy the Linux Profile
+        if [ ! -d ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME} ]; then
+                $MKDIR -p ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}
+                if [ $? -ne 0 ]; then
+                _err_msg_="Could not create directory ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}"
+                abort_script "$_err_msg_"
+                fi
+        fi
+
+        $CP ${TEM_DIR}/${_macro_id_} ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${_macro_id_}
+        if [ $? -ne 0 ]; then
+                _err_msg_="Could not copy ${_macro_id_} file to ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}"
+                abort_script "$_err_msg_"
+        fi
+
+        KS="nfs:${KICK_SERV_IP}:${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${_macro_id_}"
+fi
+
+_cfg_file_id_="01-`$ECHO ${_mac_lowercase_} | $SED -e 's|:|-|g'`"
+
+if [ "${CLIENT_APPL_TYPE}" == "bmr" ]; then
+    APPEND_STR="ramdisk_size=65536 insmod=igb initrd=initrd.${_mac_lowercase_} splash=silent rescue sshd ks=${KS} ksdevice=${_mac_lowercase_} ip=dhcp text"
+elif [ "${CLIENT_APPL_TYPE}" == "eniq_stats" ] && [ "${CLIENT_BOOT_MODE}" == "UEFI" ]; then
+#    APPEND_STR="ramdisk_size=65536 insmod=igb inst.repo=nfs:nfsvers=4:${KICK_SERV_IP}:${CLIENT_KICK_LOC} initrd=initrd.${_mac_lowercase_} splash=silent modprobe.blacklist=lpfc modprobe.blacklist=qla2xxx modprobe.blacklist=qla3xxx ks=${KS} BOOTIF=${_cfg_file_id_} ip=dhcp text"
+    APPEND_STR="ramdisk_size=65536 insmod=igb inst.repo=nfs:nfsvers=4:${KICK_SERV_IP}:${CLIENT_KICK_LOC} modprobe.blacklist=lpfc modprobe.blacklist=qla2xxx modprobe.blacklist=qla3xxx ks=${KS} dhcp text quiet console=ttyS0 console=ttyS0,115200n8"
+
+else
+    APPEND_STR="ramdisk_size=65536 insmod=igb initrd=initrd.${_mac_lowercase_} splash=silent modprobe.blacklist=lpfc modprobe.blacklist=qla2xxx modprobe.blacklist=qla3xxx ks=${KS} BOOTIF=${_cfg_file_id_} ip=dhcp text"
+fi
+
+if [ "${CLIENT_DISP_TYPE}" == "NON-VGA" ]; then
+        APPEND_STR="${APPEND_STR} quiet console=ttyS0 console=ttyS0,115200n8"
+fi
+
+if [ "${bootmode}" != UEFI ]
+then
+$CAT > ${TFTP_DIR}/pxelinux.cfg/${_cfg_file_id_} <<EOF
+DEFAULT install
+PROMPT 0
+TIMEOUT 1
+
+LABEL install
+  KERNEL linux.${_mac_lowercase_}
+  APPEND ${APPEND_STR}
+EOF
+
+else
+
+$CAT > ${TFTP_DIR}/uefi/grub.cfg-${_cfg_file_id_} <<EOF
+set default=0
+set timeout=1
+
+menuentry 'Red Hat Enterprise Linux Server release ${CLIENT_KICK_DISTRO_REV}' --class fedora --class gnu-linux --class gnu --class os {
+    
+	linuxefi ${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}/images/vmlinuz ${APPEND_STR}
+ 
+        initrdefi ${CLIENT_KICK_DISTRO}_${CLIENT_KICK_DISTRO_REV}/images/initrd.img 
+ }
+EOF
+
+fi
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+PARENT_DIR=`$DIRNAME $SCRIPTHOME`
+}
+
+
+### Function: get_app_inst_type ###
+#
+# Get application installation type
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_app_inst_type()
+{
+local _cnt_=0 _path_
+$RM -f ${TEM_DIR}/appl_menu.$$
+
+# Build up details of all media config info in array for application media only
+build_nfs_config_info ${TEM_DIR}/nfs_config_file_list "appl_flag"
+if [ ! "${MEDIA_CONFIG_FILE_ARRAY[1]}" ]; then
+    _err_msg_="No NFS Media config files found in \n${NFS_MEDIA_CONFIG_DIR}\n"
+    abort_script "$_err_msg_"
+fi
+# Get number of elements
+_cnt_=${#MEDIA_CONFIG_TYPE_ARRAY[@]}
+
+if [ "${CLIENT_APPL_TYPE}" ]; then
+	_found_=0
+	# Loop thru and see if this version is already installed.
+	for (( i=1; i<=${_cnt_}; i++ )); do
+	    if [ "${MEDIA_CONFIG_TYPE_ARRAY[${i}]}" == "${CLIENT_APPL_TYPE}" ]; then
+		_found_=1
+		break
+	    fi
+	done
+	if [ ${_found_} -eq 0 ]; then
+	    _err_msg_="Invalid User specified client application type '${CLIENT_APPL_TYPE}'"
+	    abort_script "$_err_msg_"
+	fi
+	MEDIA_ARR_INDEX=${i}
+	CLIENT_APPL_TYPE=${MEDIA_CONFIG_TYPE_ARRAY[${i}]}
+	APPL_ID_PATH_FILE=${MEDIA_CONFIG_ID_PATH_ARRAY[${i}]}
+else
+      # Add bmr as an option
+      let _cnt_+=1
+      MEDIA_CONFIG_TYPE_ARRAY[${_cnt_}]="bmr"
+ 
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "[${i}] " >> ${TEM_DIR}/appl_menu.$$
+        if [ ${i} -lt 10 ]; then
+            printf "%-4s%-15s%s\n" "" "Application : " "${MEDIA_CONFIG_TYPE_ARRAY[${i}]}" >> ${TEM_DIR}/appl_menu.$$
+        else
+            printf "%-3s%-15s%s\n" "" "Application : " "${MEDIA_CONFIG_TYPE_ARRAY[${i}]}" >> ${TEM_DIR}/appl_menu.$$
+        fi
+    done
+    $ECHO -e "\nSelect the application type you wish to install on ${CLIENT_HOSTNAME}" >> ${TEM_DIR}/appl_menu.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+        $MORE -d ${TEM_DIR}/appl_menu.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        _numerror_=0
+
+        $ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+            continue
+        fi
+        break
+    done
+    MEDIA_ARR_INDEX=${_opt_}
+    CLIENT_APPL_TYPE=${MEDIA_CONFIG_TYPE_ARRAY[${_opt_}]}
+    APPL_ID_PATH_FILE=${MEDIA_CONFIG_ID_PATH_ARRAY[${_opt_}]}
+fi
+
+
+printf "%-30s%s\n" "Application Type :" "${CLIENT_APPL_TYPE}" >> $TEM_DIR/client_details.$$
+}
+
+### Function: get_app_media_loc ###
+#
+# Get application media location 
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+
+get_app_media_loc()
+{
+local _cnt_=0 _cnt1_ _ver_ _add_date_
+$RM -f ${TEM_DIR}/existing_app_media_locations ${TEM_DIR}/existing_app_media_locations_1 ${TEM_DIR}/appl_menu.$$
+
+MEDIA_IDENTITY_FILE=".${CLIENT_APPL_TYPE}_identity"
+NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+$LS ${NFS_MEDIA_AREA}/*/*/${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_IDENTITY_FILE} 2> /dev/null >> ${TEM_DIR}/existing_app_media_locations_1
+while read _nfs_id_file_; do
+    if [ -s ${_nfs_id_file_} ]; then
+        $ECHO ${_nfs_id_file_} >>  ${TEM_DIR}/existing_app_media_locations
+    fi
+done <  ${TEM_DIR}/existing_app_media_locations_1
+
+# Have we got existing media Info file(s)
+if [ ! -s ${TEM_DIR}/existing_app_media_locations ]; then
+    _err_msg_="No ${CLIENT_APPL_TYPE} media seem to be managed\n"
+    abort_script "$_err_msg_"
+fi
+
+# Build up details of all media area info in array
+build_nfs_media_area_info  ${TEM_DIR}/existing_app_media_locations "install_flag"
+
+if [ ! "${NFS_MEDIA_LABEL_ARRAY[1]}" ]; then
+    _err_msg_="No ${CLIENT_APPL_TYPE} media seem to be managed\n"
+    abort_script "$_err_msg_"
+fi
+
+# Get number of elements
+_cnt_=${#NFS_MEDIA_LABEL_ARRAY[@]}
+
+if [ "${USER_PARAM_FILE}" ]; then
+    _found_=0
+    # Loop thru and see if this version is managed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${CLIENT_APPL_MEDIA_LOC}" ]; then
+            if [ "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" == "${CLIENT_APPL_MEDIA_LOC}" ]; then
+                _found_=1
+                break
+            fi
+        elif [ "${CLIENT_APPL_MEDIA_VER}" ]; then
+            $ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$GEGREP -w "${CLIENT_APPL_MEDIA_VER}" >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                _found_=1
+                break
+            fi
+        else
+            :
+        fi
+    done
+    if [ ${_found_} -ne 1 ]; then
+        _err_msg_="Invalid User specified CLIENT_APPL_MEDIA_LOC or CLIENT_APPL_MEDIA_VER specified\n"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store the choice
+    _opt_=${i}
+else
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "[${i}] " >> ${TEM_DIR}/disp_file.$$
+        if [ ${i} -lt 10 ]; then
+            printf "%-4s%-15s%s\n" "" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+        else
+            printf "%-3s%-15s%s\n" "" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+        fi
+
+        _cnt1_=0
+        for _ver_ in `$ECHO ${NFS_MEDIA_VER_ARRAY[${i}]}|$SED -e 's|,| |g'`; do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Version"    "${_ver_}" >> ${TEM_DIR}/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" "" "${_ver_}" >> ${TEM_DIR}/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+
+        printf "%-8s%-15s%s\n" "" "Path" "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+
+        _cnt1_=0
+        for _add_date_ in `$ECHO ${NFS_MEDIA_DATE_ARRAY[${i}]}|$SED -e 's|,| |g'`; do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Date Added"  "${_add_date_}" >> ${TEM_DIR}/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" ""  "${_add_date_}" >> ${TEM_DIR}/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+        $ECHO -e "\n" >> ${TEM_DIR}/disp_file.$$
+    done
+    $ECHO  "Select number of the area you wish to use" >> ${TEM_DIR}/disp_file.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+        $MORE -d ${TEM_DIR}/disp_file.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        $ECHO ${_opt_} | $GEGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+            continue
+        fi
+
+        break
+    done
+fi
+
+# Set Path to Application Media
+if [ "${MEDIA_CONFIG_MEDIA_IP_ARRAY[${MEDIA_ARR_INDEX}]}" == "local" ]; then
+     CLIENT_APPL_MEDIA_LOC="${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+else
+    CLIENT_APPL_MEDIA_LOC="${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+fi
+printf "%-30s%s\n" "Application SW Path :" "${CLIENT_APPL_MEDIA_LOC}" >> $TEM_DIR/client_details.$$
+
+# Get default Solaris & O&M paths
+_app_media_path_=`$ECHO ${CLIENT_APPL_MEDIA_LOC}|$AWK -F\@ '{print $2}'`
+if [ -s ${_app_media_path_}/sol_${CLIENT_ARCH}.loc ]; then
+    _path_=`$CAT ${_app_media_path_}/sol_${CLIENT_ARCH}.loc`
+    DEF_CLIENT_KICK_LOC=`$DIRNAME ${_path_}`
+fi
+
+if [ -s ${_app_media_path_}/om_sw.loc ]; then
+    DEF_CLIENT_OM_LOC=`$CAT ${_app_media_path_}/om_sw.loc`
+fi
+}
+### Function: get_client_hostname ###
+#
+# Gets details regarding the client to add
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_client_hostname()
+{
+local client_name
+    [ "$CLIENT_HOSTNAME" = "" -a "$USER_CLIENT_HOSTNAME" != "" ] && CLIENT_HOSTNAME=$USER_CLIENT_HOSTNAME
+
+if [ "${CLIENT_HOSTNAME}" ]; then
+        client_name=${CLIENT_HOSTNAME}
+    else
+        while :; do
+            $ECHO -e "\nEnter the client hostname"
+            read client_name
+            [ ! "${client_name}" ] && continue
+            break
+        done
+    fi
+
+# Remove FQDN details if present
+CLIENT_HOSTNAME=$($ECHO ${client_name}| $TR '[:upper:]' '[:lower:]' | $AWK -F\. '{print $1}')
+
+    $PRINTF "%-30s%s\n" "Hostname :" "${CLIENT_HOSTNAME}" >>$TEM_DIR/client_details.$$
+
+}
+
+### Function: get_client_ip ###
+#
+# Get client IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_client_ip()
+{
+    local client_ip def_ip
+    if [ "${CLIENT_IP_ADDR}" ]; then
+        validate_ip_netmask ${CLIENT_IP_ADDR}
+        [ $? -ne 0 ] && abort_script "Invalid format for user specified Client IP address"
+    else
+        while :; do
+            def_ip=$($GETENT hosts ${CLIENT_HOSTNAME} | $AWK '{print $1}')
+            $ECHO -e "\nEnter the IP address of ${CLIENT_HOSTNAME}"
+            if [ "${def_ip}" ]; then
+                $ECHO "Hit enter for ${def_ip}"
+            fi
+            read client_ip
+
+            if [ ! "${client_ip}" ]; then
+                [ ! "${def_ip}" ] && continue
+                client_ip="${def_ip}"
+            fi
+            validate_ip_netmask ${client_ip} || continue
+            break
+        done
+        CLIENT_IP_ADDR="${client_ip}"
+    fi
+    $PRINTF "%-30s%s\n" "IP Address :" "${CLIENT_IP_ADDR}" >>$TEM_DIR/client_details.$$
+
+}
+
+### Function: get_client_netmask ###
+#
+# Get client netmask
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_client_netmask()
+{
+if [ "${CLIENT_NETMASK}" ]; then
+    validate_ip_netmask ${CLIENT_NETMASK}
+    if [ $? -ne 0 ]; then
+	_err_msg_="Invalid format for user specified Client Netmask"
+	abort_script "$_err_msg_"
+    fi
+else
+    unset CLIENT_NETMASK
+    while :; do
+	$ECHO -e "\nEnter the IP Netmask of ${CLIENT_IP_ADDR}"
+	read _client_netmask_
+	
+	if [ ! "${_client_netmask_}" ]; then
+	    continue
+	fi
+	
+	validate_ip_netmask ${_client_netmask_}
+	if [ $? -ne 0 ]; then
+	    continue
+	fi
+
+	CLIENT_NETMASK="${_client_netmask_}"	
+	break
+    done
+fi
+printf "%-30s%s\n" "Netmask :" "${CLIENT_NETMASK}" >> $TEM_DIR/client_details.$$
+}
+
+### Function: get_client_boot_mode ###
+#
+# Gets details regarding the client to add
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+
+get_client_boot_mode ()
+{
+if [ "${USER_PARAM_FILE}" ]; then
+    if [ "${CLIENT_BOOT_MODE}" ]; then
+        CLIENT_BOOT_MODE=${CLIENT_BOOT_MODE}
+        $PRINTF "%-30s%s\n" "Client Boot Mode :"   "${CLIENT_BOOT_MODE}" >> $TEM_DIR/client_details.$$
+    else
+        $ECHO "Failed to read parameter CLIENT_BOOT_MODE"
+        _err_=1
+    fi
+else
+    echo " "
+    while true; do
+        echo "Please select the client boot mode"
+	echo "1.  Legacy"
+	echo "2.  UEFI"
+
+	echo
+
+	echo -n "Enter your choice: "
+	read choice
+	echo
+
+	case $choice in
+     	 1)
+       	    CLIENT_BOOT_MODE="Legacy"
+            $PRINTF "%-30s%s\n" "Client Boot Mode :"   "${CLIENT_BOOT_MODE}" >> $TEM_DIR/client_details.$$
+            break
+            ;;
+         2)
+            CLIENT_BOOT_MODE="UEFI"
+            $PRINTF "%-30s%s\n" "Client Boot Mode :"    "${CLIENT_BOOT_MODE}" >>$TEM_DIR/client_details.$$
+            break
+            ;;
+         *)
+     	    echo "Invalid option.Choose correct option from the above ." 
+            ;;
+	esac
+    done
+fi
+}
+
+### Function: get_display_type ###
+#
+# Get the client display type
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_display_type()
+{
+if [ "${CLIENT_DISP_TYPE}" ]; then
+    $ECHO ${DISPLAY_TYPES}|$EGREP -w "${CLIENT_DISP_TYPE}"  >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	_err_msg_="Invalid user specified display type ${CLIENT_DISP_TYPE}"
+	abort_script "$_err_msg_"
+    fi
+else
+    $RM -rf ${TEM_DIR}/display_menu.$$
+
+    $ECHO -e "\nDisplay Types" >> ${TEM_DIR}/display_menu.$$
+    $ECHO "=============" >> ${TEM_DIR}/display_menu.$$
+
+    # Build an array
+    _cnt_=1
+    for _display_ in ${DISPLAY_TYPES}; do
+	_display_array_[${_cnt_}]="${_display_}"
+	let _cnt_=${_cnt_}+1
+    done
+
+    _cnt_=${#_display_array_[@]}
+
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	printf "%-10s%s\n" "[${i}]" "${_display_array_[${i}]}" >> ${TEM_DIR}/display_menu.$$
+	if [ "${_display_array_[${i}]}" == "NON-VGA" ]; then
+	    printf "%-10s%s\n" "" "This option covers installations via the actual serial interface," >> ${TEM_DIR}/display_menu.$$
+	    printf "%-10s%s\n" "" "as well as non-VGA installation via ssh/telnet connection" >> ${TEM_DIR}/display_menu.$$
+	else
+	    printf "%-10s%s\n" "" "This option covers installations via an actual VGA monitor display," >> ${TEM_DIR}/display_menu.$$
+	    printf "%-10s%s\n" "" "as well a pseudo-VGA installation via http connection" >> ${TEM_DIR}/display_menu.$$
+	fi
+    done
+    $ECHO -e "\nSelect the display type of ${CLIENT_HOSTNAME}" >> ${TEM_DIR}/display_menu.$$
+
+    # Display the menu
+    while :; do
+	$PRINTF "\033c"
+	$MORE -d  ${TEM_DIR}/display_menu.$$
+	read _opt_
+	
+	if [ ! ${_opt_} ]; then
+	    continue
+	fi
+	
+	_numerror_=0
+
+	$ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	    _numerror_=1
+	fi
+	if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+	    _numerror_=1
+	fi
+
+	if [ ${_numerror_} -eq 0 ]; then    	
+	    break
+	fi
+    done
+
+    CLIENT_DISP_TYPE="${_display_array_[${_opt_}]}"
+fi
+
+if [ "${CLIENT_DISP_TYPE}" == "NON-VGA" ]; then
+    DISP_CMD="-b output-device=ttya -b input-device=ttya -b nowin"
+else
+    DISP_CMD=""  
+fi
+printf "%-30s%s\n" "Display Type :" "${CLIENT_DISP_TYPE}" >> $TEM_DIR/client_details.$$
+}
+
+### Function: get_install_params ###
+#
+# Get the installation parameters
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_install_params()
+{
+local _chk_inst_type_
+$RM -f $TEM_DIR/installation_param_details
+if [ "${CLIENT_INSTALL_PARAMS}" ]; then
+    _chk_inst_type_=`$ECHO ${CLIENT_INSTALL_PARAMS}`
+    if [ ! "${_chk_inst_type_}" ]; then
+	_err_msg_="Parameter inst_type must be specified"
+	abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+	$PRINTF "\033c"
+	$ECHO -e "\nEnter the installation parameters for the client"
+	read _client_params_
+	
+	if [ ! "${_client_params_}" ]; then
+	    continue
+	fi
+	
+	_chk_inst_type_=`$ECHO ${_client_params_}|$EGREP "[[:blank:]]*inst_type="`
+	if [ ! "${_chk_inst_type_}" ]; then
+	    $ECHO "Parameter inst_type must be specified"
+	    $ECHO "Press return to continue"
+	    read _any_
+	    unset _client_params_
+	    continue
+	fi
+	break
+    done
+    CLIENT_INSTALL_PARAMS="${_client_params_}"
+fi
+
+# Print Client installation parameters
+print_installation_params "${CLIENT_INSTALL_PARAMS}" $TEM_DIR/installation_param_details no
+$CAT $TEM_DIR/installation_param_details >> $TEM_DIR/client_details.$$ 
+}
+
+### Function: get_linux_kick_location ###
+#
+# Get the location that this client will kickstart from
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_linux_kick_location()
+{
+local _chk_arch_
+
+# Build up details of all managed kickstart areas in array
+build_lin_media_info_arrays ${TEM_DIR}/existing_media_locations
+
+# Get number of elements 
+_cnt_=${#KICK_ID_ARRAY[@]}
+
+# Set default ${CLIENT_KICK_LOC} if required
+if [ "${USER_PARAM_FILE}" ]; then
+    if [ ! "${CLIENT_KICK_LOC}" ]; then
+	if [ "${DEF_CLIENT_KICK_LOC}" ]; then
+	    CLIENT_KICK_LOC=${DEF_CLIENT_KICK_LOC}
+	else
+	    # Are we called by remote kickstart. If we are then ${DEF_CLIENT_KICK_LOC}
+	    # should be set via the lin_rhel.loc
+	    if [ "${REMOTE_KICKSTART}" ]; then
+		_err_msg_="Linux location file not found on ${KICK_SERV_IP}\n${_app_media_path_}/lin_${CLIENT_ARCH}.loc"
+		abort_script "$_err_msg_"
+	    fi
+	fi
+    fi
+fi
+
+if [ "${CLIENT_KICK_LOC}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed. 
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	if [ "${KICK_LOCATION_ARRAY[${i}]}" == "${CLIENT_KICK_LOC}" ]; then
+	    _found_=1
+	    break
+	fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+	_err_msg_="Kickstart area ${CLIENT_KICK_LOC} not found"
+	abort_script "$_err_msg_"
+    fi
+
+
+    # Set array counter 
+    _opt_=${i}
+
+    if [ ! -s ${KICK_LOCATION_ARRAY[${_opt_}]}/${LIN_CHECK_FILE_1} ]; then
+	_err_msg_="Could not locate required file in user specified kickstart\n${KICK_LOCATION_ARRAY[${_opt_}]}/${LIN_CHECK_FILE_1}"
+	abort_script "$_err_msg_"
+    fi
+else
+   for (( i=1; i<=${_cnt_}; i++ )); do
+	printf "%-8s%-15s%s\n" "[${i}]" "Description : " "${KICK_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Identity : " "${KICK_ID_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Path : " "${KICK_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Architecture : " "${KICK_ARCH_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Linux Distro : " "${KICK_DISTRO_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Distro Rev   : " "${KICK_DISTRO_REV_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+	printf "%-8s%-15s%s\n\n" "" "Date Added : " "${KICK_DATE_ARRAY[${i}]}" >> ${TEM_DIR}/kick_menu.$$
+    done
+    $ECHO -e "\nSelect the kickstart you wish to use for ${CLIENT_HOSTNAME}" >> ${TEM_DIR}/kick_menu.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+	$MORE -d  ${TEM_DIR}/kick_menu.$$
+	read _opt_
+	
+	if [ ! ${_opt_} ]; then
+	    continue
+	fi
+	
+	_numerror_=0
+
+	$ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	    continue
+	fi
+	if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+	    continue
+	fi
+
+	if [ ! -s ${KICK_LOCATION_ARRAY[${_opt_}]}/${LIN_CHECK_FILE_1} ]; then
+	    _err_msg_="Could not locate required file in user specified kickstart\n${KICK_LOCATION_ARRAY[${_opt_}]}/${LIN_CHECK_FILE_1}"
+	    abort_script "$_err_msg_"
+	fi
+	break
+    done
+fi
+
+CLIENT_KICK_DESC="${KICK_DESC_ARRAY[${_opt_}]}"
+CLIENT_KICK_ID="${KICK_ID_ARRAY[${_opt_}]}"
+CLIENT_KICK_LOC="${KICK_LOCATION_ARRAY[${_opt_}]}"
+CLIENT_KICK_ARCH="${KICK_ARCH_ARRAY[${_opt_}]}"
+CLIENT_LIN_IMG_LOC="${_linux_img_loc_}"
+CLIENT_KICK_DISTRO="${KICK_DISTRO_ARRAY[${_opt_}]}"
+CLIENT_KICK_DISTRO_REV="${KICK_DISTRO_REV_ARRAY[${_opt_}]}"
+
+# This needs a lot more thought here to cater for other install types
+LINUX_CONFIG_TEMPLATE_FILE="${PARENT_DIR}/linux/${CLIENT_KICK_DISTRO}/linux_client_config_template"
+if [ ! -s ${LINUX_CONFIG_TEMPLATE_FILE} ]; then
+	_err_msg_="Could not find ${LINUX_CONFIG_TEMPLATE_FILE} file, or it's empty."
+    abort_script "$_err_msg_"
+fi
+
+# This needs a lot more thought here to cater for other install types
+LIN_PROFILE_TEMPL_FILE=${PARENT_DIR}/linux/${CLIENT_KICK_DISTRO}/install_profiles/linux.cfg.template
+LIN_BMR_PROFILE_TEMPL_FILE=${PARENT_DIR}/linux/${CLIENT_KICK_DISTRO}/install_profiles/linux_bmr.cfg.template
+if [ ! -s ${LIN_PROFILE_TEMPL_FILE} ]; then
+    _err_msg_="Could not locate required file \n${LIN_PROFILE_TEMPL_FILE}"
+    abort_script "$_err_msg_"
+fi
+
+if [ ! -s ${LIN_BMR_PROFILE_TEMPL_FILE} ]; then
+    _err_msg_="Could not locate required file \n${LIN_BMR_PROFILE_TEMPL_FILE}"
+    abort_script "$_err_msg_"
+fi
+
+printf "%-30s%s\n" "Kickstart Details :" "${CLIENT_KICK_DESC}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_KICK_ID}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_KICK_LOC}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_KICK_ARCH}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_KICK_DISTRO}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_KICK_DISTRO_REV}" >> $TEM_DIR/client_details.$$
+
+}
+
+### Function: get_install_patch_kick_location ###
+#
+# Get the location that this client will kickstart from
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_install_patch_kick_location()
+{
+local _chk_arch_
+
+# Build up details of all managed kickstart areas in array
+build_install_patch_media_info_arrays ${TEM_DIR}/existing_patch_media_locations
+
+# Get number of elements
+_cnt_=${#INSTALL_PATCH_KICK_ID_ARRAY[@]}
+
+# Set default ${CLIENT_INSTALL_PATCH_KICK_LOC} if required
+if [ "${USER_PARAM_FILE}" ]; then
+    if [ ! "${CLIENT_INSTALL_PATCH_KICK_LOC}" ]; then
+        if [ "${DEF_CLIENT_INSTALL_PATCH_KICK_LOC}" ]; then
+            CLIENT_INSTALL_PATCH_KICK_LOC=${DEF_CLIENT_INSTALL_PATCH_KICK_LOC}
+        else
+            # Are we called by remote kickstart. If we are then ${DEF_CLIENT_INSTALL_PATCH_KICK_LOC}
+            # should be set via the lin_rhel.loc
+            if [ "${REMOTE_INSTALL_PATCH_KICKSTART}" ]; then
+                _err_msg_="Install patch location file not found on ${KICK_SERV_IP}\n${_app_media_path_}/install_patch_${CLIENT_ARCH}.loc"
+                abort_script "$_err_msg_"
+            fi
+        fi
+    fi
+fi
+
+if [ "${CLIENT_INSTALL_PATCH_KICK_LOC}" ]; then
+    _found_=0
+
+    # Loop thru and see if this version is already installed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}" == "${CLIENT_INSTALL_PATCH_KICK_LOC}" ]; then
+            _found_=1
+            break
+        fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+        _err_msg_="Install Patch Kickstart area ${CLIENT_INSTALL_PATCH_KICK_LOC} not found"
+        abort_script "$_err_msg_"
+    fi
+
+
+    # Set array counter
+    _opt_=${i}
+
+    if [ ! -s ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/${INSTALL_PATCH_CHECK_FILE_1} ]; then
+        _err_msg_="Could not locate required file in user specified kickstart\n${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/${INSTALL_PATCH_CHECK_FILE_1}"
+        abort_script "$_err_msg_"
+    fi
+else
+   for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "%-8s%-15s%s\n" "[${i}]" "Description          : " "${INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Identity             : " "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Path                 : " "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Architecture         : " "${INSTALL_PATCH_KICK_ARCH_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Install Patch Distro : " "${INSTALL_PATCH_KICK_DISTRO_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Distro Rev           : " "${INSTALL_PATCH_KICK_DISTRO_REV_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Date Added           : " "${INSTALL_PATCH_KICK_DATE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Sprint release       : " "${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${i}]}"  >> ${TEM_DIR}/install_patch_kick_menu.$$
+	printf "%-8s%-15s%s\n\n" "" "Bundle Version       : " "${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}"  >> ${TEM_DIR}/install_patch_kick_menu.$$
+    done
+    $ECHO -e "\nSelect the install patch kickstart you wish to use for ${CLIENT_HOSTNAME}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+
+    # Display the menu and get user choice
+    while :; do
+        $PRINTF "\033c"
+        $MORE -d  ${TEM_DIR}/install_patch_kick_menu.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        _numerror_=0
+
+        $ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+            continue
+        fi
+
+        if [ ! -s ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/${INSTALL_PATCH_CHECK_FILE_1} ]; then
+            _err_msg_="Could not locate required file in user specified install patch kickstart\n${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/${INSTALL_PATCH_CHECK_FILE_1}"
+            abort_script "$_err_msg_"
+        fi
+        break
+    done
+fi
+CLIENT_INSTALL_PATCH_KICK_DESC="${INSTALL_PATCH_KICK_DESC_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_ID="${INSTALL_PATCH_KICK_ID_ARRAY_1[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_LOC="${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_ARCH="${INSTALL_PATCH_KICK_ARCH_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_IMG_LOC="${_install_patch_img_loc_}"
+CLIENT_INSTALL_PATCH_KICK_DISTRO="${INSTALL_PATCH_KICK_DISTRO_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_DISTRO_REV="${INSTALL_PATCH_KICK_DISTRO_REV_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_SPRINT_RELEASE="${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${_opt_}]}"
+CLIENT_INSTALL_PATCH_KICK_BUNDLE_VERSION="${INSTALL_PATCH_KICK_ID_ARRAY[${_opt_}]}"
+
+
+printf "%-30s%s\n" "Install patch Details :" "${CLIENT_INSTALL_PATCH_KICK_DESC}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_ID}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_LOC}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_ARCH}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_DISTRO}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_DISTRO_REV}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_SPRINT_RELEASE}" >> $TEM_DIR/client_details.$$
+printf "%30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_BUNDLE_VERSION}" >> $TEM_DIR/client_details.$$ 
+}
+
+### Function: get_linux_client_details ###
+#
+# Gets details regarding the linux client to add
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_linux_client_details()
+{
+$RM -rf $TEM_DIR/client_details.$$	
+$ECHO -e "\nClient Configuration details" >> $TEM_DIR/client_details.$$
+$ECHO "============================" >> $TEM_DIR/client_details.$$
+
+# Gets details regarding the client to add	
+get_client_hostname
+get_client_ip
+get_client_netmask
+get_client_boot_mode
+
+# Get MAC Addr of client
+get_mac_addr
+
+if [ "${BMR}" != "YES" ]; then
+	get_ipv6_parameter
+
+	if [[ ${IPV6_PARAMETER} = "YES" ]]; then
+			set_client_hostname_ipv6
+			get_client_ip_v6
+			#if [ ${CLIENT_IP_ADDR_V6} != "none" ]; then
+					get_router_ip_v6
+			#fi
+	fi
+fi
+
+# Get timezone of client
+if [ "${BMR}" == "YES" ]; then
+	CLIENT_TZ="none"
+else 
+	get_timezone
+fi
+
+# Set the Network address according to IP & Netmask
+set_network_addr "${CLIENT_NETMASK}" "${CLIENT_IP_ADDR}"
+
+# Get the NTP and DNS info from the DHCP network information
+set_dhcpnet_info
+
+# Try figure out the correct IP so that the client 
+# is on the same subnet
+set_kick_ip
+
+# Get application installation type
+get_app_inst_type
+
+# Get application media location; not applicable for inst_type=rhelonly
+if [ "${CLIENT_APPL_TYPE}" != "rhelonly" -a "${CLIENT_APPL_TYPE}" != "bmr" ]; then
+	get_app_media_loc
+fi
+
+# Get the location that this client will kickstart from
+get_linux_kick_location	
+
+# Get the location that this client will get O&M Linux from; not applicable for ENM-OMBS BMR 
+if [ "$BMR" != "YES" ]; then
+    get_om_location	
+fi
+
+# Get the location of the patch that this client will kickstart from
+if [ "$BMR" != "YES" ]; then
+    if [ "${CLIENT_APPL_TYPE}" != "bmr" ]; then
+       get_install_patch_kick_location
+    fi
+fi
+
+
+# Get the client display type
+get_display_type
+
+# Get the installation parameters
+get_install_params
+}
+
+### Function: get_mac_addr ###
+#
+# Get MAC address of client
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_mac_addr()
+{
+if [ "${CLIENT_MAC_ADDR}" ]; then
+    _client_mac_=`$ECHO ${CLIENT_MAC_ADDR}|$SED -e 's| ||g'`
+    # Check that the specified MAC address is valid format
+    chk_valid_mac_addr ${_client_mac_}
+    if [ $? -ne 0 ]; then
+	_err_msg_="Invalid Client MAC address"
+	abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+	_def_mac_=`$GETENT ethers ${CLIENT_HOSTNAME} | $AWK '{print $2}'`
+	
+	$ECHO -e "\nPlease enter the MAC address for ${CLIENT_HOSTNAME}"
+	if [ "${_def_mac_}" ]; then
+	    $ECHO "Hit enter for ${_def_mac_}"
+	fi
+	read _client_mac_
+	
+	if [ ! "${_client_mac_}" ]; then
+	    if [ "${_def_mac_}" ]; then
+		_client_mac_="${_def_mac_}"
+	    else
+		continue
+	    fi
+	fi
+	
+	# Check that the specified MAC address is valid format
+	chk_valid_mac_addr ${_client_mac_}
+	if [ $? -ne 0 ]; then
+	    continue
+	fi
+	break
+    done
+
+fi
+
+CLIENT_MAC_ADDR=`$ECHO ${_client_mac_} | $AWK -F: '{printf "%02s:%02s:%02s:%02s:%02s:%02s\n", $1, $2, $3, $4, $5, $6}' \
+    	| $TR '[:lower:]' '[:upper:]'`
+
+printf "%-30s%s\n" "MAC Address :" "${CLIENT_MAC_ADDR}" >> $TEM_DIR/client_details.$$
+}
+
+### Function: get_network_addr ###
+#
+# Get the network address of the client
+#
+# Arguments:
+#   $1 : Client Netmask
+#   $2 : Client IP
+# Return Values:
+#      : Network Address
+get_network_addr()
+{
+local _chk_=0 _tmp_ip_ _net_ip_
+local nm1 nm2 nm3 nm4
+local sno1 sno2 sno3 sno4
+local snf1 snf2 snf3 snf4
+
+# split out the parts of the netmask
+nm1=`$EXPR $1 : '\([0-9]*\)\..*'`
+nm2=`$EXPR $1 : '[0-9]*\.\([0-9]*\)\..*'`
+nm3=`$EXPR $1 : '[0-9]*\.[0-9]*\.\([0-9]*\)\..*'`
+nm4=`$EXPR $1 : '[0-9]*\.[0-9]*\.[0-9]*\.\([0-9]*\)'`
+
+# split out the parts of the server ip address
+sno1=`$EXPR $2 : '\([0-9]*\)\..*'`
+sno2=`$EXPR $2 : '[0-9]*\.\([0-9]*\)\..*'`
+sno3=`$EXPR $2 : '[0-9]*\.[0-9]*\.\([0-9]*\)\..*'`
+sno4=`$EXPR $2 : '[0-9]*\.[0-9]*\.[0-9]*\.\([0-9]*\)'`
+
+# AND the ipaddress and the netmask
+snf1="$((sno1 & nm1))"
+snf2="$((sno2 & nm2))"
+snf3="$((sno3 & nm3))"
+snf4="$((sno4 & nm4))"
+
+
+_tmp_ip_="${snf1}.${snf2}.${snf3}.${snf4}"
+_net_ip_=`$ECHO ${_tmp_ip_} | sed 's/ //g'`
+
+$ECHO ${_net_ip_}
+
+}
+
+
+
+
+### Function: get_timezone ### 
+#
+# Get timezone of client
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_timezone()
+{
+if [ ! "${CLIENT_TZ}" ]; then
+    while :; do
+	_def_tz_=`$ECHO ${TZ} 2>/dev/null`
+	$ECHO -e "\nEnter the Timezone to be set for ${CLIENT_HOSTNAME}"
+	if [ "${_def_tz_}" ]; then
+	    $ECHO "Hit enter for ${_def_tz_}"
+	fi
+	read _client_tz_
+	
+	if [ ! "${_client_tz_}" ]; then
+	    if [ "${_def_tz_}" ]; then
+		_client_tz_="${_def_tz_}"
+	    else
+		continue
+	    fi
+	fi
+		break
+    done
+    CLIENT_TZ="${_client_tz_}"	
+fi
+printf "%-30s%s\n" "Timezone :" "${CLIENT_TZ}" >> $TEM_DIR/client_details.$$
+
+}
+
+### Function: get_om_location ###
+#
+# Get O&M Location
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_om_location()
+{
+local _cnt_=0 _cnt1_ _ver_ _add_date_ _om_idx_
+$RM -f ${TEM_DIR}/existing_om_locations ${TEM_DIR}/existing_om_locations_1
+$RM -f ${TEM_DIR}/appl_menu.$$ ${TEM_DIR}/disp_file.$$
+
+# Build up details of all media config info in array for application media only
+build_nfs_config_info ${TEM_DIR}/nfs_config_file_list
+if [ ! "${MEDIA_CONFIG_FILE_ARRAY[1]}" ]; then
+    _err_msg_="No NFS Media config files found in \n${NFS_MEDIA_CONFIG_DIR}\n"
+    abort_script "$_err_msg_"
+fi
+
+# Get number of elements
+_cnt_=${#MEDIA_CONFIG_TYPE_ARRAY[@]}
+
+# Search until we hit O&M data
+for (( i=1; i<=${_cnt_}; i++ )); do
+    if [ "${MEDIA_CONFIG_TYPE_ARRAY[${i}]}" == "om_linux" ]; then
+        _om_idx_=${i}
+        break
+    fi
+done
+if [ ! "${_om_idx_}" ]; then
+    _err_msg_="No O&M Linux Media config files found in \n${NFS_MEDIA_CONFIG_DIR}\n"
+    abort_script "$_err_msg_"
+fi
+
+MEDIA_IDENTITY_FILE=".om_linux_identity"
+NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${_om_idx_}]}/${MEDIA_CONFIG_DIR_ARRAY[${_om_idx_}]}"
+
+# Get a list of existing O&M area(s) if any
+$LS ${NFS_MEDIA_AREA}/*/*/om_linux/${MEDIA_IDENTITY_FILE} 2> /dev/null >> ${TEM_DIR}/existing_om_locations_1
+while read _nfs_id_file_; do
+    if [ -s ${_nfs_id_file_} ]; then
+        $ECHO ${_nfs_id_file_} >>  ${TEM_DIR}/existing_om_locations
+    fi
+done <  ${TEM_DIR}/existing_om_locations_1
+
+# Have we got existing media Info file(s)
+if [ ! -s ${TEM_DIR}/existing_om_locations ]; then
+    _err_msg_="No O&M Linux media seem to be managed\n"
+    abort_script "$_err_msg_"
+fi
+
+unset NFS_MEDIA_LABEL_ARRAY NFS_MEDIA_DESC_ARRAY NFS_MEDIA_VER_ARRAY NFS_MEDIA_ARCH_ARRAY
+unset NFS_MEDIA_LOCATION_ARRAY NFS_MEDIA_DATE_ARRAY
+
+# Build up details of all media area info in array
+build_nfs_media_area_info  ${TEM_DIR}/existing_om_locations
+
+if [ ! "${NFS_MEDIA_LABEL_ARRAY[1]}" ]; then
+    _err_msg_="No O&M Linux media seem to be managed\n"
+    abort_script "$_err_msg_"
+fi
+
+# Get number of elements
+_cnt_=${#NFS_MEDIA_LABEL_ARRAY[@]}
+
+# Set default ${CLIENT_KICK_LOC} if required
+if [ "${USER_PARAM_FILE}" ]; then
+    if [ ! "${CLIENT_OM_LOC}" ]; then
+        if [ "${DEF_CLIENT_OM_LOC}" ]; then
+            CLIENT_OM_LOC=${DEF_CLIENT_OM_LOC}
+        else
+            # Are we called by remote kickstart. If we are then ${DEF_CLIENT_KICK_LOC}
+            # should be set via the om_sw.loc
+            if [ "${REMOTE_KICKSTART}" ]; then
+                _err_msg_="O&M Linux location file not found on ${KICK_SERV_IP}\n${_app_media_path_}/om_sw.loc"
+                abort_script "$_err_msg_"
+            fi
+        fi
+    fi
+fi
+
+if [ "${CLIENT_OM_LOC}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" == "${CLIENT_OM_LOC}" ]; then
+            _found_=1
+            break
+        fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+        _err_msg_="O&M Linux area ${CLIENT_OM_LOC} not found"
+        abort_script "$_err_msg_"
+    fi
+
+    # Set array counter
+    _opt_=${i}
+else
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "[${i}] " >> ${TEM_DIR}/disp_file.$$
+        if [ ${i} -lt 10 ]; then
+            printf "%-4s%-15s%s\n" "" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+        else
+            printf "%-3s%-15s%s\n" "" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+        fi
+
+        _cnt1_=0
+        for _ver_ in `$ECHO ${NFS_MEDIA_VER_ARRAY[${i}]}|$SED -e 's|,| |g'`; do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Version"    "${_ver_}" >> ${TEM_DIR}/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" "" "${_ver_}" >> ${TEM_DIR}/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+
+        printf "%-8s%-15s%s\n" "" "Path" "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/disp_file.$$
+
+        _cnt1_=0
+        for _add_date_ in `$ECHO ${NFS_MEDIA_DATE_ARRAY[${i}]}|$SED -e 's|,| |g'`; do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Date Added"  "${_add_date_}" >> ${TEM_DIR}/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" ""  "${_add_date_}" >> ${TEM_DIR}/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+        $ECHO -e "\n" >> ${TEM_DIR}/disp_file.$$
+    done
+    $ECHO "Select number of the O&M Linux media you wish to use" >> ${TEM_DIR}/disp_file.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+        $MORE -d ${TEM_DIR}/disp_file.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        $ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+            continue
+        fi
+
+        break
+    done
+fi
+if [ "${MEDIA_CONFIG_MEDIA_IP_ARRAY[${_om_idx_}]}" == "local" ]; then
+    CLIENT_OM_LOC="${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+    CLIENT_OM_DESC="${NFS_MEDIA_DESC_ARRAY[${_opt_}]}"
+    CLIENT_OM_VER="${NFS_MEDIA_VER_ARRAY[${_opt_}]}"
+else
+    CLIENT_OM_LOC="${MEDIA_CONFIG_MEDIA_IP_ARRAY[${_om_idx_}]}@${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+    CLIENT_OM_DESC="${MEDIA_CONFIG_MEDIA_IP_ARRAY[${_om_idx_}]}@${NFS_MEDIA_DESC_ARRAY[${_opt_}]}"
+    CLIENT_OM_VER="${MEDIA_CONFIG_MEDIA_IP_ARRAY[${_om_idx_}]}@${NFS_MEDIA_VER_ARRAY[${_opt_}]}"
+fi
+OM_ID_PATH_FILE=${MEDIA_CONFIG_ID_PATH_ARRAY[${_om_idx_}]}
+printf "%-30s%s\n" "O&M Details :" "${CLIENT_OM_DESC}" >> $TEM_DIR/client_details.$$
+printf "%-30s%s\n" "" "${CLIENT_OM_VER}" >> $TEM_DIR/client_details.$$
+printf "%-30s%s\n" "" "${CLIENT_OM_LOC}" >> $TEM_DIR/client_details.$$
+}
+
+
+### Function: list_linux_dhcp_clients ###
+#
+# List the clients managed by DHCP
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+list_linux_dhcp_clients()
+{
+local _cnt_ 
+$PRINTF "\033c"
+
+# Get a list of existing Client Info file(s) if any
+$RM -f ${TEM_DIR}/existing_dhcp_clients ${TEM_DIR}/existing_dhcp_clients_1
+$LS ${DHCP_CLIENT_AREA}/* 2> /dev/null > ${TEM_DIR}/existing_dhcp_clients_1
+while read _dhcp_client_info_file_; do
+    if [ -s ${_dhcp_client_info_file_} ]; then
+	$ECHO ${_dhcp_client_info_file_} >> ${TEM_DIR}/existing_dhcp_clients
+    fi
+done < ${TEM_DIR}/existing_dhcp_clients_1
+
+# Have we got existing Client Info file(s)
+
+
+
+if [ ! -s ${TEM_DIR}/existing_dhcp_clients ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo DHCP linux clients seem to be managed\n" | $TEE -a $LOGFILE
+    return 0
+fi
+
+# Build up details of all dhcp clients in array
+build_lin_client_info_arrays ${TEM_DIR}/existing_dhcp_clients
+
+# Get number of elements 
+_cnt_=${#CLIENT_HOSTNAME_ARRAY[@]}
+
+if [ "${USER_CLIENT_HOSTNAME}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed. 
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	if [ "${CLIENT_HOSTNAME_ARRAY[${i}]}" == "${USER_CLIENT_HOSTNAME}" ]; then
+	    _found_=1
+	    break
+	fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+	$ECHO "Kickstart client ${USER_CLIENT_HOSTNAME} not found"
+	return 0
+    fi
+
+    printf "%-30s%s\n" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "IP Address :" "${CLIENT_IP_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Netmask :" "${CLIENT_NETMASK_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "MAC Address :" "${CLIENT_MAC_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Network Address :" "${CLIENT_NET_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "NTP Server :" "${CLIENT_TIMESERVE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "DNS Domain :" "${CLIENT_DNSDOMAIN_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "DNS Servers :" "${CLIENT_DNSSERVER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Gateway :" "${CLIENT_GATEWAY_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Host Architecture :" "${CLIENT_ARCH_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Timezone :" "${CLIENT_TZ_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Client Boot Mode :"   "${CLIENT_BOOT_MODE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+   
+    if [ "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" != "" ]; then
+	printf "%-30s%s\n" "Application :" "${CLIENT_APPL_MEDIA_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_APPL_MEDIA_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    else
+        printf "%-30s%s\n" "Application SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+    fi
+    if [ "${CLIENT_OM_LOC_ARRAY[${i}]}" != "" ]; then
+	printf "%-30s%s\n" "O&M Details :" "${CLIENT_OM_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_OM_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_OM_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    else
+        printf "%-30s%s\n" "OM SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+    fi
+    printf "%-30s%s\n" "Kickstart Details :" "${CLIENT_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "" "${CLIENT_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "" "${CLIENT_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+    printf "%-30s%s\n" "Install patch Details :" "${CLIENT_INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$ 
+    printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_SPRINT_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_BUNDLE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+    printf "%-30s%s\n" "Display Type :" "${CLIENT_DISP_TYPE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "Kick Config date :" "${CLIENT_DATE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        
+    printf "%-30s%s\n" "IPV6 Parameter :" "${IPV6_PARAMETER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "IPV6 Hostname :" "${CLIENT_HOSTNAME_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "IPV6 Address :" "${CLIENT_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+    printf "%-30s%s\n" "IPV6 Router Address :" "${ROUTER_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+    print_installation_params "${CLIENT_INSTALL_PARAMS_ARRAY[${i}]}" $TEM_DIR/managed_clients.$$ no
+else
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ -z ${CLIENT_HOSTNAME_ARRAY[${i}]} ] ; then
+            continue
+        fi
+	printf "[${i}] " >> $TEM_DIR/managed_clients.$$
+	if [ ${i} -lt 10 ]; then
+	    printf "%-4s%-30s%s\n" "" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+	    printf "%-3s%-30s%s\n" "" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	fi
+	if [ "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" != "" ]; then
+		printf "%-8s%-30s%s\n" "" "Application :" "${CLIENT_APPL_MEDIA_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_APPL_MEDIA_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+		printf "%-8s%-30s%s\n" "" "Application SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+	fi 
+	if [ "${CLIENT_OM_LOC_ARRAY[${i}]}" != "" ]; then
+		printf "%-8s%-30s%s\n" "" "O&M Details :" "${CLIENT_OM_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_OM_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_OM_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+		printf "%-8s%-30s%s\n" "" "OM SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+	fi 
+	printf "%-8s%-30s%s\n" "" "Kickstart Details :" "${CLIENT_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "" "${CLIENT_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "" "${CLIENT_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+        printf "%-8s%-30s%s\n" "" "Install Patch Details :" "${CLIENT_INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_SPRINT_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_BUNDLE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+	printf "%-8s%-30s%s\n" "" "Kick Config date :" "${CLIENT_DATE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+        # Print Client installation parameters
+	print_installation_params "${CLIENT_INSTALL_PARAMS_ARRAY[${i}]}" $TEM_DIR/managed_clients.$$ yes
+    done
+fi
+if [ ! -s ${TEM_DIR}/managed_clients.$$ ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo DHCP linux clients seem to be managed\n" | $TEE -a $LOGFILE
+    return 0
+fi
+$MORE -d $TEM_DIR/managed_clients.$$
+
+# Do I need to hold the Display for User
+if [ "${HOLD_LISTING}" ]; then
+    $ECHO -e "\nPress any key to return to menu"
+    read _any_
+fi
+}
+
+### Function: no_intr_allowed ###
+#
+# Function just to return to a trap when interrupts are not allowed
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+no_intr_allowed()
+{
+:
+}
+
+### Function: print_installation_params ###
+#
+# Print Client installation parameters
+#
+# Arguments:
+#   $1 : Installation Parameters
+#   $2 : Output file
+#   $3 : Column indent
+# Return Values:
+#   none
+print_installation_params()
+{
+local _par_array_ _outfile_ _indent_ _cnt_ _prt_head_flag_ _str_ i
+
+_par_array_=(${1})
+_outfile_=${2}
+_indent_=$3
+
+_cnt_=${#_par_array_[@]}
+_prt_head_flag_=0
+for (( i=0; i<=${_cnt_}; i++)); do
+    if [ "${_par_array_[${i}]}" == "-" ]; then
+	_str_="${_par_array_[${i}]}"
+	continue
+    fi
+
+    if [ ! "${_str_}" ]; then
+	_str_="${_par_array_[${i}]}"
+    else
+	_str_="${_str_} ${_par_array_[${i}]}"
+    fi
+
+    if [ ${_prt_head_flag_} -eq 0 ]; then
+	if [ "${_indent_}" == "yes" ]; then
+	    printf "%-8s%-30s%s\n" "" "Install Params :" "${_str_}" >> ${_outfile_}
+	else
+	    printf "%-30s%s\n" "Install Params :" "${_str_}" >> ${_outfile_}
+	fi
+	_prt_head_flag_=1
+
+    else
+	if [ "${_indent_}" == "yes" ]; then
+	    printf "%-8s%-30s%s\n" "" "" "${_str_}" >> ${_outfile_}
+	else
+	    printf "%-30s%s\n" "" "${_str_}" >> ${_outfile_}
+	fi
+    fi
+    unset _str_
+done
+}
+
+### Function: refresh_isc_dhcp_service ###
+#
+#   Refresh the ISC DHCP service after a config change to $DHCP_CONF_FILE
+#
+# Arguments:
+#   none
+#
+# Return Values:
+#   0    : refresh ok
+#
+#   exits 1 on error 
+#        
+#
+refresh_isc_dhcp_service()
+{
+
+local DHCP_SERVICE_NAME="dhcpd.service"
+local DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $AWK '{print $2}')
+
+# Manage DHCP service
+if [[ ${DHCP_SERVICE_STATE} == "active" ]]; then
+    ${SYSTEMCTL} restart $DHCP_SERVICE_NAME >/dev/null 2>&1
+    DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $AWK '{print $2}')
+    if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+        ${SYSTEMCTL} stop $DHCP_SERVICE_NAME
+        sleep 5
+        ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+        # Systemctl restart sets maintenance if restarted too quickly
+        ${SYSTEMCTL} restart $DHCP_SERVICE_NAME >/dev/null 2>&1
+    fi
+fi
+DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $AWK '{print $2}')
+[[ ${DHCP_SERVICE_STATE} == "active" ]] && return 0
+
+abort_script "$FUNCNAME: Failed to online ISC DHCP service [$dhcp_service]"
+
+}
+    
+### Function: is_isc_dhcp_network ###
+#
+#   Checks for ISC DHCP managed networks in $DHCP_CONF_FILE
+#
+# Arguments:
+#   none : checks for existence of any managed networks
+#   $1   : specific managed network to check for
+#
+# Return Values:
+#   0    : managed network(s) exist(s)
+#   1    : No DHCP managed networks exist or the network passed in $1 does not exist
+#
+is_isc_dhcp_network()
+{
+
+local network=$1
+
+# Check ISC DHCP config file exists
+if [[ ! -s $DHCP_CONF_FILE ]]; then
+    $ECHO "No ISC DHCP managed networks exist. ISC DHCP config file $DHCP_CONF_FILE does not exist or is empty."
+    return 1
+fi
+
+# Check for any network
+if [[ -z $network ]]; then
+    if [[ $($EGREP "^[[:space:]]*\<subnet\>" $DHCP_CONF_FILE|$WC -l) -eq 0 ]]; then
+        $ECHO "No managed networks exist in $DHCP_CONF_FILE."
+        return 1
+    fi
+    return 0
+fi
+
+# Check for specific network
+if [[ $($EGREP "^[[:space:]]*\<subnet\>[[:space:]]+\<${network}\>" $DHCP_CONF_FILE|$WC -l) -eq 0 ]]; then
+    $ECHO "Network [$network] does not exist in $DHCP_CONF_FILE."
+    return 1
+fi
+
+return 0
+}
+
+### Function: add_isc_dhcp_host ###
+#
+# Add an ISC DHCP host declaration to $DHCP_CONF_FILE
+#
+# Arguments:
+#   $1  : host name 
+#   $2  : host IP 
+#   $3  : MAC address
+#   $4  : bootfile
+#
+# Return Values:
+#   0   : Host addition succeeded 
+#
+#   exits 1 on error 
+#
+add_isc_dhcp_host()
+{
+
+local host_name=$1
+local host_ip=$2
+local mac_addr=$3
+local bootfile=$4
+local tmp_file=$TEM_DIR/dhcpd.conf.add_host.$$
+local tmp_file2=$TEM_DIR/dhcpd.conf.add_host.2.$$
+local tmp_file3=$TEM_DIR/dhcpd.conf.add_uefi.3.$$
+local host_id=
+
+# Check params
+[[ $# -ne 4 ]] && abort_script "$FUNCNAME: Invalid number [$#] of parameters passed, should be 4"
+
+# Check ISC DHCP config file exists
+if [[ ! -s $DHCP_CONF_FILE ]]; then
+    $ECHO "No ISC DHCP managed networks exist. ISC DHCP config file $DHCP_CONF_FILE does not exist or is empty."
+    return 1
+fi
+
+# Backup DHCP conf file
+$CP -p ${DHCP_CONF_FILE} ${DHCP_CONF_FILE}.pre_add_host_backup
+
+# Remove any existing ISC DHCP host declaration, dont refresh the DHCP service until after the new host declaration is added below
+remove_isc_dhcp_host ${host_name} ${mac_addr} NO_REFRESH
+
+# Unique DHCP host identifier is composed of 01<macaddress> e.g 01000C29D97227
+host_id="01${mac_addr//:/}"
+
+# Add host declaration
+$RM -f $tmp_file $tmp_file2 $tmp_file3
+$CP $DHCP_CONF_FILE $tmp_file || abort_script "$FUNCNAME: [$CP $DHCP_CONF_FILE $tmp_file] failed"
+
+
+if [ "${CLIENT_BOOT_MODE}" != "UEFI" ] ; then
+
+   PXELINUX_ARCH_CODE=`$CAT ${DHCP_CONF_FILE}|grep -w "^#option arch code 93 = unsigned integer 16;"`
+     if [ ! -z "$PXELINUX_ARCH_CODE" ] ; then
+
+         $CAT << EOF >> $tmp_file
+
+   host ${host_id} {
+   option host-name ${host_name};
+   fixed-address ${host_ip};
+   hardware ethernet ${mac_addr};
+   if option arch = 00:00{
+   filename "${bootfile}";
+   } }
+
+EOF
+   sed "/$PXELINUX_ARCH_CODE/ s/^#//" -i $tmp_file
+
+else
+$CAT << EOF >> $tmp_file
+
+host ${host_id} {
+   option host-name ${host_name};
+   fixed-address ${host_ip};
+   hardware ethernet ${mac_addr};
+   if option arch = 00:00{
+   filename "${bootfile}";
+   } }
+   
+
+EOF
+ fi
+ else
+
+PXELINUX_MAGIC=`$CAT ${DHCP_CONF_FILE}|grep -w "option pxelinux.magic code 208 = string;"`
+PXELINUX_PATHPREFIX=`$CAT ${DHCP_CONF_FILE}|grep -w "option pxelinux.pathprefix code 210 = text;"`
+PXELINUX_ARCH_CODE=`$CAT ${DHCP_CONF_FILE}|grep -w "^#option arch code 93 = unsigned integer 16;"`
+if [ -z "$PXELINUX_MAGIC" ] && [ -z "$PXELINUX_PATHPREFIX" ] ; then
+
+$ECHO " " > $tmp_file3
+$ECHO -e "# arch option for PXEClient" >> $tmp_file3
+																 
+$ECHO "option space pxelinux;" >>  $tmp_file3
+$ECHO "option pxelinux.magic code 208 = string;" >>  $tmp_file3
+$ECHO "option pxelinux.pathprefix code 210 = text;" >> $tmp_file3
+$ECHO "option pxelinux.reboottime code 211 = unsigned integer 32;" >> $tmp_file3
+$ECHO "option pxelinux.reboottime code 211 = unsigned integer 32;" >> $tmp_file3
+$ECHO "option architecture-type code 93 = unsigned integer 16;"  >> $tmp_file3
+
+$SED -i "/Allow bootp/r $tmp_file3" $tmp_file
+
+$CAT << EOF >> $tmp_file
+
+host ${host_id} {
+   option host-name ${host_name};
+   fixed-address ${host_ip};
+   hardware ethernet ${mac_addr};
+   if option arch = 00:07{
+   filename "${bootfile}";
+   } }
+
+EOF
+sed "/$PXELINUX_ARCH_CODE/ s/^#//" -i $tmp_file
+else
+  $CAT << EOF >> $tmp_file
+
+host ${host_id} {
+   option host-name ${host_name};
+   fixed-address ${host_ip};
+   hardware ethernet ${mac_addr};
+   if option arch = 00:07{
+   filename "${bootfile}";
+   } }
+
+EOF
+fi
+fi
+
+# Replace multiple blank lines with single blank line in DHCP conf file
+$SED '/^[[:space:]]*$/N;/^[[:space:]]*\n[[:space:]]*$/D' $tmp_file > $tmp_file2
+
+# Check tmp DHCP conf file is valid before activation
+if ! $DHCPD -t -cf $tmp_file2 >/dev/null 2>&1; then
+    # Re-do so see error
+    $DHCPD -t -cf $tmp_file2
+    abort_script "$FUNCNAME: Invalid tmp DHCP conf file [$tmp_file2]"
+fi
+
+# Install new DHCP conf file
+$CP $tmp_file2 $DHCP_CONF_FILE || abort_script "$FUNCNAME: [$CP $tmp_file2 $DHCP_CONF_FILE] failed"
+
+# Refresh the DHCP service configuration
+refresh_isc_dhcp_service
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nAdded host [${host_name}] with ID [${host_id}] to ISC DHCP service" | $TEE -a $LOGFILE
+
+return 0
+
+}
+
+### Function: remove_isc_dhcp_host ###
+#
+# Remove an ISC DHCP host declaration from $DHCP_CONF_FILE
+#
+# Arguments:
+#   $1  : MAC address of host to remove
+#   $2  : REFRESH | NO_REFRESH
+#         Directive to refresh or not to refresh the ISC DHCP service after changing $DHCP_CONF_FILE
+#
+# Return Values:
+#   0   : Host removal succeeded or was not necessary
+#   exits 1 on error 
+
+remove_isc_dhcp_host()
+{
+
+local host_name=$1
+local mac_addr=$2
+local refresh=$3
+local host_id=
+local tmp_file=$TEM_DIR/dhcp4d.conf.remove_host.$$
+
+# Check params
+[[ $# -ne 3 ]] && abort_script "$FUNCNAME: Invalid number [$#] of parameters passed, should be 3"
+
+# Check ISC DHCP config file exists
+[[ ! -s $DHCP_CONF_FILE ]] && abort_script "$FUNCNAME: ISC DHCP config file $DHCP_CONF_FILE does not exist or is empty."
+
+# Unique DHCP host identifier is composed of 01<macaddress> e.g 01000C29D97227
+host_id="01${mac_addr//:/}"
+
+# Check host_id exists in $DHCP_CONF_FILE
+if ! $EGREP "^[[:space:]]*host[[:space:]]+\<${host_id}\>" $DHCP_CONF_FILE >/dev/null; then
+    $ECHO "${host_id} does not exist in $DHCP_CONF_FILE"
+    return 0
+fi
+
+# Backup DHCP conf file
+$CP -p ${DHCP_CONF_FILE} ${DHCP_CONF_FILE}.pre_remove_host_backup
+
+# Remove host declaration and replace multiple blank lines with a single blank line
+$RM -f $tmp_file
+$SED "/^[[:space:]]*\<host\>[[:space:]][[:space:]]*\<${host_id}\>/,/[[:space:]]*}[[:space:]]*$/d" $DHCP_CONF_FILE | \
+   $SED '/^[[:space:]]*$/N;/^[[:space:]]*\n[[:space:]]*$/D' > $tmp_file
+
+# Check tmp DHCP conf file is valid before activation
+if ! $DHCPD -t -cf $tmp_file >/dev/null 2>&1; then
+    # Re-do so see error
+    $DHCPD -t -cf $tmp_file 
+    abort_script "$FUNCNAME: Invalid tmp DHCP conf file [$tmp_file]"
+fi
+
+# Install new DHCP conf file
+$CP $tmp_file $DHCP_CONF_FILE || abort_script "$FUNCNAME: [$CP $tmp_file $DHCP_CONF_FILE] failed"
+
+# Refresh ISC DHCP service if requested
+[[ $refresh == "REFRESH" ]] && refresh_isc_dhcp_service
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoved host [${host_name}] with ID [${host_id}] from ISC DHCP service" | $TEE -a $LOGFILE
+
+return 0
+
+}
+
+### Function: remove_linux_dhcp_client ###
+#
+# Remove a client from DHCP
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+remove_linux_dhcp_client()
+{
+local _cnt_ 
+
+if [ ! "$NO_CONFIRM" ]; then
+$PRINTF "\033c"
+fi
+
+
+# Get a list of existing Client Info file(s) if any
+$RM -f ${TEM_DIR}/existing_dhcp_clients ${TEM_DIR}/existing_dhcp_clients_1
+$LS ${DHCP_CLIENT_AREA}/* 2> /dev/null > ${TEM_DIR}/existing_dhcp_clients_1
+while read _dhcp_client_info_file_; do
+    if [ -s ${_dhcp_client_info_file_} ]; then
+	$ECHO ${_dhcp_client_info_file_} >> ${TEM_DIR}/existing_dhcp_clients
+    fi
+done < ${TEM_DIR}/existing_dhcp_clients_1
+
+# Have we got existing Client Info file(s)
+if [ ! -s ${TEM_DIR}/existing_dhcp_clients ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo DHCP linux clients seem to be managed\n" | $TEE -a $LOGFILE
+    return 0
+fi
+
+
+# Build up details of all dhcp clients in array
+build_lin_client_info_arrays ${TEM_DIR}/existing_dhcp_clients
+
+# Get number of elements 
+_cnt_=${#CLIENT_HOSTNAME_ARRAY[@]}
+
+if [ "${USER_CLIENT_HOSTNAME}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed. 
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	if [ "${CLIENT_HOSTNAME_ARRAY[${i}]}" == "${USER_CLIENT_HOSTNAME}" ]; then
+	    _found_=1
+	    break
+	fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+	$ECHO "Kickstart client ${USER_CLIENT_HOSTNAME} not found"
+	return 0
+    fi
+
+    # Set array counter 
+    _opt_=${i}
+else
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ -z ${CLIENT_HOSTNAME_ARRAY[${i}]} ] ; then
+            continue
+        fi
+	printf "[${i}] " >> $TEM_DIR/managed_clients.$$
+	if [ ${i} -lt 10 ]; then
+	    printf "%-4s%-30s%s\n" "" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+	    printf "%-3s%-30s%s\n" "" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	fi
+	printf "%-8s%-30s%s\n" "" "IP Address :" "${CLIENT_IP_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Netmask :" "${CLIENT_NETMASK_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "MAC Address :" "${CLIENT_MAC_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Network Address :" "${CLIENT_NET_ADDR_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "NTP Server :" "${CLIENT_TIMESERVE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "DNS Domain :" "${CLIENT_DNSDOMAIN_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "DNS Servers :" "${CLIENT_DNSSERVER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Gateway :" "${CLIENT_GATEWAY_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Host Architecture :" "${CLIENT_ARCH_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Timezone :" "${CLIENT_TZ_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Client Boot Mode :"   "${CLIENT_BOOT_MODE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	if [ "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" != "" ]; then
+		printf "%-8s%-30s%s\n" "" "Application :" "${CLIENT_APPL_MEDIA_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_APPL_MEDIA_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+		printf "%-8s%-30s%s\n" "" "Application SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+	fi
+	if [ "${CLIENT_OM_LOC_ARRAY[${i}]}" != "" ]; then
+		printf "%-8s%-30s%s\n" "" "O&M Details :" "${CLIENT_OM_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_OM_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+		printf "%-8s%-30s%s\n" "" "" "${CLIENT_OM_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	else
+		printf "%-8s%-30s%s\n" "" "OM SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+	fi
+	printf "%-8s%-30s%s\n" "" "Kickstart Details :" "${CLIENT_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "" "${CLIENT_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "" "${CLIENT_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "Install Patch Details :" "${CLIENT_INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_SPRINT_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "" "${CLIENT_INSTALL_PATCH_KICK_BUNDLE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+ 	
+	printf "%-8s%-30s%s\n" "" "Display Type :" "${CLIENT_DISP_TYPE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-8s%-30s%s\n" "" "Kick Config date :" "${CLIENT_DATE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "IPV6 Parameter :" "${IPV6_PARAMETER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "IPV6 Hostname :" "${CLIENT_HOSTNAME_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "IPV6 Address :" "${CLIENT_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+        printf "%-8s%-30s%s\n" "" "IPV6 Router Address :" "${ROUTER_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+
+        # Print Client installation parameters
+	print_installation_params "${CLIENT_INSTALL_PARAMS_ARRAY[${i}]}" $TEM_DIR/managed_clients.$$ yes
+    done
+    if [ ! -s ${TEM_DIR}/managed_clients.$$ ]; then
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo DHCP linux clients seem to be managed\n" | $TEE -a $LOGFILE
+        return 0
+    fi
+    $ECHO "Select number of the Kickstart client you wish to delete or (q) to quit" >> $TEM_DIR/managed_clients.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+	$MORE -d $TEM_DIR/managed_clients.$$
+	read _opt_
+	
+	if [ ! ${_opt_} ]; then
+	    continue
+	fi
+	
+	if [ "${_opt_}" == "q" ]; then
+	    return 0
+	fi
+
+	$ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	    continue
+	fi
+	if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+	    continue
+	fi
+
+	break
+    done
+fi
+
+# Create a user confirmation display file
+$RM -f $TEM_DIR/managed_clients.$$
+
+printf "%-30s%s\n" "Hostname :" "${CLIENT_HOSTNAME_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "IP Address :" "${CLIENT_IP_ADDR_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Netmask :" "${CLIENT_NETMASK_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "MAC Address :" "${CLIENT_MAC_ADDR_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Network Address :" "${CLIENT_NET_ADDR_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "NTP Server :" "${CLIENT_TIMESERVE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "DNS Domain :" "${CLIENT_DNSDOMAIN_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "DNS Servers :" "${CLIENT_DNSSERVER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Gateway :" "${CLIENT_GATEWAY_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Host Architecture :" "${CLIENT_ARCH_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Timezone :" "${CLIENT_TZ_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+#This is changed
+printf "%-30s%s\n" "Client Boot Mode :"   "${CLIENT_BOOT_MODE_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$ 
+
+if [ "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" != "" ]; then
+	printf "%-30s%s\n" "Application :" "${CLIENT_APPL_MEDIA_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_APPL_MEDIA_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_APPL_MEDIA_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+else
+	printf "%-30s%s\n" "Application SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+fi
+if [ "${CLIENT_OM_LOC_ARRAY[${i}]}" != "" ]; then
+	printf "%-30s%s\n" "O&M Details :" "${CLIENT_OM_DESC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_OM_VER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+	printf "%-30s%s\n" "" "${CLIENT_OM_LOC_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+else
+	printf "%-30s%s\n" "OM SW Path :" "none" >> $TEM_DIR/managed_clients.$$
+fi
+printf "%-30s%s\n" "Kickstart Details :" "${CLIENT_KICK_DESC_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_KICK_ID_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_KICK_LOC_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Install Patch Details :" "${CLIENT_INSTALL_PATCH_KICK_DESC_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_LOC_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_SPRINT_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "" "${CLIENT_INSTALL_PATCH_KICK_BUNDLE_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Display Type :" "${CLIENT_DISP_TYPE_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "Kick Config date :" "${CLIENT_DATE_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "IPV6 Parameter :" "${IPV6_PARAMETER_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "IPV6 Hostname :" "${CLIENT_HOSTNAME_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "IPV6 Address :" "${CLIENT_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+printf "%-30s%s\n" "IPV6 Router Address :" "${ROUTER_IP_ADDR_V6_ARRAY[${i}]}" >> $TEM_DIR/managed_clients.$$
+
+# Print Client installation parameters
+print_installation_params "${CLIENT_INSTALL_PARAMS_ARRAY[${_opt_}]}" $TEM_DIR/managed_clients.$$ no
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT $TEM_DIR/managed_clients.$$ >> $LOGFILE
+    ANS="Yes"
+else
+    # Get user confirmation if required
+    _msg_="Are you sure you wish to delete the selected kickstart client? (Yes|No)"
+    user_confirm "${_msg_}" $TEM_DIR/managed_clients.$$
+fi
+
+# Are we removing?
+if [ "${ANS}" == "Yes" ]; then
+    # No interrupts allowed from now
+    trap "no_intr_allowed" 1 2 3 14 15
+
+    # Remove client from DHCP if it exists
+    remove_isc_dhcp_host ${CLIENT_HOSTNAME_ARRAY[${_opt_}]} ${CLIENT_MAC_ADDR_ARRAY[${_opt_}]} REFRESH
+
+    # Remove the client kickstart details
+    remove_client_kick_details ${_opt_}
+
+    # Remove the client kickstart info file
+    $RM -f ${DHCP_CLIENT_AREA}/${CLIENT_HOSTNAME_ARRAY[${_opt_}]}
+    $CAT /etc/hosts | $EGREP -w "^[[:blank:]]*${CLIENT_IP_ADDR_ARRAY[${_opt_}]}" \
+     | $EGREP -w "${CLIENT_HOSTNAME_ARRAY[${_opt_}]}" >> /dev/null 2>&1
+           if [ $? -eq 0 ] ; then
+              $CAT /etc/hosts | $EGREP -i -v "^[[:blank:]]*${CLIENT_IP_ADDR_ARRAY[${_opt_}]}" \
+               | $EGREP -i -v "${CLIENT_HOSTNAME_ARRAY[${_opt_}]}" >> /tmp/client_details
+              $MV -f /tmp/client_details /etc/hosts
+           fi
+     $CAT /etc/exports | $EGREP -v "^[[:blank:]]*.*${CLIENT_IP_ADDR_ARRAY[${_opt_}]}" > /tmp/client_detail
+     $MV -f /tmp/client_detail /etc/exports
+     if [[ '$CAT /etc/exports' =~ "${CLIENT_IP_ADDR_ARRAY[${_opt_}]}" ]] ; then
+        $ECHO "Failed to remove client details from exports file"
+     else
+        $ECHO "client details removed from exports file"
+        $EXPORTFS -a  >> /dev/null 2>&1
+        $SYSTEMCTL reload nfs.service
+     fi
+
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoved kickstart client [${CLIENT_HOSTNAME_ARRAY[${_opt_}]}]: OK\n" | $TEE -a $LOGFILE
+
+    # Remove traps on interrupts
+    trap 1 2 3 14 15
+fi
+
+}
+
+### Function: remove_client_kick_details ###
+#
+# Remove client kickstart details
+#
+# Arguments:
+#   $1 : Array index. It points to all correct data
+# Return Values:
+#   none
+remove_client_kick_details()
+{
+local _opt_=${1} 
+local _macro_id_="01-`$ECHO ${CLIENT_MAC_ADDR_ARRAY[${_opt_}]} | $SED 's/:/-/g'| $TR '[:upper:]' '[:lower:]'`"
+local _mac_lowercase_="`$ECHO ${CLIENT_MAC_ADDR_ARRAY[${_opt_}]} | $TR '[:upper:]' '[:lower:]'`"
+
+for _file_ in `${FIND} ${NETBOOT}|$EGREP "\/(${_macro_id_}|initrd\.${_mac_lowercase_}|linux.${_mac_lowercase_})"`; do
+    $RM -f ${_file_}
+done 
+
+$RM -rf ${CLIENT_KICK_LOC_ARRAY[${_opt_}]}/kickstart/${CLIENT_HOSTNAME_ARRAY[${_opt_}]}
+
+}
+
+### Function: save_client_data ###
+#
+# Save details of client in 
+# ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+save_client_data()
+{
+local _kick_client_dir_=${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}
+local inst_params=${_kick_client_dir_}/${CLIENT_HOSTNAME}_installation_param_details
+
+$RM -f $TEM_DIR/${CLIENT_HOSTNAME}_ks_cfg.txt
+cd ${SCRIPTHOME}
+
+if [ ! -d ${_kick_client_dir_} ]; then
+    $MKDIR -p ${_kick_client_dir_}
+    if [ $? -ne 0 ]; then
+	_err_msg_="Could not create directory\ n${_kick_client_dir_}"
+	abort_script "$_err_msg_"
+    fi
+else
+    $RM -f  ${_kick_client_dir_}/${CLIENT_HOSTNAME}_ks_cfg.txt  ${_kick_client_dir_}/${CLIENT_HOSTNAME}_installation_param_details
+fi
+
+if [ "${BATCH}" != "YES" ] ; then
+    if [ ! "${REMOTE_KICKSTART}" ]; then
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nUpdating ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${CLIENT_HOSTNAME}_ks_cfg.txt with client data" | $TEE -a $LOGFILE
+    else
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nUpdating ${CLIENT_KICK_LOC}/kickstart/${CLIENT_HOSTNAME}/${CLIENT_HOSTNAME}_ks_cfg.txt with client data" >> $LOGFILE
+    fi
+fi
+
+$CAT ${LINUX_CONFIG_TEMPLATE_FILE} | $SED -e "s|<CHANGE><CLIENT_HOSTNAME>|${CLIENT_HOSTNAME}|g" \
+    -e "s|<CHANGE><CLIENT_IP_ADDR>|${CLIENT_IP_ADDR}|g" \
+    -e "s|<CHANGE><CLIENT_NETMASK>|${CLIENT_NETMASK}|g" \
+    -e "s|<CHANGE><CLIENT_MAC_ADDR>|${CLIENT_MAC_ADDR}|g" \
+    -e "s|<CHANGE><CLIENT_BOOT_MODE>|${CLIENT_BOOT_MODE}|g" \
+    -e "s|<CHANGE><CLIENT_ARCH>|${CLIENT_KICK_ARCH}|g" \
+    -e "s|<CHANGE><IPV6_PARAMETER>|${IPV6_PARAMETER}|g" \
+    -e "s|<CHANGE><CLIENT_HOSTNAME_V6>|${CLIENT_HOSTNAME_V6}|g" \
+    -e "s|<CHANGE><CLIENT_IP_ADDR_V6>|${CLIENT_IP_ADDR_V6}|g" \
+    -e "s|<CHANGE><ROUTER_IP_ADDR_V6>|${ROUTER_IP_ADDR_V6}|g" \
+    -e "s|<CHANGE><CLIENT_NET_ADDR>|${CLIENT_NET_ADDR}|g" \
+    -e "s|<CHANGE><CLIENT_TIMESERVE>|${CLIENT_TIMESERVE}|g" \
+    -e "s|<CHANGE><CLIENT_DNSDOMAIN>|${CLIENT_DNSDOMAIN}|g" \
+    -e "s|<CHANGE><CLIENT_DNSSERVER>|${CLIENT_DNSSERVER}|g" \
+    -e "s|<CHANGE><CLIENT_GATEWAY>|${CLIENT_GATEWAY}|g" \
+    -e "s|<CHANGE><CLIENT_APPL_TYPE>|${CLIENT_APPL_TYPE}|g" \
+    -e "s|<CHANGE><CLIENT_APPL_MEDIA_LOC>|${CLIENT_APPL_MEDIA_LOC}|g" \
+    -e "s|<CHANGE><CLIENT_OM_LOC>|${CLIENT_OM_LOC}|g" \
+    -e "s|<CHANGE><CLIENT_KICK_LOC>|${CLIENT_KICK_LOC}|g" \
+    -e "s|<CHANGE><CLIENT_KICK_DESC>|${CLIENT_KICK_DESC}|g" \
+    -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_DESC>|${CLIENT_INSTALL_PATCH_KICK_DESC}|g" \
+    -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_LOC>|${CLIENT_INSTALL_PATCH_KICK_LOC}|g" \
+    -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_ID>|${CLIENT_INSTALL_PATCH_KICK_ID}|g" \
+    -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_SPRINT>|${CLIENT_INSTALL_PATCH_KICK_SPRINT_RELEASE}|g" \
+    -e "s|<CHANGE><CLIENT_INSTALL_PATCH_KICK_BUNDLE>|${CLIENT_INSTALL_PATCH_KICK_BUNDLE_VERSION}|g" \
+    -e "s|<CHANGE><CLIENT_DISP_TYPE>|${CLIENT_DISP_TYPE}|g" \
+    -e "s|<CHANGE><CLIENT_TZ>|${CLIENT_TZ}|g" > $TEM_DIR/${CLIENT_HOSTNAME}_ks_cfg.txt
+
+$CAT $TEM_DIR/${CLIENT_HOSTNAME}_ks_cfg.txt | $EGREP -v "<CHANGE>" > ${_kick_client_dir_}/${CLIENT_HOSTNAME}_ks_cfg.txt
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not remove unneeded placeholders from $TEM_DIR/${CLIENT_HOSTNAME}_ks_cfg.txt"
+    abort_script "$_err_msg_"
+fi
+
+if [ ! -s ${_kick_client_dir_}/${CLIENT_HOSTNAME}_ks_cfg.txt ]; then
+    _err_msg_="${_kick_client_dir_}/${CLIENT_HOSTNAME}_ks_cfg.txt not populated, or populated incorrectly"
+    abort_script "$_err_msg_"
+fi
+
+$RM -f ${_kick_client_dir_}/${CLIENT_HOSTNAME}_installation_param_details
+for _param_ in ${CLIENT_INSTALL_PARAMS}; do
+    $ECHO ${_param_} >> ${_kick_client_dir_}/${CLIENT_HOSTNAME}_installation_param_details
+    if [ $? -ne 0 ]; then
+	_err_msg_="Could not save ${_param_} in \n${_kick_client_dir_}/${CLIENT_HOSTNAME}_installation_param_details"
+	abort_script "$_err_msg_"
+    fi
+done
+
+    if [ "${CLIENT_APPL_TYPE}" != "rhelonly" -a "${CLIENT_APPL_TYPE}" != "bmr" ]; then
+        inst_type=$($CAT $inst_params |$EGREP "^[[:blank:]]*inst_type="|$AWK -F\= '{print $2}')
+        [ ! "${inst_type}" ] && abort_script "Parameter inst_type must be specified"
+
+        do_cmd $ECHO "${inst_type}_sw_locate=${CLIENT_APPL_MEDIA_LOC}" >>$inst_params
+    fi
+
+    if [ "${CLIENT_APPL_TYPE}" != "bmr"  ]; then
+        inst_type=$($CAT $inst_params |$EGREP "^[[:blank:]]*inst_type="|$AWK -F\= '{print $2}')
+        [ ! "${inst_type}" ] && abort_script "Parameter inst_type must be specified"
+
+         do_cmd $ECHO "${OM_ID_PATH_FILE}=${CLIENT_OM_LOC}" >>$inst_params
+    fi
+
+}
+
+### Function: set_kick_ip ###
+#
+# Try figure out the correct IP so that the client 
+# is on the same subnet
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+set_kick_ip()
+{
+
+${IFCONFIG} -a |$EGREP '^[[:blank:]]+inet[[:blank:]]+'|$AWK '{print $2,$4}' > /tmp/net_list
+
+while read _ip_ _netmask_; do
+    _ip1_=`$ECHO "ibase=16; \`$ECHO ${_netmask_}|$CUT -c1-2|$TR "[:lower:]" "[:upper:]"\`"|$BC`
+    _ip2_=`$ECHO "ibase=16; \`$ECHO ${_netmask_}|$CUT -c3-4|$TR "[:lower:]" "[:upper:]"\`"|$BC`
+    _ip3_=`$ECHO "ibase=16; \`$ECHO ${_netmask_}|$CUT -c5-6|$TR "[:lower:]" "[:upper:]"\`"|$BC`
+    _ip4_=`$ECHO "ibase=16; \`$ECHO ${_netmask_}|$CUT -c7-8|$TR "[:lower:]" "[:upper:]"\`"|$BC`
+
+    _new_net_mask_="${_ip1_}.${_ip2_}.${_ip3_}.${_ip4_}"
+    _host_net_addr_=`get_network_addr "${_new_net_mask_}" "${_ip_}"`
+
+    if [ "${_host_net_addr_}" == "${CLIENT_NET_ADDR}" ]; then
+	KICK_SERV_IP=${_ip_}
+	KICK_HOSTNAME=`$GETENT hosts ${KICK_SERV_IP} | $AWK '{print $2}'| $UNIQ | $HEAD -1 | $AWK -F\. '{print $1}'`
+	break
+    fi
+done < /tmp/net_list
+
+if [ ! "${KICK_SERV_IP}" ]; then
+    KICK_HOSTNAME=`$HOSTNAME`
+    KICK_SERV_IP=`$GETENT hosts ${KICK_HOSTNAME} | $UNIQ | $TAIL -1 | $AWK '{print $1}'`
+fi 
+
+if [ ! "${KICK_SERV_IP}" ]; then
+    _err_msg_="Could not determine IP address of kickstart server"
+    abort_script "$_err_msg_"
+fi
+
+if [ ! "${KICK_HOSTNAME}" ]; then
+    _err_msg_="Could not determine hostname of kickstart server"
+    abort_script "$_err_msg_"
+fi
+
+}
+
+### Function: set_network_addr ###
+#
+# Set the Network address according to IP & Netmask
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+set_network_addr()
+{
+unset CLIENT_NET_ADDR
+local _chk_=0
+local _client_netmask_=${1}
+local _client_ip_=${2}
+
+if [ ! "{_client_netmask_}" -o ! "{_client_ip_}" ]; then
+    _err_msg_="set_network_addr function requires netmask and ip addr as params"
+    abort_script "$_err_msg_"
+fi
+
+CLIENT_NET_ADDR=`get_network_addr "${_client_netmask_}" "${_client_ip_}"`
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nNetwork address for ${CLIENT_HOSTNAME} set to ${CLIENT_NET_ADDR}" >> $LOGFILE
+printf "%-30s%s\n" "Network Address :" "${CLIENT_NET_ADDR}" >> $TEM_DIR/client_details.$$
+}
+
+### Function: set_dhcpnet_info ###
+#
+# Set the Network address according to IP & Netmask
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+set_dhcpnet_info()
+{
+
+local buff=
+
+unset CLIENT_TIMESERVE
+unset CLIENT_DNSDOMAIN
+unset CLIENT_DNSSERVER
+unset CLIENT_GATEWAY
+
+# Are required globals set?
+[[ -z ${CLIENT_NET_ADDR} ]] && abort_script "$FUNCNAME: global CLIENT_NET_ADDR variable is not set."
+
+# Is the client network a managed ISC DHCP network?
+is_isc_dhcp_network ${CLIENT_NET_ADDR} || abort_script "$FUNCNAME: Network [${CLIENT_NET_ADDR}] does not exist in ISC DHCP conf file $DHCP_CONF_FILE."
+
+# Parse out the managed network options
+$SED -n "/^[[:space:]]*subnet[[:space:]][[:space:]]*${CLIENT_NET_ADDR}/,/[[:space:]]*}[[:space:]]*$/p" $DHCP_CONF_FILE > $TEM_DIR/my_dhcp_network
+
+[[ ! -s $TEM_DIR/my_dhcp_network ]] && \
+    abort_script "$FUNCNAME: [$TEM_DIR/my_dhcp_network] is empty. Failed to parse managed network [${CLIENT_NET_ADDR}] from $DHCP_CONF_FILE."
+
+# Get NTP server list for this managed network
+buff=$($AWK '/^[[:space:]]*\<option\>[[:space:]]+ntp-servers[[:space:]]+/{print $3}' $TEM_DIR/my_dhcp_network)
+CLIENT_TIMESERVE=${buff//\;/}
+
+# Get DNS domain for this managed network
+buff=$($AWK '/^[[:space:]]*\<option\>[[:space:]]+domain-name[[:space:]]+/{print $3}' $TEM_DIR/my_dhcp_network)
+buff=${buff//\;/}
+CLIENT_DNSDOMAIN=${buff//\"/}
+
+# Get DNS server list for this managed network
+buff=$($AWK '/^[[:space:]]*\<option\>[[:space:]]+domain-name-servers[[:space:]]+/{print $3}' $TEM_DIR/my_dhcp_network)
+CLIENT_DNSSERVER=${buff//\;/}
+
+## Get Router IP for this managed network
+buff=$($AWK '/^[[:space:]]*\<option\>[[:space:]]+routers[[:space:]]+/{print $3}' $TEM_DIR/my_dhcp_network)
+CLIENT_GATEWAY=${buff//\;/}
+
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nNTP Server for ${CLIENT_HOSTNAME} set to ${CLIENT_TIMESERVE}" >> $LOGFILE
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nDNS Domain for ${CLIENT_HOSTNAME} set to ${CLIENT_DNSDOMAIN}" >> $LOGFILE
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nDNS Servers for ${CLIENT_HOSTNAME} set to ${CLIENT_DNSSERVER}" >> $LOGFILE
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nGateway for ${CLIENT_HOSTNAME} set to ${CLIENT_GATEWAY}" >> $LOGFILE
+
+printf "%-30s%s\n" "NTP Server :" "${CLIENT_TIMESERVE}" >> $TEM_DIR/client_details.$$
+printf "%-30s%s\n" "DNS Domain :" "${CLIENT_DNSDOMAIN}" >> $TEM_DIR/client_details.$$
+printf "%-30s%s\n" "DNS Servers :" "${CLIENT_DNSSERVER}" >> $TEM_DIR/client_details.$$
+printf "%-30s%s\n" "Gateway :" "${CLIENT_GATEWAY}" >> $TEM_DIR/client_details.$$
+}
+
+########### IPV6 Functions
+###############
+###############
+###############
+###############
+###############
+###############
+###############
+###############
+
+### Function: get_ipv6_parameter ###
+#
+# Gets details regarding the client's ipv6 address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_ipv6_parameter()
+{
+if [ "${IPV6_PARAMETER}" ]; then
+    _ipv6_=${IPV6_PARAMETER}
+else
+    $PRINTF "\033c"	
+    while :; do
+        $ECHO -e "\nDo you want IPV6 enabled - YES/NO?"
+        read _ipv6_
+
+        if [ ! "${_ipv6_}" ]; then
+            continue
+        fi
+
+        case ${_ipv6_} in
+                YES ) break;;
+                NO ) break;;
+                * ) $ECHO -e "Please enter YES or NO\n"; continue;;
+        esac
+
+        break
+    done
+fi
+
+IPV6_PARAMETER=`$ECHO ${_ipv6_}`
+
+printf "%-30s%s\n" "IPV6 Enabled :" "${IPV6_PARAMETER}" >> $TEM_DIR/client_details.$$
+}
+### Function: get_router_ip_v6 ###
+#
+# Get client IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_router_ip_v6()
+{
+if [ "${ROUTER_IP_ADDR_V6}" ]; then
+    validate_ipv6_address ${ROUTER_IP_ADDR_V6}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Invalid format for user specified Router IPV6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+        $ECHO -e "\nEnter the Router IPV6 address of ${CLIENT_HOSTNAME}"
+        read _router_ipv6_
+
+        if [ ! "${_router_ipv6_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address ${_router_ipv6_}
+        if [ $? -ne 0 ]; then
+                continue
+        fi
+        break
+    done
+    ROUTER_IP_ADDR_V6="${_router_ipv6_}"
+fi
+printf "%-30s%s\n" "Router IPV6 Address :" "${ROUTER_IP_ADDR_V6}" >> $TEM_DIR/client_details.$$
+}
+### Function: get_client_ip_v6 ###
+#
+# Get client IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_client_ip_v6()
+{
+if [ "${CLIENT_IP_ADDR_V6}" ]; then
+    validate_ipv6_address ${CLIENT_IP_ADDR_V6}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Invalid format for user specified Client IPV6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+
+        $ECHO -e "\nEnter the IPV6 address of ${CLIENT_HOSTNAME}, example: 2001:1b70:82a1:000a:0000:4000:0034:0001/64 "
+        read _client_ip_
+
+        if [ ! "${_client_ip_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address ${_client_ip_}
+        if [ $? -ne 0 ]; then
+                continue
+        fi
+
+        break
+    done
+    CLIENT_IP_ADDR_V6="${_client_ip_}"
+fi
+printf "%-30s%s\n" "IPV6 Address :" "${CLIENT_IP_ADDR_V6}" >> $TEM_DIR/client_details.$$
+
+}
+### Function: set_client_hostname_ipv6 ###
+#
+# Gets details regarding the client to add
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+set_client_hostname_ipv6()
+{
+if [ "${CLIENT_HOSTNAME}" ]; then
+    _client_name_=${CLIENT_HOSTNAME}
+else
+    while :; do
+      $ECHO -e "\nEnter the client hostname"#
+       read _client_name_
+
+       if [ ! "${_client_name_}" ]; then
+           continue
+       fi
+       break
+    done
+fi
+
+# Remove FQDN details if present
+CLIENT_HOSTNAME_V6=`$ECHO ${_client_name_}|$AWK -F\. '{print $1}'`
+CLIENT_HOSTNAME_V6="`$ECHO ${_client_name_}`-v6"
+
+
+printf "%-30s%s\n" "Hostname IPV6 :" "${CLIENT_HOSTNAME_V6}" >> $TEM_DIR/client_details.$$
+}
+
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+setup_env()
+{
+# Set Remote handled FLAG. Basically determines if we are running
+# remote ERICkick directories. Needed for internal testing where we
+# are trying to avoid the need for multiple MWS. Not required in
+# customer world
+if [ -f ${PARENT_DIR}/etc/remote_dhcp_kick.cfg ]; then
+    _rmt_chk_=`$CAT ${PARENT_DIR}/etc/remote_dhcp_kick.cfg|$EGREP "^[[:blank:]]*DHCP_INSTALLATION_TYPE=" \
+	| $AWK -F\= '{print $2}'`
+
+    if [ "${_rmt_chk_}" ]; then
+	if [ "${_rmt_chk_}" == "remote" ]; then
+	    REMOTE_DHCP_SERVER=`$CAT ${PARENT_DIR}/etc/remote_dhcp_kick.cfg|$EGREP "^[[:blank:]]*REMOTE_DHCP_SERVER=" \
+	| $AWK -F\= '{print $2}'`
+	    if [ ! "${REMOTE_DHCP_SERVER}" ]; then
+		_err_msg_="Failed to read parameter REMOTE_DHCP_SERVER from \n${PARENT_DIR}/etc/remote_dhcp_kick.cfg"
+		abort_script "$_err_msg_"
+	    fi
+	fi
+    fi
+fi
+
+# Set the default kickstart location if not specified & Strip of any extra '/'
+LINUX_MEDIA_AREA=`$CAT ${ERICKICK_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_LINUX_MEDIA_AREA=" \
+	| $AWK -F\= '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+if [ ! "${LINUX_MEDIA_AREA}" ]; then
+    _err_msg_="Failed to read parameter DEFAULT_LINUX_MEDIA_AREA from \n${ERICKICK_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+# Set Linux area
+LIN_MEDIA_AREA=${LINUX_MEDIA_AREA}/${LINUX_MEDIA_DIR}
+
+# Parameter to indicate the media identity file of the Linux media
+LIN_MEDIA_INFO_FILE=`$CAT ${ERICKICK_CONFIG}|$EGREP "^[[:blank:]]*LIN_MEDIA_INFO_FILE=" \
+	| $AWK -F\= '{print $2}'`
+if [ ! "${LIN_MEDIA_INFO_FILE}" ]; then
+    _err_msg_="Failed to read parameter LIN_MEDIA_INFO_FILE from \n${ERICKICK_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+
+# Set the default install patch kickstart location if not specified & Strip of any extra '/'
+INSTALL_PATCH_MEDIA_AREA=`$CAT ${ERICINSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_INSTALL_PATCH_MEDIA_AREA=" \
+        | $AWK -F\= '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+if [ ! "${INSTALL_PATCH_MEDIA_AREA}" ]; then
+    _err_msg_="Failed to read parameter DEFAULT_INSTALL_PATCH_MEDIA_AREA from \n${ERICKICK_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+# Set Linux install patch area
+INSTALL_PATCH_MEDIA_AREA=${INSTALL_PATCH_MEDIA_AREA}/${INSTALL_PATCH_MEDIA_DIR}
+
+# Parameter to indicate the media identity file of the Linux patch media
+INSTALL_PATCH_MEDIA_INFO_FILE=`$CAT ${ERICINSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*INSTALL_PATCH_MEDIA_INFO_FILE=" \
+        | $AWK -F\= '{print $2}'`
+if [ ! "${INSTALL_PATCH_MEDIA_INFO_FILE}" ]; then
+    _err_msg_="Failed to read parameter INSTALL_PATCH_MEDIA_INFO_FILE from \n${ERICINSTALL_PATCH_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+
+# Set the default DHCP Client info file area
+DEFAULT_DHCP_CLIENT_AREA=`$CAT ${ERICKICK_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_DHCP_CLIENT_AREA=" \
+	| $AWK -F\= '{print $2}'`
+if [ ! "${DEFAULT_DHCP_CLIENT_AREA}" ]; then
+    _err_msg_="Failed to read parameter DEFAULT_DHCP_CLIENT_AREA from \n${ERICKICK_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+DHCP_CLIENT_AREA="${DEFAULT_DHCP_CLIENT_AREA}/${DHCP_CLIENT_DIR}"
+# Make the directory if required
+if [ ! -d ${DHCP_CLIENT_AREA} ]; then
+    $MKDIR -p ${DHCP_CLIENT_AREA}
+    if [ $? -ne 0 ]; then
+	_err_msg_="Could not create DHCP Client info directory ${DHCP_CLIENT_AREA}"
+	abort_script "$_err_msg_"
+    fi
+fi
+
+
+}
+
+### Function: update_hosts ###
+#
+# Update the hosts file with the client
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+update_hosts()
+{
+# Do I have the entry already in the hosts file
+$CAT /etc/hosts | $EGREP -w "^[[:blank:]]*${CLIENT_IP_ADDR}" \
+      | $EGREP -w "${CLIENT_HOSTNAME}$" >> /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    	$ECHO -e "${CLIENT_IP_ADDR}\t${CLIENT_HOSTNAME}" >> /etc/hosts
+    	if [ $? -ne 0 ]; then
+        	$ECHO "Could not update /etc/hosts with ${CLIENT_IP_ADDR} ${CLIENT_HOSTNAME}"
+        	return 1
+    	fi
+fi
+}
+
+### Function: update_exports ###
+#
+# Update the exports file with the client to share the file system
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+update_exports()
+{
+
+	$CAT /etc/exports | $EGREP -w "${CLIENT_IP_ADDR}" >> /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+        	$ECHO -e "/JUMP ${CLIENT_IP_ADDR}(rw)" >> /etc/exports
+        	$EXPORTFS >> /dev/null 2>&1
+        	$SYSTEMCTL reload nfs.service
+        		if [ $? -ne 0 ]; then
+                		$ECHO "Could not update /etc/exports with ${CLIENT_IP_ADDR}"
+                		return 1
+        		fi
+	fi
+}
+
+
+### Function: user_confirm ###
+#
+# Confirm details
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+user_confirm()
+{
+if [ "$NO_CONFIRM" ]; then
+    ANS="Yes"
+    return
+fi
+
+local _msg_=$1
+local _file_=$2
+
+while :; do
+    $PRINTF "\033c"	
+    if [ -f "$2" ]; then
+	$CAT $2
+    fi
+    $ECHO -e "\n${_msg_}"
+    read _ans_
+    
+    if [ ! "${_ans_}" ]; then
+	continue
+    fi
+    
+    if [ "${_ans_}" == "Yes" -o "${_ans_}" == "No" ]; then
+	ANS="${_ans_}"
+	break
+    fi	
+done
+}
+
+### Function: do_cmd ###
+#
+#   Logs and executes specified command
+#   If cmd fails, script is aborted.
+#
+# Arguments:
+#   $1-n Command with params
+# Returns:
+do_cmd()
+{
+   chk_create_logfile $*
+   $* || abort_script "Failed: $*"
+   return 0
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg() 
+{
+$PRINTF "\033c"
+$ECHO "
+Usage: 	`$BASENAME $0` -a {add|list|remove} | -a {list} -c {<client_name>}
+
+options:
+
+-a : Parameter containing action to be performed
+          add : Add a new client to DHCP
+         list : List current clients managed by DHCP
+       remove : Remove a client from DHCP
+
+-c : Optional parameter. Used to gather complete list 
+     of client information. 
+
+"	
+}
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+#
+RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+# Determine absolute path to software
+get_absolute_path
+
+# Check for the common functions
+_common_funcs_lib_="${PARENT_DIR}/lib/common_ericks_functions.lib"
+if [ ! -s ${_common_funcs_lib_} ]; then
+    _err_msg_="${_common_funcs_lib_} not found or is empty"
+    abort_script "$_err_msg_"
+fi
+
+# Source the common functions
+. ${_common_funcs_lib_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error sourcing the common functions library ${_common_funcs_lib_}"
+    abort_script "$_err_msg_"
+fi
+
+# Check the id of the user
+check_id ${DEFAULT_USER}
+if [ $? -ne 0 ]; then
+    _err_msg_="You must be ${DEFAULT_USER} to execute this script."
+    abort_script "$_err_msg_"
+fi
+
+while getopts ":a:c:f:BHNRVZO" arg; do
+  case $arg in
+    O) BMR="YES"
+       ;;
+    a) ACTION="$OPTARG"
+       ;;
+    c) USER_CLIENT_HOSTNAME="$OPTARG"
+       ;;
+    f) USER_PARAM_FILE="$OPTARG"
+       ;;
+    B) BATCH="YES"
+       ;;
+    H) HOLD_LISTING="YES"
+       ;;
+    N) NO_CONFIRM="YES"
+       ;;
+    R) REMOTE_KICKSTART="YES"
+       ;;
+    V) VALIDATE="YES"
+       ;;
+    Z) VIRTZ="YES"
+       ;;
+    \?) usage_msg
+	exit 1
+       ;;
+  esac
+done
+shift `expr $OPTIND - 1`
+# Check for the ERICkick config file
+ERICKICK_CONFIG_TEMPLATE="${PARENT_DIR}/template/ericks_config_template"
+ERICKICK_CONFIG="${PARENT_DIR}/etc/ericks_config"
+if [ ! -s ${ERICKICK_CONFIG} ]; then
+    if [ ! -s ${ERICKICK_CONFIG_TEMPLATE} ]; then
+	_err_msg_="${ERICKICK_CONFIG_TEMPLATE} not found or is empty"
+	abort_script "$_err_msg_"
+    else
+	$CP ${ERICKICK_CONFIG_TEMPLATE} ${ERICKICK_CONFIG}
+    fi
+fi
+
+# Check for the ERIC install patch config file
+ERICINSTALL_PATCH_CONFIG_TEMPLATE="${PARENT_DIR}/template/patchks_config_template"
+ERICINSTALL_PATCH_CONFIG="${PARENT_DIR}/etc/patchks_config"
+if [ ! -s ${ERICINSTALL_PATCH_CONFIG} ]; then
+    if [ ! -s ${ERICINSTALL_PATCH_CONFIG_TEMPLATE} ]; then
+        _err_msg_="${ERICINSTALL_PATCH_CONFIG_TEMPLATE} not found or is empty"
+        abort_script "$_err_msg_"
+    else
+        $CP ${ERICINSTALL_PATCH_CONFIG_TEMPLATE} ${ERICINSTALL_PATCH_CONFIG}
+    fi
+fi
+
+# Make directory for the NFS media directory if required
+NFS_MEDIA_CONFIG_DIR="${PARENT_DIR}/etc/nfs_media_config"
+if [ ! -d ${NFS_MEDIA_CONFIG_DIR} ]; then
+    $MKDIR -p ${NFS_MEDIA_CONFIG_DIR}
+fi
+
+# Check for the NFS media template directory if required
+NFS_MEDIA_CONFIG_TEMPL_DIR="${PARENT_DIR}/template/media_config_template"
+if [ ! -d ${NFS_MEDIA_CONFIG_TEMPL_DIR} ]; then
+    _err_msg_="Directory ${NFS_MEDIA_CONFIG_TEMPL_DIR} not found"
+    abort_script "$_err_msg_"
+fi
+
+$RM -f ${NFS_MEDIA_CONFIG_TEMPL_DIR}/nbu_sparc_template ${NFS_MEDIA_CONFIG_TEMPL_DIR}/nbu_i386_template
+$RM -f ${NFS_MEDIA_CONFIG_DIR}/nbu_sparc ${NFS_MEDIA_CONFIG_DIR}/nbu_i386
+
+# Set up NFS media config files from template files if required
+cd ${NFS_MEDIA_CONFIG_TEMPL_DIR}
+for _templ_file_ in `$LS *_template`; do
+    _file_=`$ECHO ${_templ_file_}|$SED -e 's|_template||'`
+    if [ ! -s ${NFS_MEDIA_CONFIG_DIR}/${_file_} ]; then
+        $CP ${_templ_file_} ${NFS_MEDIA_CONFIG_DIR}/${_file_}
+    fi
+done
+cd ${SCRIPTHOME}
+
+PORT_PING=${PARENT_DIR}/lib/port_ping.pl
+if [ ! -x ${PORT_PING} ]; then
+    _err_msg_="${PORT_PING} not found or not executable"
+    abort_script "$_err_msg_"    
+fi
+
+# Create a temporary Directory
+TEM_DIR=/tmp/manage_dhcp_clients.$$.$$
+while :; do
+    $LS ${TEM_DIR} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	break
+    fi
+    TEM_DIR=${TEM_DIR}.$$
+done
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory ${TEM_DIR}"
+    abort_script "$_err_msg_"
+fi
+
+# Set up environment variables for script.
+setup_env
+
+# Log file
+if [ ! "${LOGFILE}" ]; then
+    LOGFILE="${PARENT_DIR}/log/manage_dhcp_clients.log"
+fi	
+  
+# Check/Create Logfile
+chk_create_logfile
+
+# Check the input parameters
+check_params
+
+case "${ACTION}" in
+    add)	add_linux_dhcp_client		
+	;;
+    list) 	list_linux_dhcp_clients
+	;;        		
+    remove)	remove_linux_dhcp_client
+	;;
+    *) 		usage_msg
+		$RM -rf ${TEM_DIR} ${RESTART_IPF}
+		exit 1
+	;;
+esac
+
+cd ${SCRIPTHOME}
+$RM -rf ${RESTART_IPF}
+exit 0

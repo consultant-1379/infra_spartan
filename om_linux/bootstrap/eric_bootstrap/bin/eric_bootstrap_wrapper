@@ -1,0 +1,249 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used 
+# and/or copied only with the written permission from Ericsson Radio 
+# Systems AB or in accordance with the terms and conditions stipulated 
+# in the agreement/contract under which the program(s) have been 
+# supplied.
+#
+# ********************************************************************
+# Name    : eric_bootstrap_wrapper
+# Date    : 04/10/2018
+# Revision: A
+# Purpose : Script is called from /etc/systemd/system/firstboot.service
+#           service file. It is responsible for continuing the extraction/configuration
+#           of Ericsson server etc.
+#
+# Usage   : eric_bootstrap_wrapper
+#
+# ********************************************************************
+#
+# 	Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GETTEXT=/usr/bin/gettext
+GREP=/usr/bin/grep
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PKILL=/usr/bin/pkill
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TTY=/usr/bin/tty
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+WC=/usr/bin/wc
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+# This is the name of the core installation SW controls the rest of the
+# ERIC installation
+ERIC_BOOTSTRAP_SCRIPT=eric_bootstrap_install.bsh
+
+# Cmd to exec a shell and drop user to it in case of an error
+EXEC_SHELL_CMD="exec /bin/bash -o emacs"
+
+# ********************************************************************
+#
+#       Pre-execution Operations
+#
+# ********************************************************************
+L_ARCH=`$UNAME -p|grep -w i386`
+
+
+# ********************************************************************
+#
+# 	functions
+#
+# ********************************************************************
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="Script aborted.......\n"    
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "\n$_err_msg_\n"|$TEE -a ${LOGFILE}
+else
+    $ECHO -e "\n$_err_msg_\n"
+fi
+cd $SCRIPTHOME
+$RM -rf ${TEM_DIR}
+
+if [ "$2" ]; then
+    ${2} >> /dev/null 2>&1
+    exit 1
+else
+    exit 1
+fi
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+get_absolute_path() 
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+}
+
+### Function: start_via_twm ###
+#
+# Start installation via twm (tiny window manager)
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+start_via_twm()
+{
+HOME=/
+export HOME
+OPENWINHOME=/usr/openwin
+X11HOME=/usr/X11
+export OPENWINHOME
+PATH=${PATH}:${X11HOME}/bin:${OPENWINHOME}/bin:/usr/dt/bin
+export PATH
+
+$XINIT
+if [ $? -ne 0 ]; then
+    _err_msg_="Fault running $XINIT"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+}
+
+# ********************************************************************
+#
+# 	Main body of program
+#
+# ********************************************************************
+#
+# Determine absolute path to software
+get_absolute_path
+
+$PKILL sulogin > /dev/null 2>&1
+
+# Main Directory for the ENIQ Boot Install SW
+ERIC_BOOTSTRAP_DIR=`$DIRNAME ${SCRIPTHOME}`
+
+# Create a temporary Directory
+TEM_DIR=/tmp/eric_bootstrap_wrapper.$$.$$
+$RM -rf ${TEM_DIR}
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory $TEM_DIR"
+    abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+fi
+
+
+if [ -f /var/tmp/generic_finish ] ; then
+	$TTY |$GREP -w console >> /dev/null 2>&1 
+		if [ $? -eq 0 ]; then
+		  	$ECHO "Using console based installation environment..."
+                  	/bin/bash /var/tmp/generic_finish >/dev/console </dev/console 2>&1
+		    		if [ $? -ne 0 ] ; then
+					_err_msg_="generic_finish failed... refer /var/log/generic_finish.log"
+					abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"	
+		    		fi
+		else
+			$ECHO "Using non-console based installation environment..."
+			/bin/bash /var/tmp/generic_finish
+                                if [ $? -ne 0 ] ; then
+                                        _err_msg_="generic_finish failed... refer /var/log/generic_finish.log"
+                                        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+                                fi
+
+		fi
+else
+	_err_msg_="Could not find generic_finish script to run"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+
+# Main BotStrap script
+ERIC_BOOTSTRAP_SCRIPT="${ERIC_BOOTSTRAP_DIR}/bin/${ERIC_BOOTSTRAP_SCRIPT}"
+if [ ! -x ${ERIC_BOOTSTRAP_SCRIPT} ]; then
+    _err_msg_="Could not run ${ERIC_BOOTSTRAP_SCRIPT}"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+# ERIC Config Directory
+ERIC_BOOTSTRAP_CONF_DIR="${ERIC_BOOTSTRAP_DIR}/config"
+if [ ! -s ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type ]; then
+    _err_msg_="Mandatory installation file not detectetd ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+    $TTY |$GREP -w console >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        $ECHO "Using console based installation environment..."
+        ${ERIC_BOOTSTRAP_SCRIPT} >/dev/console </dev/console 2>&1
+    else
+	echo "Using non-console based installation environment..."
+	${ERIC_BOOTSTRAP_SCRIPT}
+    fi
+
+exit 0
+
+

@@ -1,0 +1,10 @@
+PKG=Unityinit
+BASEDIR=/
+NAME=Unityini_package
+DESC=Ericsson HWCOM UNITYINI Cofiguration
+ARCH=i386
+CATEGORY=application,ericsson
+MAXINST=2
+VENDOR=Ericsson AB
+CLASSES=none ipf
+VERSION=R0A02

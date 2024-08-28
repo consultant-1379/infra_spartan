@@ -1,0 +1,1345 @@
+#!/bin/bash 
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Product : Storage Manager NAS Plugin SFS, CXP 903 6744   
+# Name    : nasplugin
+# Written : Niklas Nordlund
+# Modified: xkeerbv (Modified for linux porting)
+# Purpose : Storage Manager Plugin for Symantec FileStore.
+#           Wrapper interface to FileStore NAS.
+#           Called from Storage Manager API.
+#
+# Usage   : nasplugin [flags] [function] [params]
+#
+# ********************************************************************
+
+PL_VERSION="R1A01 2018-08-25" 
+
+
+
+#---------------------------< Local Functions >----------------------------
+
+#----------------
+#   t r a n s 
+#----------------
+# Transforms (first column) in stdin as:
+# All slash '/' to dash '-'. Or reverse.
+# $1 = 'in|out' 'in' does /to-, 'out' does -to/ 
+# $2 = '0-9' Col to trans. 1=default, 0=All cols. (optional)
+trans()
+{
+   local type=$1 col=${2:-1}
+   if [ "$type" = "in" ]; then
+      awk '{gsub(/\//,"-",$'$col');print}'
+   else
+      awk '{gsub(/-/,"/",$'$col');print}'
+   fi
+}
+
+#----------------------
+#   t r u n c a t e 
+#----------------------
+# Truncates the fsName to max 25 chars.
+# NB: For snaps, 31 is max!
+# Prints the result on stdout.
+# $1 = FS name
+truncate()
+{
+   printf $1|awk '{printf("%s",substr($1,1,25));exit}'
+}
+
+#----------------------------------------
+#   p l _ s t a r t _ o p t i m i z e 
+#----------------------------------------
+# Starts optimization by touching $PL_OPTIM.
+pl_start_optimize()
+{
+   touch $PL_OPTIM
+}
+
+#--------------------------------------
+#   p l _ s t o p _ o p t i m i z e 
+#--------------------------------------
+# Stops optimization by removing $PL_OPTIM.
+pl_stop_optimize()
+{
+   [ -f $PL_OPTIM ] && rm $PL_OPTIM
+}
+
+#----------------------------------
+#   p l _ i f _ o p t i m i z e 
+#----------------------------------
+# Returns 'yes' on stdout, if optimize and you _should_ use $1.
+# Uses: $PL_OPTIM
+# $1 = File
+pl_if_optimize()
+{
+   [ ! -f $1 -o ! -f $PL_OPTIM ] && return 0
+   [ "$(ls -1t $1 $PL_OPTIM|tail -1|grep -w $PL_OPTIM)" != "" ] && $ECHO yes
+   return 0
+}
+
+#----------------------------
+#   p l _ g e t _ s i z e 
+#----------------------------
+# Returns the size in bytes, on stdout.
+# $1 = Size ([0-9]+[mMgGtT])
+pl_get_size()
+{
+   local sizeStr=$1 num unit
+
+   num=$($ECHO $sizeStr|sed 's/[^0-9.]*\([0-9.]*\)[^0-9.]*/\1/')
+   unit=$($ECHO $sizeStr|sed 's/.*\([mMgGtT]\)/\1/')
+   $ECHO "$num $($ECHO $unit|sed -e 's/[mM]/\* 1048576/' -e 's/[gG]/\* 1073741824/' -e 's/[tT]/\* 1099511627776/')" | bc
+}
+
+#--------------------------------
+#   f i l e s t o r e _ c m d 
+#--------------------------------
+# Send the command to the FileStore, using ssh.
+# Uses: NAS_USER, NAS_HOST
+# $* = FileStore command with params
+# '-a <answer>' E.g. '-a yes <cmd>', will send 'yes' on stdin.
+filestore_cmd()
+{
+   local cmd ans="" opt n=0 maxTry=10
+   local sshStat=/tmp/sshStat.$$
+   local sshErr=/tmp/sshErr.$$
+
+# Change clish path for NAS major version < 7 and = 7.4
+   [[ -z ${SFS_VERSION} ]] && bail_out 88 "SFS_VERSION not set in $PL_CONFIG! First run $(dirname $(/usr/bin/pwd))/bin/setup_ssh_FileStore.sh" </dev/null
+   if [[ "${SFS_VERSION}" = "7.4" ]];then
+         CLISH=/opt/VRTSnas/clish/bin/clish
+    elif [[ ${SFS_VERSION:0:1} < 7 ]];then
+            CLISH=/opt/VRTSnasgw/clish/bin/clish
+       else
+           CLISH=/opt/SYMCsnas/clish/bin/clish
+   fi
+
+   OPTIND=1
+   while getopts a: opt; do
+      case $opt in
+         a) ans=$OPTARG
+            shift 2 ;;
+      esac
+   done
+   cmd=$*
+   header_3 $cmd
+
+   # Check if auto-answer is setup correctly in SFS. 
+   # This could be removed if responsability moved to SFS installation.
+   if [ "$ans" != "" ]; then
+      pl_set_auto_answer
+      [ "$PL_AUTO_ANS" = "n" ] && $ECHO -e "\nWARNING: Auto-answer seems to not be setup correctly in SFS!" >&5
+   fi
+
+   while :; do	# Loop to be able to re-try command
+      log $cmd
+      sshCmd="$SSH $SSH_OPT -n support@$NAS_HOST \"$CLISH -u master -c '$cmd'\""
+      log $sshCmd
+
+      $SSH $SSH_OPT -n support@$NAS_HOST "$CLISH -u master -c '$cmd'" 2>$sshErr | tee $PL_TMP
+
+      SSH_STATUS=${PIPESTATUS[0]}
+      touch $sshErr
+      $GREP -v 'Warning: Permanently added' $sshErr | tee -a $CMD_LOG
+
+      if [ "$SSH_STATUS" = "255" -o "$SSH_STATUS" = "" ]; then
+         cat $PL_TMP | log
+         bail_out $SSH_STATUS "Failed communicating (ssh) to support@$NAS_HOST!" </dev/null
+      fi
+
+      # If SFS failed over, known_hosts is not ok
+      if [ "$(grep 'Offending key' $sshErr)" != "" ]; then
+         cat $sshErr | log
+         clean_known_hosts $sshErr
+      fi
+      rm $sshErr 2>/dev/null
+
+      [ "$($GREP 'V-288-2132 Unable to get the lock' $PL_TMP)" = "" ] && break
+      let n+=1
+      if [ $n -ge $maxTry ]; then
+         bail_out 99 "Giving up on re-sending command to SFS!" </dev/null
+      else
+         log "\n### SFS has probably timed out waiting for another commands."
+         log "### Will try once more to launch the SFS command."
+         $ECHO -e "\n### SFS has probably timed out waiting for another commands." >&5
+         $ECHO "### Will try once more to launch the SFS command." >&5
+      fi
+   done
+
+   egrep 'ERROR|^[ ]+\^$' $PL_TMP >/dev/null 2>&1
+   if [ $? -eq 0 -a $SSH_STATUS -eq 0 ]; then
+      SSH_STATUS=9
+   fi
+   [ $SSH_STATUS -ne 0 ] && cat $PL_TMP
+   return $SSH_STATUS
+}
+
+#------------------------------------------
+#   p l _ s e t _ a u t o _ a n s w e r 
+#------------------------------------------
+# If PL_AUTO_ANS is not set, it updates a file in SFS, to avoid prompting (yes/no) by clish.
+# And sets PL_AUTO_ANS=y/n, where 'y' means that auto-answer can be used.
+pl_set_auto_answer()
+{
+   local file=/etc/environment
+
+   [ "$PL_AUTO_ANS" != "" ] && return 0
+
+   [ "$(grep SNAPSHOT_RESTORE_CONFIRM=YES $PL_AUTO_ANS_FILE 2>/dev/null)" != "" ] && PL_AUTO_ANS=y && return 0
+
+   $SSH $SSH_OPT -n support@$NAS_HOST "/bin/cat $file 2>&1" >$PL_AUTO_ANS_FILE 2>&1
+   if [ $? -eq 255 ]; then
+      PL_AUTO_ANS=""
+      $ECHO -e "\nWARNING: Could not determine if auto-answer is setup in SFS:$file!" >&5
+      $CAT $PL_AUTO_ANS_FILE >&5
+      return 255
+   fi
+
+   [ "$(grep SNAPSHOT_RESTORE_CONFIRM=YES $PL_AUTO_ANS_FILE)" != "" ] && PL_AUTO_ANS=y && return 0
+
+   $SSH $SSH_OPT -n support@$NAS_HOST "/bin/echo SNAPSHOT_RESTORE_CONFIRM=YES >>$file"
+   $SSH $SSH_OPT -n support@$NAS_HOST "/bin/echo DEFRAG_USER_INPUT=yes >>$file"
+
+   if [ $? -eq 0 ]; then
+      PL_AUTO_ANS=y
+      return 0
+   else
+      PL_AUTO_ANS=n
+      return 1
+   fi
+}
+
+#----------------------------------------
+#   c l e a n _ k n o w n _ h o s t s 
+#----------------------------------------
+# When SFS failes over, known_hosts is not ok, so clean out that entry.
+# This is done to avoid anoying messages from SSH, the next time.
+# The next time a new entry will be inserted.
+# $1 = Error file from ssh, with 'Offending key in /.ssh/known_hosts:2'.
+clean_known_hosts()
+{
+   local errFile=$1 file line
+
+   file=$(grep 'Offending key' $errFile | sed -e 's/.* //' -e 's/:.*//')
+   line=$(grep 'Offending key' $errFile | sed 's/^.*:\([0-9]*\).*/\1/')
+   if [ -f $file -a "$(echo $line|egrep '^[0-9]*$')" != "" ]; then
+      p_edit $file "${line}d"
+   fi
+}
+
+#------------------------------< Procedures >------------------------------
+#
+# These procedures below must be implemented in a NAS Plugin
+# since they are called from the main NAS API.
+#
+
+#----------------------------------
+#   p l _ c r e a t e _ p o o l 
+#----------------------------------
+# $1 = Pool name
+# $2-n = Disks
+pl_create_pool()
+{
+   local pool=$1 diskStr
+
+   shift
+   diskStr=$($ECHO $*|sed 's/ /,/g')
+
+   filestore_cmd storage pool create $pool $diskStr
+}
+
+#----------------------------------
+#   p l _ d e l e t e _ p o o l 
+#----------------------------------
+# $1 = Pool name
+pl_delete_pool()
+{
+   local pool=$1
+
+   filestore_cmd storage pool destroy $pool
+}
+
+#------------------------------
+#   p l _ c r e a t e _ f s 
+#------------------------------
+# Uses NAS_BLKSIZE, set in nasplugin.conf.
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+# $2 = FS size (m|M|g|G|t|T) (eg 100g => 100GB)
+# $3 = Pool[,disk,...]
+pl_create_fs()
+{
+   local fsName=$1 fsSize=$2 pool=$3 blk="" stripeUnit=""
+   fsName=$($ECHO $fsName|trans in)
+   fsName=$(truncate $fsName)
+
+   [ "$NAS_BLKSIZE" != "" ] && blk="blksize=$NAS_BLKSIZE"
+
+   if [ "$($ECHO $NAS_NCOLS|egrep '^[0-9]*$')" != "" ]; then
+      [ "$($ECHO $NAS_STRIPEUNIT|egrep '^[0-9]*$')" != "" ] && stripeUnit="stripeunit=$NAS_STRIPEUNIT"
+      filestore_cmd storage fs create striped $fsName $fsSize $NAS_NCOLS $pool $stripeUnit $blk
+   else
+      filestore_cmd storage fs create simple $fsName $fsSize $pool $blk
+   fi
+}
+
+#----------------------------
+#   p l _ g e t _ p o o l 
+#----------------------------
+# Returns the (first) pool used by FS
+# $1 = FS name (containing dashes, eg oss1-home)
+pl_get_pool()
+{
+	filestore_cmd storage fs list $1>$tmpFile
+   	awk '/List of pools:/{a=$NF;sub(/,.*/,"",a);print a;exit}' $tmpFile
+}
+
+#------------------------------
+#   p l _ r e s i z e _ f s 
+#------------------------------
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+# $2 = FS size (m|M|g|G|t|T) (eg 100g = 100GB)
+pl_resize_fs()
+{
+   local fsName=$1 fsSize=$2 resizeType=growto onlineStatus stat=0
+   local snapName snapOptimList snapFullList pool=""
+   local tmpFile=/tmp/pl_resize_fs.$$
+   fsName=$($ECHO $fsName|trans in)
+
+   # Get current FS size
+   pl_list_fs raw>$tmpFile || return $?  # WO bash pipe problem
+   currSize=$(awk -v fs=$fsName '$1==fs{print $3;exit}' $tmpFile)
+   rm $tmpFile
+
+   # Check if grow or shrink
+   currVal=$(pl_get_size $currSize) || return $?
+   newVal=$(pl_get_size $fsSize) || return $?
+   [ "$($ECHO "if ($newVal<$currVal) 1"|bc)" = "1" ] && resizeType=shrinkto
+
+   # Get Pool to grow on.
+   # Limitations: Cannot resize main-FS in POOL_SEC
+   if [ "$resizeType" = "growto" ]; then
+      pool=$(pl_get_pool $fsName) || return $?
+      [ "$pool" = "" ] && return 1
+   fi
+
+   # Delete all space-optimized snapshots for FS
+   snapOptimList=$(filestore_cmd storage $PL_SNAP_CMD list|awk -v fs=$fsName '$2=="spaceopt"&&$3==fs{print $1}') || return $?
+   for snapName in $snapOptimList
+   do
+      pl_delete_snapshot $snapName $fsName || return $?
+   done
+
+   # Make sure online
+   pl_online_fs $fsName
+   stat=$?
+   [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+
+   filestore_cmd storage fs $resizeType primary $fsName $fsSize $pool || return $?
+
+   snapFullList=$(filestore_cmd storage $PL_SNAP_CMD list|awk -v fs=$fsName '$2=="fullinst"&&$3==fs{print $1}') || return $?
+   for snapName in $snapFullList
+   do
+      pl_online_fs $snapName
+      onlineStatus=$?
+      [ $onlineStatus -ne 0 -a $onlineStatus -ne 99 ] && return $onlineStatus
+
+      filestore_cmd storage fs $resizeType primary $snapName $fsSize || return $?
+
+      if [ $onlineStatus -eq 0 ]; then
+         pl_offline_fs $snapName
+         stat=$?
+         [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+      fi
+   done
+   return 0
+}
+
+#------------------------------
+#   p l _ o n l i n e _ f s 
+#------------------------------
+# Return 0 if FS is offline and put online successfully.
+# Return 99 if FS is online already. I.e. not a fault.
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_online_fs()
+{
+   local fsName=$1 state onlineStat
+   fsName=$($ECHO $fsName|trans in)
+
+   state=$(pl_state_fs $fsName) || return $?
+
+   if [ "$state" = "offline" ]; then
+      filestore_cmd storage fs online $fsName
+      onlineStat=$?
+
+      # Optimization code
+      if [ -f $PL_FS_RESULT ]; then
+         if [ $onlineStat -eq 0 ]; then
+            # Edit file
+            p_sed $PL_FS_RESULT "/^${fsName} /s/offline/online/"
+         else
+            rm $PL_FS_RESULT 2>/dev/null        # Reset optimization.
+         fi
+      fi
+
+      return $onlineStat
+   else
+      return 99
+   fi
+}
+
+#--------------------------------
+#   p l _ o f f l i n e _ f s 
+#--------------------------------
+# Return 0 if FS is online and put offline successfully.
+# Return 99 if FS is offline already. I.e. not a fault.
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_offline_fs()
+{
+   local fsName=$1 state offlineStat
+   fsName=$($ECHO $fsName|trans in)
+
+   state=$(pl_state_fs $fsName) || return $?
+
+   if [ "$state" = "online" ]; then
+      filestore_cmd storage fs offline $fsName
+      offlineStat=$?
+
+      # Optimization code
+      if [ -f $PL_FS_RESULT ]; then
+         if [ $offlineStat -eq 0 ]; then
+            # Edit file
+            p_sed $PL_FS_RESULT "/^${fsName} /s/online/offline/"
+         else
+            rm $PL_FS_RESULT 2>/dev/null        # Reset optimization.
+         fi
+      fi
+
+      return $offlineStat
+   else
+      return 99
+   fi
+}
+
+#----------------------------
+#   p l _ s t a t e _ f s 
+#----------------------------
+# Returns the state of the FS on stdout: online/offline
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_state_fs()
+{
+   local fsName=$1 tmpFile=/tmp/pl_state_fs.$$
+   fsName=$($ECHO $fsName|trans in)
+
+   pl_list_fs raw >$tmpFile || return $?	# WO bash pipe problem
+   awk -v fs=$fsName '$1==fs{print $2;exit}' $tmpFile
+   rm $tmpFile 2>/dev/null
+   return 0
+}
+
+#------------------------------
+#   p l _ d e l e t e _ f s 
+#------------------------------
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_delete_fs()
+{
+   local fsName=$1 snapList
+   fsName=$($ECHO $fsName|trans in)
+
+   pl_delete_share $fsName all || return $?
+
+   snapList=$(pl_list_snapshots $fsName|awk '{print $1}') || return $?
+   for snapName in $snapList
+   do
+      pl_delete_snapshot $snapName $fsName || return $?
+   done
+
+   filestore_cmd storage fs destroy $fsName
+}
+
+#------------------------------------------
+#   p l _ c r e a t e _ s n a p s h o t 
+#------------------------------------------
+# $1 = 'optim'|'full' Space-optimized or Full-Sized snapshot
+# $2 = Pool name
+# $3 = Snapshot name
+# $4 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_create_snapshot()
+{
+   local type=$1 pool=$2 snapName fsName cache optStr=space-optimized stat=0
+   snapName=$($ECHO $3|trans in)
+   fsName=$($ECHO $4|trans in)
+
+   if [ "$type" = "optim" ]; then
+      [ "$SFS_VERSION" = "5.5" ] && optStr=space-optmized
+      cache=$(echo $fsName|sed 's/-.*//')-cache	# I.e. <sysid>-cache
+      filestore_cmd storage $PL_SNAP_CMD create $optStr $snapName $fsName $cache
+
+      stat=$?
+      if [ $stat -ne 0 ]; then
+         fs=$($ECHO $snapName|trans out)
+         fsList=$(pl_list_fs) || return $stat
+         if [ $(list_index fsList $fs) -ne 0 ]; then
+            filestore_cmd storage $PL_SNAP_CMD destroy $snapName $fsName
+
+            if [ $? -ne 0 ]; then
+               # WO for HP84194 - Remove this WO for SFS 5.7 (?)
+               filestore_cmd storage fs destroy $snapName
+               if [ $? -eq 0 ]; then
+                  filestore_cmd storage $PL_SNAP_CMD create $optStr $snapName $fsName $cache
+                  stat=$?
+               fi
+            fi
+         fi
+      fi
+      return $stat
+
+   else
+      filestore_cmd storage $PL_SNAP_CMD create full-sized $snapName $fsName $pool
+   fi
+}
+
+#--------------------------------------------
+#   p l _ r e f r e s h _ s n a p s h o t 
+#--------------------------------------------
+# $1 = Snapshot name
+# $2 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_refresh_snapshot()
+{
+   local snapName=$1 fsName=$2 stat=0 list fs item strList opt fslash
+   local tmpFile1=/tmp/pl_refr1.$$ tmpFile2=/tmp/pl_refr2.$$ tmpFile3=/tmp/pl_refr3.$$
+   snapName=$($ECHO $snapName|trans in)
+   fsName=$($ECHO $fsName|trans in)
+
+   $ECHO -e "\n    Removing Shares and Offlining:"
+   pl_list_shares >$tmpFile1 || return $?
+   pl_list_shares raw|sed -e 's/[*]/any/' -e 's/[()]//g' >$tmpFile2 || return $?
+
+   >${PL_DELETED_SHARES_FILE}.$$
+   list=""      # This list will only contain 1 item! (same code as Rollback)
+   for fs in $snapName
+   do
+      item="$fs"        # fs/#any:rw,no_root_squash#host1:ro/online
+      $ECHO -e "\n    => $fs"|trans out 0
+
+      >$tmpFile3
+      fslash=$(echo $fs|trans out)
+      awk -v fs=$fslash '$2==fs{print $1,$3}' $tmpFile1|while read dev client
+      do
+         opt=$(awk -v d=$dev -v c=$client '$1==d&&$2==c{print $3}' $tmpFile2)
+         echo $(echo $client|sed 's#/#@#'):${opt} >>$tmpFile3	# /=>@ WO for /32 since item use /
+      done
+      strList=$(echo $(cat $tmpFile3)|tr ' ' '#')
+      [ "$strList" = "" ] && strList="null"
+      item=$item/$strList
+      $EGREP '^/vx/'$fs' ' $tmpFile2>>${PL_DELETED_SHARES_FILE}.$$   # Save shares in a file if script is interrupted.
+      pl_delete_share $fs all || return $?
+
+      pl_offline_fs $fs
+      stat=$?
+      if [ $stat -eq 0 ]; then
+         item=$item/online
+      else
+         [ $stat -ne 99 ] && return $stat
+         item=$item/offline
+      fi
+      list="$list $item"
+   done
+
+   $ECHO -e "\n    Now copy $fsName contents to $snapName\n"
+   filestore_cmd -a yes storage $PL_SNAP_CMD refresh $snapName $fsName
+   stat=$?
+
+   [ $stat -eq 0 ] && touch ${PL_SNAP_SYNC_FILE}_${fsName}
+
+   # Add back shares. Ignore errors, continue anyway
+   for item in $list
+   do
+      fs=$(dirname $(dirname $item))
+      $ECHO -e "\n    => $fs"|trans out 0
+      state=$(basename $item)
+      if [ "$state" = "online" ]; then
+         pl_online_fs $fs
+      fi
+
+      strList=$(basename $(dirname $item)) # any:rw,no_root_squash#host1:ro
+      for str in $(echo $strList|tr '#' ' ')
+      do
+         [ "$str" = "null" ] && break
+         client=$(echo $str|sed 's/:.*//'|sed 's#@#/#')
+         opt=$(echo $str|sed 's/.*://')
+         if [ "$client" = "any" ]; then
+            pl_create_share $fs $opt
+         else
+            pl_add_client $client $fs $opt
+         fi
+      done
+   done
+
+   rm $tmpFile1 $tmpFile2 $tmpFile3 ${PL_DELETED_SHARES_FILE}.$$ >/dev/null
+   return $stat
+}
+
+#----------------------------------------------
+#   p l _ r o l l b a c k _ s n a p s h o t 
+#----------------------------------------------
+# $1 = Snapshot name
+# $2 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_rollback_snapshot()
+{
+   local snapName=$1 fsName=$2 stat=0 list fs item strList opt fslash
+   local tmpFile1=/tmp/pl_roll1.$$ tmpFile2=/tmp/pl_roll2.$$ tmpFile3=/tmp/pl_roll3.$$
+   snapName=$($ECHO $snapName|trans in)
+   fsName=$($ECHO $fsName|trans in)
+
+   $ECHO -e "\n    Removing Shares and Offlining:"
+   pl_list_shares >$tmpFile1 || return $?
+   pl_list_shares raw|sed -e 's/[*]/any/' -e 's/[()]//g' >$tmpFile2 || return $?
+
+   >${PL_DELETED_SHARES_FILE}.$$
+   list=""	# Store all info in list (of items)
+   for fs in $snapName $fsName
+   do
+      item="$fs"	# fs/#any:rw,no_root_squash#host1:ro/online
+      $ECHO -e "\n    => $fs"|trans out 0
+
+      >$tmpFile3
+      fslash=$(echo $fs|trans out)
+      awk -v fs=$fslash '$2==fs{print $1,$3}' $tmpFile1|while read dev client
+      do
+         opt=$(awk -v d=$dev -v c=$client '$1==d&&$2==c{print $3}' $tmpFile2)
+         echo $(echo $client|sed 's#/#@#'):${opt} >>$tmpFile3	# /=>@ WO for /32 since item use /
+      done
+      strList=$(echo $(cat $tmpFile3)|tr ' ' '#')
+      [ "$strList" = "" ] && strList="null"
+      item=$item/$strList
+      $EGREP '^/vx/'$fs' ' $tmpFile2>>${PL_DELETED_SHARES_FILE}.$$   # Save shares in a file if script is interrupted.
+      pl_delete_share $fs all || return $?
+
+      pl_offline_fs $fs
+      stat=$?
+      if [ $stat -eq 0 ]; then
+         item=$item/online
+      else
+         [ $stat -ne 99 ] && return $stat
+         item=$item/offline
+      fi
+      list="$list $item"
+   done
+
+   $ECHO -e "\n    Now copy $snapName contents to $fsName\n"
+   filestore_cmd -a yes storage $PL_SNAP_CMD restore $fsName $snapName
+   stat=$?
+
+   [ $stat -eq 0 ] && touch ${PL_SNAP_SYNC_FILE}_${fsName}
+
+   # Add back shares. Ignore errors, continue anyway
+   for item in $list
+   do
+      fs=$(dirname $(dirname $item))
+      $ECHO -e "\n    => $fs"|trans out 0
+      state=$(basename $item)
+      if [ "$state" = "online" ]; then
+         pl_online_fs $fs
+      fi
+
+      strList=$(basename $(dirname $item)) # any:rw,no_root_squash#host1:ro
+      for str in $(echo $strList|tr '#' ' ')
+      do
+         [ "$str" = "null" ] && break
+         client=$(echo $str|sed 's/:.*//'|sed 's#@#/#')
+         opt=$(echo $str|sed 's/.*://')
+         if [ "$client" = "any" ]; then
+            pl_create_share $fs $opt
+         else
+            pl_add_client $client $fs $opt
+         fi
+      done
+   done
+
+   rm $tmpFile1 $tmpFile2 $tmpFile3 ${PL_DELETED_SHARES_FILE}.$$ >/dev/null
+   return $stat
+}
+
+#----------------------------------------
+#   p l _ s p l i t _ s n a p s h o t 
+#----------------------------------------
+# NOTE: Currently using a workaround, logging in as 'support' user
+# since still no support for 'split' in SFS.
+# $1 = FS name (containing slashes, eg oss1b/home)
+pl_split_snapshot()
+{
+   local fsName=$1 cmd sshCmd
+   fsName=$($ECHO $fsName|trans in)
+
+   $ECHO -e "\n    => $fsName"
+   cmd="vxsnap split $fsName"
+   sshCmd="$SSH -n support@$NAS_HOST $cmd"
+   doo $sshCmd | tee $PL_TMP || return $?
+
+   ! egrep 'ERROR|^[ ]+\^$' $PL_TMP >/dev/null
+}
+
+#------------------------------------------
+#   p l _ d e l e t e _ s n a p s h o t 
+#------------------------------------------
+# $1 = Snapshot name
+# $2 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_delete_snapshot()
+{
+   local snapName=$1 fsName=$2 stat
+   snapName=$($ECHO $snapName|trans in)
+   fsName=$($ECHO $fsName|trans in)
+
+   $ECHO -e "\n    => $1"
+   pl_delete_share $snapName all || return $?
+   pl_offline_fs $snapName
+   stat=$?
+   [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+
+   if [ -f ${PL_SNAP_SYNC_FILE}_${fsName} ]; then
+      pl_wait_for_snap_sync $fsName || return $?
+   fi
+
+   filestore_cmd storage $PL_SNAP_CMD destroy $snapName $fsName
+}
+
+#------------------------------------------------
+#   p l _ w a i t _ f o r _ s n a p _ s y n c 
+#------------------------------------------------
+# If times out, it will still return 0, to let calling proc try to delete snap anyway.
+# $1 = FS name (with dashes)
+pl_wait_for_snap_sync()
+{
+   local fsName=$1 n=0 p=0 percent last=""
+
+   [ ! -f ${PL_SNAP_SYNC_FILE}_${fsName} ] && return 0
+
+   while :; do
+      out=$(filestore_cmd storage fs list $fsName)
+      [ "$(echo "$out"|egrep 'Rollsync Status: Not Running')" != "" -o "$(echo "$out"|egrep 'Rollsync Status:')" = "" ] && break
+      sleep 5
+      percent=$(echo "$out"|sed -n 's/.*Tier.*: \([0-9.]*%\).*/\1/p')
+      [ $(expr $n % 12) -eq 0 ] && $ECHO "Waiting for $fsName to finish snapshot syncing [$percent]..."
+
+      if [ "$percent" = "$last" ]; then
+         let p+=1
+         if [ $p -gt 120 ]; then # Timeout if not changed % during 10min
+            $ECHO "TIMEOUT: No progress in Rollsync. Stop waiting. ($percent)"
+            break
+         fi
+      else
+         p=0
+      fi
+      last="$percent"
+      let n+=1
+   done
+
+   rm ${PL_SNAP_SYNC_FILE}_${fsName} >/dev/null 2>&1
+   return 0
+}
+
+#------------------------------------
+#   p l _ c r e a t e _ s h a r e 
+#------------------------------------
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+# $2 = NFS options
+pl_create_share()
+{
+   local fsName=$1 nfsOptions=$2 fsStr stat
+   fsName=$($ECHO $fsName|trans in)
+   fsStr=/vx/$fsName
+   [ "$SFS_VERSION" = "5.5" ] && fsStr=$fsName
+
+   pl_online_fs $fsName
+   stat=$?
+   [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+
+   filestore_cmd nfs share add $nfsOptions $fsStr
+}
+
+#------------------------------------
+#   p l _ d e l e t e _ s h a r e 
+#------------------------------------
+# If FS has no share, return 0. Can always be called without checking first.
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+# $2 = 'all' (optional) Will remove also all clients, not just the 'share'(any/*)
+pl_delete_share()
+{
+   local fsName clientip list fsStr
+   fsName=$1
+   clientip=$2
+   fsName=$($ECHO $fsName|trans in)
+   fsStr=/vx/$fsName
+   [ "$SFS_VERSION" = "5.5" ] && fsStr=$fsName
+
+   list=$(pl_list_shares|awk '{print $2}'|trans in) || return $?
+   if [ $(list_index list $fsName) -ne 0 ]; then
+      if [ "$clientip" = "all" ]; then
+         list=$(pl_list_shares|trans in 2|awk -v fs=$fsName '$2==fs{print $3}'|sort -u) || return $?
+         for client in $list
+         do
+            [ "$client" = "any" ] && client=""
+            filestore_cmd nfs share delete $fsStr $client || return $?
+         done
+      else
+         filestore_cmd nfs share delete $fsStr $clientip || return $?
+      fi
+   fi
+
+   return 0
+}
+
+
+#--------------------------------
+#   p l _ a d d _ c l i e n t 
+#--------------------------------
+# $1 = Client
+# $2 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+# $3 = NFS options
+pl_add_client()
+{
+   local client=$1 fsName=$2 nfsOptions=$3 fsStr stat
+   fsName=$($ECHO $fsName|trans in)
+   fsStr=/vx/$fsName
+   if [ "$SFS_VERSION" = "5.5" ]; then
+      fsStr=$fsName
+   else
+      [ "$(echo $client|egrep '^[0-9.]+$')" != "" ] && client=${client}/32
+   fi
+
+   pl_online_fs $fsName
+   stat=$?
+   [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+
+   filestore_cmd nfs share add $nfsOptions $fsStr $client
+}
+
+#--------------------------------------
+#   p l _ d e l e t e _ c l i e n t 
+#--------------------------------------
+# $1 = Client
+pl_delete_client()
+{
+   local client=$1 fsStr
+   local tmpFile=/tmp/pl_delete_client.$$
+
+   filestore_cmd nfs share show >$tmpFile || return $?
+   awk -v c=$client '/\/vx/&&$2==c{print $1,$2}/\/vx/&&match($2,"^"c"/[0-9]*$"){print $1,$2}' $tmpFile | while read fsStr clientStr
+   do
+      if [ "$SFS_VERSION" = "5.5" ]; then
+         fsStr=$(echo $fsStr|sed 's/\/vx\///')
+      fi
+
+      filestore_cmd nfs share delete $fsStr $clientStr || exit $?
+   done || return $?
+
+   rm $tmpFile
+   return 0
+}
+
+#------------------------------
+#   p l _ g e t _ s h a r e 
+#------------------------------
+# Prints on stdout the share point for a given FS.
+# It translate real FS name to internal SFS FS name, due to its limitations.
+# No special chars: Translate '/' to '-'
+# $1 = FS name
+pl_get_share()
+{
+   local fsName
+
+   fsName=$($ECHO $1|trans in)
+   $ECHO /vx/$fsName
+}
+
+#------------------------------------
+#   p l _ c r e a t e _ c a c h e 
+#------------------------------------
+# $1 = Cache name
+# $2 = Size ([0-9]+[mMgGtT])
+# $3 = Pool
+pl_create_cache()
+{
+   local name=$1 size=$2 pool=$3
+
+   filestore_cmd storage $PL_SNAP_CMD cache create $name $size $pool
+}
+
+#------------------------------------
+#   p l _ d e l e t e _ c a c h e 
+#------------------------------------
+# $2 = Cache name
+pl_delete_cache()
+{
+   local name=$1
+
+   filestore_cmd storage $PL_SNAP_CMD cache destroy $name
+}
+
+#------------------------
+#   p l _ d e f r a g 
+#------------------------
+# Uses: DEFRAG_TIME, DEFRAG_TIME_<FS>
+# $1 = FS name (containing slashes, eg oss1/ossrc/eba/eba_rtt)
+pl_defrag()
+{
+   local fsName=$1 time=30M FS_NAME stat
+   fsName=$($ECHO $fsName|trans in)
+
+   [ "$DEFRAG_TIME" != "" ] && time=$DEFRAG_TIME
+
+   # Remove sysid and snap in name, and make upper case
+   FS_NAME=$(echo $fsName|$SED -e 's/^[^-]*-//' -e 's/-.*//'|tr '[:lower:]' '[:upper:]')
+   eval fsTime=\$DEFRAG_TIME_${FS_NAME}
+   [ "$fsTime" != "" ] && time=$fsTime
+
+   if [ "$SFS_DEFRAG" = "y" ]; then
+      filestore_cmd -a yes storage fs defrag $fsName $time
+   else
+      header_3 $fsName
+      doo $SSH $SSH_OPT -n support@$NAS_HOST df -k /vx/$fsName >$PL_TMP 2>&1
+      [ $? -eq 255 ] && cat $PL_TMP && return 255 # Ignore 'df' errors and bailout on comm err.
+      if [ "$(grep sfsdg $PL_TMP)" = "" ]; then
+         pl_online_fs $fsName
+         stat=$?
+         [ $stat -ne 0 -a $stat -ne 99 ] && return $stat
+      fi
+      doo $SSH $SSH_OPT -n support@$NAS_HOST /opt/VRTS/bin/fsadm -t vxfs -T $time -d /vx/$fsName
+   fi
+}
+
+#--------------------------------
+#   p l _ l i s t _ c a c h e 
+#--------------------------------
+# $1 = 'raw' Gives raw native SFS output (optional)
+pl_list_cache()
+{
+   local type=$1
+
+   if [ "$type" = "raw" ]; then
+      filestore_cmd storage $PL_SNAP_CMD cache list
+   else
+      if [ "$SFS_VERSION" = "5.5" ]; then
+         filestore_cmd storage $PL_SNAP_CMD cache list|awk '$1=="co"{print $2}'
+      else
+         filestore_cmd storage $PL_SNAP_CMD cache list|awk '$2~/^[0-9]+$/{print $1}'
+      fi
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#--------------------------------
+#   p l _ l i s t _ d i s k s 
+#--------------------------------
+# Gives a plain list of disks.
+# $1 = 'raw' Gives raw native SFS output (optional)
+# $1 = FS name. Lists disks for given fs. (optional)
+pl_list_disks()
+{
+   local type=$1 fsName=$1
+
+   if [ "$type" = "raw" ]; then
+      filestore_cmd storage disk list
+   else
+      if [ "$fsName" != "" ]; then
+         fsName=$($ECHO $fsName|trans in)
+         filestore_cmd storage fs list $fsName|awk '/List of disks:/{print $4}'|sort -u
+      else
+         filestore_cmd storage disk list|awk 'a==1&&$1!=""{print $1}/\=\=\=/{a=1}'
+      fi
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#--------------------------------
+#   p l _ l i s t _ p o o l s 
+#--------------------------------
+# Gives a plain list of pools.
+# $1 = 'raw' Gives raw native SFS output (optional)
+# $1 = FS name. Lists pools for given fs. (optional)
+pl_list_pools()
+{
+   local type=$1 fsName=$1
+
+   if [ "$type" = "raw" ]; then
+      filestore_cmd storage pool list
+   else
+      if [ "$fsName" != "" ]; then
+         fsName=$($ECHO $fsName|trans in)
+         filestore_cmd storage fs list $fsName|awk '/List of pools:/{print $4}'|sort -u
+      else
+         filestore_cmd storage pool list|awk 'a==1&&$1!=""{print $1}/\=\=\=/{a=1}'
+      fi
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#--------------------------
+#   p l _ l i s t _ f s 
+#--------------------------
+# Gives a plain list of file systems.
+# $1 = 'raw' Gives raw native SFS output (optional)
+pl_list_fs()
+{
+   local type=$1 cmd
+
+   cmd="filestore_cmd storage fs list"
+   if [ -f $PL_OPTIM ]; then
+      if [ "$(pl_if_optimize $PL_FS_RESULT)" != "yes" ]; then
+         $cmd >$PL_FS_RESULT || return $?
+      fi
+      cmd="cat $PL_FS_RESULT"
+   fi
+
+   if [ "$type" = "raw" ]; then
+      $cmd
+   else
+      $cmd|awk 'a==1&&$1!=""{print $1}/\=\=\=/{a=1}'|trans out
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------------
+#   p l _ l i s t _ s n a p s h o t s 
+#----------------------------------------
+# Gives a plain list as: <snap> <fs>
+# $1 = FS name Lists all snaps for FS. (optional)
+# $1 = 'raw' Gives raw native SFS output (optional)
+# $1 = 'usage' Gives used data in KB for specified snap($2). (optional)
+# $2 = Snap name (for 'usage') (optional)
+pl_list_snapshots()
+{
+   local raw=n usage=n fsName cmd
+   local tmpFile=/tmp/pl_list_snapshots.$$
+
+   if [ "$1" = "raw" ]; then
+      raw=y
+      shift
+   fi
+   if [ "$1" = "usage" ]; then
+      usage=y
+      shift
+   fi
+   fsName=$($ECHO $1|trans in)
+
+   if [ "$raw" = "y" ]; then
+      filestore_cmd storage $PL_SNAP_CMD list $fsName
+   else
+      if [ "$usage" = "y" ]; then
+         filestore_cmd storage $PL_SNAP_CMD list $fsName >$tmpFile || return $?
+         # get used data, like '256K'
+         u=$(awk -v snap=$fsName '$1==snap||$1=="NAME"{print}' $tmpFile|get_rows_cols CHANGED_DATA|sed 's/[ ]*(.*//')
+         u=$(echo "$(echo $u|sed 's/[A-Z]//') * $(echo $u|sed 's/.*\([A-Z]\).*/\1/'|sed -e 's/K/1/' -e 's/M/1024/' -e 's/G/1048576/' -e 's/T/1073741824/')"|bc)
+         $ECHO $u
+         rm $tmpFile
+      else
+         cmd="filestore_cmd storage $PL_SNAP_CMD list"
+         if [ -f $PL_OPTIM ]; then
+            if [ "$(pl_if_optimize $PL_SNAP_RESULT)" != "yes" ]; then
+               $cmd >$PL_SNAP_RESULT || return $?
+            fi
+            cmd="cat $PL_SNAP_RESULT"
+         fi
+
+         if [ "$SFS_VERSION" = "5.5" ]; then
+            if [ "$fsName" = "" ]; then
+               $cmd|awk '$3=="vset"&&$5!="-"{print $1,$5}'|trans out 0
+            else
+               $cmd|awk -v fs=$fsName '$5==fs{print $1,$5}'|trans out 0
+            fi
+         else
+            if [ "$fsName" = "" ]; then
+               $cmd|awk '/\/.*\/.*:/{print $1,$3}'|trans out 0
+            else
+               $cmd|awk -v fs=$fsName '$3==fs{print $1,$3}'|trans out 0
+            fi
+         fi
+      fi
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#----------------------------------
+#   p l _ l i s t _ s h a r e s 
+#----------------------------------
+# Gives a list with three columns: <share_path> <fs_name> <clients>
+# If client is '*', it's presented as 'any'.
+# $1 = 'raw' Gives raw native SFS output (optional)
+pl_list_shares()
+{
+   local type=$1 list cmd 
+   local tmpFile=/tmp/pl_list_shares.$$
+
+   cmd="filestore_cmd nfs share show"
+   if [ -f $PL_OPTIM ]; then
+      if [ "$(pl_if_optimize $PL_SHARE_RESULT)" != "yes" ]; then
+         $cmd >$PL_SHARE_RESULT || return $?
+      fi
+      cmd="cat $PL_SHARE_RESULT"
+   fi
+
+   if [ "$type" = "raw" ]; then
+      $cmd
+   else
+      if [ "$SFS_VERSION" = "5.5" ]; then
+         $cmd|awk '$1!="->"&&$1!=""{fs=$1;sub(/^.vx./,"",fs);cl=$2;sub(/\*/,"any",cl);print $1,fs,cl}'|trans out 2
+      else
+         $cmd >$tmpFile || return $?		# WO bash pipe problem
+         awk '$1=="Faulted"{exit}$1!="->"&&$1!=""{fs=$1;sub(/^.vx./,"",fs);cl=$2;sub(/\*/,"any",cl);print $1,fs,cl}' $tmpFile|trans out 2
+         rm $tmpFile 2>/dev/null
+      fi
+   fi
+
+   return ${PIPESTATUS[0]}
+}
+
+#------------------------------------
+#   p l _ l i s t _ c l i e n t s 
+#------------------------------------
+# Gives a list with two columns: <client> <fs_name>
+# If client is '*', it's presented as 'any'.
+# $1 = 'raw' Gives raw native SFS output (optional)
+pl_list_clients()
+{
+   local type=$1 list 
+   local tmpFile=/tmp/pl_list_clients.$$
+
+   if [ "$type" = "raw" ]; then
+      filestore_cmd nfs share show
+   else
+      if [ "$SFS_VERSION" = "5.5" ]; then
+         filestore_cmd nfs share show|awk '$1!="->"&&$1!=""{fs=$1;sub(/^.vx./,"",fs);cl=$2;sub(/\*/,"any",cl);print cl,fs}'|trans out 2
+      else
+         filestore_cmd nfs share show >$tmpFile || return $?		# WO bash pipe problem
+         awk '$1=="Faulted"{exit}$1!="->"&&$1!=""{fs=$1;sub(/^.vx./,"",fs);cl=$2;sub(/\*/,"any",cl);print cl,fs}' $tmpFile|trans out 2
+         rm $tmpFile 2>/dev/null
+      fi
+   fi
+   return ${PIPESTATUS[0]}
+}
+
+#------------------------------------
+#   p l _ p r i n t _ s t a t u s 
+#------------------------------------
+# $1-n = Detail level list ('version', 'status', 'coarse', 'detail', 'exhaustive')
+pl_print_status()
+{
+   local levels="$*" level
+   local tmp1=/tmp/nas_pl1.$$
+   local tmp2=/tmp/nas_pl2.$$
+   local tmp3=/tmp/nas_pl3.$$
+   local sfs_version_cmd awk_pattern
+
+   rm $tmp1 $tmp2 $tmp3 2>/dev/null
+
+   [ "$levels" = "" ] && levels=version
+
+   if [[ ${SFS_VERSION:0:1} -lt 7 ]]; then
+      sfs_version_cmd="upgrade show"
+      awk_pattern="EDITION"
+   else
+      sfs_version_cmd="upgrade version"
+      awk_pattern="ACCESS"
+   fi
+
+   for level in $levels
+   do
+      if [ "$level" = "version" ]; then
+         $ECHO "    Plugin type:" $PL_TYPE
+         $ECHO "    Plugin version:" $PL_VERSION
+      fi
+
+      if [ "$level" = "status" ]; then
+         $ECHO -e "    FileStore: "
+         filestore_cmd "${sfs_version_cmd}" >$tmp1 || return $?
+         $AWK '/'"${awk_pattern}"'/{print $0}' $tmp1
+      fi
+
+      if [ "$level" = "coarse" ]; then
+         $ECHO -e "    Status: \c"
+         filestore_cmd support services show >$tmp2 || return $?
+         grep "nfs " $tmp2
+
+         filestore_cmd cluster show >$tmp3 || return $?
+         $EGREP -v '^$' $tmp3|$EGREP -v 'cluster show'
+      fi
+
+      if [ "$level" = "detail" ]; then
+         if [ -f $tmp1 ]; then
+            cat $tmp1
+         else
+            filestore_cmd "${sfs_version_cmd}" || return $?
+         fi
+         if [ -f $tmp2 ]; then
+            cat $tmp2
+         else
+            filestore_cmd support services show || return $?
+         fi
+         if [ -f $tmp3 ]; then
+            cat $tmp3
+         else
+            filestore_cmd cluster show || return $?
+         fi
+      fi
+
+      if [ "$level" = "exhaustive" ]; then
+:
+      fi
+   done
+
+   return 0
+}
+
+#----------------------------------------------
+#   p l _ c h e c k _ l o s t _ s h a r e s 
+#----------------------------------------------
+# If ${PL_DELETED_SHARES_FILE}* files are found, this function is called.
+# It will loop through each line in each file.
+# Each line contains a share in this format: /vx/fs client share-opt
+# The extention/postfix of the file is the PID of the creator process.
+# Only if the creator is not running, action will be taken.
+# The function checks if the share exists or not. If not, it creates it.
+# If all shares exists or are successfully created, the file is removed.
+# If it fails to create the share, the file is copied to a new name, containing 'tried'.
+# Next session will try again, and if still fails, the file is copied to the log directory.
+pl_check_lost_shares()
+{
+   local pid path client shareOpt prt=y
+   local tmpFile=/tmp/check_lost_shares.$$
+
+   for file in ${PL_DELETED_SHARES_FILE}*
+   do
+      tried=$(echo $file|grep tried)
+      pid=$(echo $file|sed 's/.*[.]//')
+      pstree $pid >/dev/null && continue   # Proc still running
+
+      # Proc is not running, so try to claim the file.
+      doo mv $file ${PL_DELETED_SHARES_FILE}.$$ 2>/dev/null || continue   # Failed to claim the file.
+      file=${PL_DELETED_SHARES_FILE}.$$    # New file name, with my pid, so no-one claims it.
+
+      filestore_cmd nfs share show >$tmpFile
+
+      while read path client shareOpt
+      do
+         [ "$(awk -v p=$path -v c=$client '$2=="*"{$2="any"}p==$1&&c==$2{print "exist";exit}' $tmpFile)" != "" ] && continue   # Share exists
+         [ "$prt" = "y" ] && prt=n && header_1 "Found deleted share not re-created by process $pid" && header_2 "Adding share..."
+
+         fs=$(echo $path|sed 's#/vx/##')
+         pl_online_fs $fs
+
+         if [ "$client" = "any" ]; then
+            filestore_cmd nfs share add $shareOpt $path
+         else
+            filestore_cmd nfs share add $shareOpt $path $client
+         fi
+         if [ $? -ne 0 ]; then
+            if [ "$tried" != "" ]; then
+               doo cp $file $SCRIPT_HOME/log
+            else
+               doo cp $file ${PL_DELETED_SHARES_FILE}.tried.$$
+            fi
+            $ECHO "WARNING: Failed to re-create a possibly lost share!"
+            break
+         fi
+      done <$file
+      rm -f $file $tmpFile
+   done
+}
+
+#--------------------------------------
+#   p l _ c h e c k _ s t a r t u p 
+#--------------------------------------
+pl_check_startup()
+{
+   local user
+
+   $ECHO "    Plugin:" $PL_TYPE $PL_VERSION
+
+   if [ "$NAS_HOST" = "" -o "$NAS_USER" = "" ]; then
+      $ECHO -e "\007    Plugin configuration incomplete!"
+      $ECHO $PL_CONFIG
+      $CAT $PL_CONFIG
+      return 1
+   fi
+
+   pl_print_status status
+}
+
+#--------------------------
+#   p l _ c l e a n u p 
+#--------------------------
+# Does local Plugin Cleanup
+# Called from main cleanup()
+pl_cleanup()
+{
+   # Variables must be re-defined here.
+   PL_TMP=/tmp/nasplugin.$$
+   PL_OPTIM=/tmp/nasplugin_optim.$$
+   PL_FS_RESULT=/tmp/nasplugin_fs_result.$$
+   PL_SNAP_RESULT=/tmp/nasplugin_snap_result.$$
+   PL_SHARE_RESULT=/tmp/nasplugin_share_result.$$
+   PL_AUTO_ANS_FILE=/tmp/nasplugin_auto_ans.$$
+   PL_MENU=/tmp/nas_pl1.$$
+   PL_MENU2=/tmp/nas_pl2.$$
+   PL_MENU3=/tmp/nas_pl3.$$
+
+   # Remove used files
+   rm $PL_TMP $PL_OPTIM $PL_SHARE_RESULT $PL_SNAP_RESULT $PL_FS_RESULT $PL_AUTO_ANS_FILE $PL_MENU $PL_MENU2 $PL_MENU3 2>/dev/null
+}
+
+
+#---------------------------------< START >--------------------------------
+
+EXPECT=/usr/bin/expect
+ECHO=/usr/bin/echo
+PL_TYPE="FileStore"
+cd $(dirname $0)
+PL_HOME=$(dirname $(/usr/bin/pwd))/plugins/filestore
+PL_NAME=nasplugin
+PL_CONFIG=$PL_HOME/etc/nasplugin.conf
+
+PL_TMP=/tmp/nasplugin.$$
+PL_OPTIM=/tmp/nasplugin_optim.$$
+PL_FS_RESULT=/tmp/nasplugin_fs_result.$$
+PL_SNAP_RESULT=/tmp/nasplugin_snap_result.$$
+PL_SHARE_RESULT=/tmp/nasplugin_share_result.$$
+PL_AUTO_ANS_FILE=/tmp/nasplugin_auto_ans.$$
+PL_SNAP_SYNC_FILE=/tmp/nasplugin_snap_sync
+
+PL_DELETED_SHARES_FILE=$SCRIPT_HOME/etc/deleted_shares
+
+[ ! -f $PL_CONFIG ] && $CP ${PL_CONFIG}_template $PL_CONFIG
+. $PL_CONFIG
+if [ $? -ne 0 ]; then
+   $ECHO -e "\007 $PL_TYPE Plugin Configuration Error!"
+   p_exit 1
+fi
+
+if [[ -z ${SFS_VERSION} ]]; then
+   $ECHO "ERROR: SFS_VERSION not set in $PL_CONFIG! First run $(dirname $(/usr/bin/pwd))/bin/setup_ssh_FileStore.sh"
+   p_exit 1
+fi
+  
+PL_SNAP_CMD=rollback
+[ "$SFS_VERSION" = "5.5" ] && PL_SNAP_CMD=instant_snapshot
+
+if [ "$1" != "" ]; then # Don't check if no params to 'nascli'
+   ls ${PL_DELETED_SHARES_FILE}* >/dev/null 2>&1 && pl_check_lost_shares
+fi
+:
+

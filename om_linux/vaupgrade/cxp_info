@@ -1,0 +1,5 @@
+PKGINST=vaupgrade
+NAME=vaupgrade
+ARCH=noarch
+VERSION=Rev
+PRODNUM=CXP9043108

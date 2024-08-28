@@ -1,0 +1,1898 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : common_ericks_functions.lib
+# Date    : 08/02/2018
+# Revision:
+# Purpose : This file contails a set of functions that can be sourced from the bash
+#           shell.
+#           NOTE : THESE FUNCTIONS ARE FOR ENIQ INSTALLATION ONLY AND THEREFORE IF
+#                  THEY NEED TO BE CHANGED ONLY THE NFD INSTALLATION SCRIPTS WILL
+#                  BE CONSIDERED.
+#
+# Usage   : common_ericks_functions.lib
+#
+# ********************************************************************
+#
+#       Command Section
+#
+# ********************************************************************
+ADB=/usr/bin/adb
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CMP=/usr/bin/cmp
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+DATE=/usr/bin/date
+DHCPCONFIG=/usr/sbin/dhcpconfig
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+INIT=/usr/sbin/init
+LN=/usr/bin/ln
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+NETSTAT=/usr/bin/netstat
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PWD=/usr/bin/pwd
+PERL=/usr/bin/perl
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+ROUTE=/usr/sbin/route
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SHAREALL=/usr/sbin/shareall
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYSTEMCTL=/usr/bin/systemctl
+SWAP=/usr/sbin/swap
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TR=/usr/bin/tr
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+USERADD=/usr/sbin/useradd
+WC=/usr/bin/wc
+HOST_VER=`$UNAME -r`
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+#
+# common IPF configuration files
+# ipfilter files and directories
+IPF_CONF_DIR=/etc/ipf
+IPF_CONF_FILE=/etc/ipf/ipf.conf
+TEMP_IPF_CONF=/etc/ipf/temp_ipf_conf_file
+TEMP_IPF_CLIENTS=ipf_clients.$$
+RESTART_IPF="ok_to_restart_enable_ipf"
+
+# ********************************************************************
+#
+#       functions
+#
+# ********************************************************************
+
+### Function: check_client_notexist ###
+#
+# Checks dhcp client with same MAC doesn't exist
+#
+# Arguments:
+#   none
+# Return Values:
+#   0 not exist, 1 if exists
+check_client_notexist()
+{
+    local cnt
+    build_all_client_mac_arrays
+    cnt=${ALL_CLIENT_MAC_LEN}
+
+    # Loop thru and see if this version is already installed.
+    for (( i=0; i<${cnt}; i++ )); do
+        if [ "${ALL_CLIENT_MAC_ARRAY[${i}]}" = "${CLIENT_MAC_ADDR}" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+## Function: build_all_client_mac_arrays ###
+#
+# Build arrays of information storing MAC Address from
+# all clients
+#
+# Arguments:
+#       None
+# Return Values:
+build_all_client_mac_arrays()
+{
+
+    ALL_CLIENT_MAC_LEN=0
+    build_mac_array "CLIENT_MAC_ADDR" "/JUMP/DHCP_CLIENTS"
+    build_mac_array "kick_client_mac_addr" "/JUMP/DHCP_CLIENTS/LINUX"
+
+    return 0
+}
+
+## Function: build_mac_array ###
+#
+# Build MAC array for particular client type
+#
+# Arguments:
+#        $1 MAC Variable Identifier
+#        $2 Directory to search for client files
+# Uses:
+#        ALL_CLIENT_MAC_LEN, ALL_CLIENT_MAC_ARRAY
+# Return Values:
+build_mac_array()
+{
+    local _mac_id_=$1 _dir_=$2
+    local _client_info_file_
+
+    local tmp_file list_file
+    tmp_file=${TEM_DIR}/existing_all_clients
+
+    list_file=${tmp_file}.1
+
+    $RM -f $list_file
+
+    $LS -1 ${_dir_}/* 2> /dev/null > $tmp_file
+    $TOUCH $list_file
+    while read client_file; do
+        [ -s $client_file ] && $ECHO $client_file >> $list_file
+    done < $tmp_file
+    $RM -f $tmp_file
+
+    while read _client_info_file_; do
+        # Read client MAC and store in array
+        ALL_CLIENT_MAC_ARRAY[${ALL_CLIENT_MAC_LEN}]=`$EGREP "^[[:blank:]]*${_mac_id_}=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'|$SED s/\"//g`
+        # If I do not find a valid MAC, I will just go to next in loop.
+        # I could error, but if a differnt type of file is present, I do
+        # not want to fail
+        if [ ! "${ALL_CLIENT_MAC_ARRAY[${ALL_CLIENT_MAC_LEN}]}" ]; then
+            continue
+        fi
+        let ALL_CLIENT_MAC_LEN=${ALL_CLIENT_MAC_LEN}+1
+    done <  ${list_file}
+    $RM -f ${list_file}
+    return 0
+}
+
+
+## Function: build_lin_client_info_arrays ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : INI File
+# Return Values:
+#       none
+build_lin_client_info_arrays()
+{
+local _dhcp_clients_file_=${1}
+local _client_info_file_ _cnt_
+
+_cnt_=1
+while read _client_info_file_; do
+    # Read client hostname and store in array
+    CLIENT_HOSTNAME_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_hostname=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # If I do not find a valid hostname, I will just go to next in loop.
+    # I could error, but if a differnt type of file is present, I do
+    # not want to fail
+    if [ ! "${CLIENT_HOSTNAME_ARRAY[${_cnt_}]}" ]; then
+        continue
+    fi
+
+    # Read client IP address and store in array
+    CLIENT_IP_ADDR_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_ip_addr=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_IP_ADDR_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_ip_addr parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read Application sw and store in array. I may not get a value in this as
+    # some clients might not have an application s/w path
+    CLIENT_APPL_MEDIA_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_appl_media_desc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_APPL_MEDIA_VER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_appl_media_ver=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_APPL_MEDIA_LOC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_appl_media_loc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+
+    # Read OM sw and store in array. I may not get a value in this as
+    # some clients might not have an application s/w path
+    CLIENT_OM_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_om_desc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_OM_VER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_om_ver=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_OM_LOC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_om_loc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client netmask and store in array
+    CLIENT_NETMASK_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_netmask=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_NETMASK_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_netmask parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client MAC address and store in array
+    CLIENT_MAC_ADDR_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_mac_addr=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_MAC_ADDR_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_mac_addr parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client Network address and store in array
+    CLIENT_NET_ADDR_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_net_addr=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_NET_ADDR_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_net_addr parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client NTP Server and store in array - I may not get a value here
+    CLIENT_TIMESERVE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_timeserve=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read Client Boot Mode and store in array
+    CLIENT_BOOT_MODE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_boot_mode=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client DNS Domain and store in array - I may not get a value here
+    CLIENT_DNSDOMAIN_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_dnsdomain=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client DNS Servers and store in array - I may not get a value here
+    CLIENT_DNSSERVER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_dnsserver=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client DNS Servers and store in array - I may not get a value here
+    CLIENT_GATEWAY_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_gateway=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client IPV6 Required and store in array - I may not get a value here
+    IPV6_PARAMETER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_ipv6_parameter=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client IPV6 IP and store in array - I may not get a value here
+    CLIENT_IP_ADDR_V6_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_ipv6_address=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client IPV6 Router and store in array - I may not get a value here
+    ROUTER_IP_ADDR_V6_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_ipv6_router_address=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client IPV6 hostname and store in array - I may not get a value here
+    CLIENT_HOSTNAME_V6_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_ipv6_hostname=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # Read client architecture and store in array
+    CLIENT_ARCH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_arch=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_ARCH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_arch parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client timezone  and store in array
+    CLIENT_TZ_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_tz=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_TZ_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_tz parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client kickstart id and store in array
+    CLIENT_KICK_ID_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_kick_id=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_KICK_ID_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_kick_id parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client kickstart description and store in array
+    CLIENT_KICK_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_kick_desc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_KICK_DESC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_kick_desc parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client kickstart location and store in array
+    CLIENT_KICK_LOC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_kick_loc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_KICK_LOC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_kick_loc parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client install patch location and store in array. I may not get a value in this as
+    # some clients might not have an patch path
+    CLIENT_INSTALL_PATCH_KICK_LOC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_patch_loc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_patch_id=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_INSTALL_PATCH_KICK_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_patch_desc=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    CLIENT_INSTALL_PATCH_KICK_SPRINT_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_patch_sprint=" ${_client_info_file_}            |$AWK -F\= '{print $2}'`
+    CLIENT_INSTALL_PATCH_KICK_BUNDLE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_patch_bundle=" ${_client_info_file_}            |$AWK -F\= '{print $2}'`
+
+    # Read client display type and store in array
+    CLIENT_DISP_TYPE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_disp_type=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_DISP_TYPE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_disp_type parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client rootcert location and store in array
+    CLIENT_DATE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_add_date=" ${_client_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${CLIENT_DATE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_add_date parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read client installation parameters and store in array
+    CLIENT_INSTALL_PARAMS_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*kick_client_install_params@" ${_client_info_file_} \
+            |$AWK -F"@" '{print $2}'`
+    if [ ! "${CLIENT_INSTALL_PARAMS_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read kick_client_install_params parameter from ${_client_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    let _cnt_=${_cnt_}+1
+done < ${_dhcp_clients_file_}
+}
+
+## Function: build_lin_media_info_arrays ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : File containing paths to Linux media identity files
+# Return Values:
+#       none
+build_lin_media_info_arrays()
+{
+local _managed_lin_file_=${1}
+local _lin_id_file_ _cnt_
+
+_cnt_=1
+while read _lin_id_file_; do
+    # Read media label and store in array
+    KICK_LABEL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_label=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_LABEL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_label parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media description and store in array
+    KICK_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_desc=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_DESC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_desc parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media prefix and store in array
+    KICK_PREFIX_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_prefix=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_PREFIX_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_prefix parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media number and store in array
+    KICK_NUMBER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_number=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_NUMBER_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_number parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media revision and store in array
+    KICK_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_rev=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_rev parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media architecture and store in array
+    KICK_ARCH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_arch=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_ARCH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_arch parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media location and store in array
+    KICK_LOCATION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_location=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_LOCATION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_location parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    KICK_DATE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_add_date=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_DATE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_add_date parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    KICK_DISTRO_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_DISTRO_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    KICK_DISTRO_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro_rev=" ${_lin_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${KICK_DISTRO_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro_rev parameter from ${_lin_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store media identity in array
+    KICK_ID_ARRAY[${_cnt_}]="${KICK_PREFIX_ARRAY[${_cnt_}]}-${KICK_NUMBER_ARRAY[${_cnt_}]}-${KICK_REV_ARRAY[${_cnt_}]}"
+
+    let _cnt_=${_cnt_}+1
+done < ${_managed_lin_file_}
+}
+
+
+## Function:  build_install_patch_media_info_arrays  ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : File containing paths to Linux media identity files
+# Return Values:
+#       none
+build_install_patch_media_info_arrays()
+{
+local _managed_install_patch_file_=${1}
+local _install_patch_id_file_ _cnt_
+
+_cnt_=1
+while read _install_patch_id_file_; do
+    # Read media label and store in array
+    INSTALL_PATCH_KICK_LABEL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_label=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_LABEL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_label parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media description and store in array
+    INSTALL_PATCH_KICK_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_desc=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_DESC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_desc parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media prefix and store in array
+    INSTALL_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_prefix=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_prefix parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media number and store in array
+    INSTALL_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_number=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_number parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media revision and store in array
+    INSTALL_PATCH_KICK_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_rev=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_rev parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media architecture and store in array
+    INSTALL_PATCH_KICK_ARCH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_arch=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_ARCH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_arch parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media location and store in array
+    INSTALL_PATCH_KICK_LOCATION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_location=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_location parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    INSTALL_PATCH_KICK_DATE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_add_date=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_DATE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_add_date parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    INSTALL_PATCH_KICK_DISTRO_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_DISTRO_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    INSTALL_PATCH_KICK_DISTRO_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro_rev=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_KICK_DISTRO_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro_rev parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+	INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*sprint_release=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read sprint_release parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+	INSTALL_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*bundle_version=" ${_install_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${INSTALL_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read bundle_version  parameter from ${_install_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store media identity in array
+    INSTALL_PATCH_KICK_ID_ARRAY[${_cnt_}]=${INSTALL_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]}
+    INSTALL_PATCH_KICK_ID_ARRAY_1[${_cnt_}]="${INSTALL_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]}-${INSTALL_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]}-${INSTALL_PATCH_KICK_REV_ARRAY[${_cnt_}]}"
+
+    let _cnt_=${_cnt_}+1
+done < ${_managed_install_patch_file_}
+}
+
+## Function:  build_upgrade_patch_media_info_arrays  ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : File containing paths to Linux media identity files
+# Return Values:
+#       none
+build_upgrade_patch_media_info_arrays()
+{
+local _managed_upgrade_patch_file_=${1}
+local _upgrade_patch_id_file_ _cnt_
+
+_cnt_=1
+while read _upgrade_patch_id_file_; do
+    # Read media label and store in array
+    UPGRADE_PATCH_KICK_LABEL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_label=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_LABEL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_label parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media description and store in array
+    UPGRADE_PATCH_KICK_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_desc=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_DESC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_desc parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media prefix and store in array
+    UPGRADE_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_prefix=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_prefix parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media number and store in array
+    UPGRADE_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_number=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_number parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media revision and store in array
+    UPGRADE_PATCH_KICK_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_rev=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_rev parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media architecture and store in array
+    UPGRADE_PATCH_KICK_ARCH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_arch=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_ARCH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_arch parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media location and store in array
+    UPGRADE_PATCH_KICK_LOCATION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_location=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_LOCATION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_location parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    UPGRADE_PATCH_KICK_DATE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_add_date=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_DATE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_add_date parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    UPGRADE_PATCH_KICK_DISTRO_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_DISTRO_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    UPGRADE_PATCH_KICK_DISTRO_REV_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_distro_rev=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_KICK_DISTRO_REV_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_distro_rev parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+    UPGRADE_PATCH_SPRINT_RELEASE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*sprint_release=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_SPRINT_RELEASE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read sprint_release parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+    UPGRADE_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*bundle_version=" ${_upgrade_patch_id_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${UPGRADE_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read bundle_version parameter from ${_upgrade_patch_id_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store media identity in array
+    UPGRADE_PATCH_KICK_ID_ARRAY[${_cnt_}]=${UPGRADE_PATCH_BUNDLE_VERSION_ARRAY[${_cnt_}]}
+    UPGRADE_PATCH_KICK_ID_ARRAY_1[${_cnt_}]="${UPGRADE_PATCH_KICK_PREFIX_ARRAY[${_cnt_}]}-${UPGRADE_PATCH_KICK_NUMBER_ARRAY[${_cnt_}]}-${UPGRADE_PATCH_KICK_REV_ARRAY[${_cnt_}]}"
+
+    let _cnt_=${_cnt_}+1
+done < ${_managed_upgrade_patch_file_}
+}
+
+
+## Function: build_network_info_arrays ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#    $1 : File containing network details
+# Return Values:
+#    none
+build_network_info_arrays()
+{
+local _managed_net_file_=${1}
+local _net_details_ _timeserver_ _cnt_
+local _ip_regex_="[[:blank:]]*[1-9][0-9]?[0-9]?\.[0-9][0-9]?[0-9]?\.[0-9][0-9]?[0-9]?\.[0-9][0-9]?[0-9]?"
+local _dom_regex_="[[:blank:]]*[a-zA-Z0-9\.-]"
+_cnt_=1
+while read _net_details_; do
+    # Store network identity in array
+    NET_ID_ARRAY[${_cnt_}]=`$ECHO ${_net_details_}|$AWK '{print $2}'`
+    if [ $? -ne 0 ]; then
+        _err_msg_="Error adding ${_network_id_} to temp network identity array"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read network netmask and store in array
+    NET_NETMASK_ARRAY[${_cnt_}]=`$ECHO ${_net_details_}|$EGREP -w -o "netmask${_ip_regex_}(${_ip_regex_})*" \
+        | $AWK '{print $2}'`
+    if [ ! "${NET_NETMASK_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read ${_network_id_} Subnet parameter from DHCP tables"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read network default router and store in array
+    NET_DEFROUTER_ARRAY[${_cnt_}]=`$ECHO ${_net_details_}|$EGREP -w -o "routers${_ip_regex_}(${_ip_regex_})*:" \
+        | $AWK '{print $2}'|$SED -e 's|:||'`
+    if [ ! "${NET_DEFROUTER_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read ${_network_id_} Router parameter from DHCP tables"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read network DNS Server IP addresse(s) and store in array
+    NET_DNSSERVERS_ARRAY[${_cnt_}]=`$ECHO ${_net_details_}|$EGREP -w -o "domain-name-servers ${_ip_regex_}(,${_ip_regex_})*:" \
+        | $AWK '{print $2}'|$SED -e 's|:||' -e 's|,| |g'`
+    if [ ! "${NET_DNSSERVERS_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read ${_network_id_} DNSserv parameter from DHCP tables"
+    fi
+
+    # Read network DNS domain name and store in array
+    NET_DNSDOMAIN_ARRAY[${_cnt_}]=`$ECHO ${_net_details_}|$EGREP -w -o "domain-name ${_dom_regex_}(${_dom_regex_})*:" \
+        | $AWK '{print $2}'|$SED -e 's|:||'`
+    if [ ! "${NET_DNSDOMAIN_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read ${_network_id_} DNSdmain parameter from DHCP tables"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read network Timesever IP addresse(s) and store in array
+    _timeserver_=`$ECHO ${_net_details_}|$EGREP -w -o "ntp-servers${_ip_regex_}(,${_ip_regex_})*:" \
+        | $AWK '{print $2}'|$SED -e 's|:||' -e 's|,| |g'`
+    if [ ! "${_timeserver_}" ]; then
+        _timeserver_="none"
+    fi
+    NET_TIMESERVER_ARRAY[${_cnt_}]=${_timeserver_}
+
+    let _cnt_=${_cnt_}+1
+done < ${_managed_net_file_}
+}
+
+## Function: build_nfs_media_area_info ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : File containing paths to NFS media info files
+# Return Values:
+#       none
+build_nfs_media_area_info()
+{
+local _nfs_media_info_list_=${1}
+if [ "${2}" ]; then
+    if [ "${2}" == "install_flag" ]; then
+        local _install_flag_=y
+    fi
+fi
+
+local _nfs_media_info_file_ _cnt_
+
+_cnt_=1
+
+while read _nfs_media_info_file_; do
+    if [ "${_appl_flag_}" ]; then
+        _chk_=`$EGREP "^[[:blank:]]*build_type=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+
+        # Has this a build type flag. If not then assume full install
+        if [ "${_chk_}" ]; then
+            # Is the build type EU, then not full install
+            if [ "${_chk_}" == "EU" ]; then
+                continue
+            fi
+        fi
+    fi
+
+    # Read media label and store in array
+    NFS_MEDIA_LABEL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_label=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_LABEL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_label parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media description and store in array
+    NFS_MEDIA_DESC_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_desc=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_DESC_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_desc parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media location and store in array
+    NFS_MEDIA_VER_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_version=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_VER_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_version parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media architecture and store in array
+    NFS_MEDIA_ARCH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_arch=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_ARCH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_arch parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media location and store in array
+    NFS_MEDIA_LOCATION_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_location=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_LOCATION_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_location parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read media add date and store in array
+    NFS_MEDIA_DATE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*media_add_date=" ${_nfs_media_info_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${NFS_MEDIA_DATE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read media_add_date parameter from ${_nfs_media_info_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    let _cnt_=${_cnt_}+1
+done < ${_nfs_media_info_list_}
+}
+
+## Function: build_nfs_config_info ###
+#
+# Build arrays of information storing required details
+#
+# Arguments:
+#       $1 : File containing paths to NFS media config files
+#       $2 : Flag to return only Application Media
+# Return Values:
+#       none
+build_nfs_config_info()
+{
+local _nfs_config_list_=${1}
+if [ "${2}" ]; then
+    if [ "${2}" == "appl_flag" ]; then
+        local _appl_flag_=y
+    fi
+fi
+
+local _nfs_config_file_ _cnt_ _chk_
+
+_cnt_=1
+while read _nfs_config_file_; do
+    if [ "${_appl_flag_}" ]; then
+        _chk_=`$EGREP "^[[:blank:]]*APPLICATION_MEDIA_FLAG=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+        if [ ! "${_chk_}" ]; then
+            _err_msg_="Failed to read APPLICATION_MEDIA parameter from ${_nfs_config_file_}"
+            abort_script "$_err_msg_"
+        fi
+
+        # Application Media?
+        if [ "${_chk_}" != "Y" ]; then
+            continue
+        fi
+    fi
+
+    # Read NFS media id and store in array
+    MEDIA_CONFIG_TYPE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_TYPE=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+
+    # If I do not find a valid NFS media ID, I will just go to next in loop.
+    # I could error, but if a differnt type of file is present, I do
+    # not want to fail
+    if [ ! "${MEDIA_CONFIG_TYPE_ARRAY[${_cnt_}]}" ]; then
+        continue
+    fi
+
+    # Read NFS media file and store in array
+    MEDIA_CONFIG_FILE_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_FILE=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_FILE_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_FILE parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media label and store in array
+    MEDIA_CONFIG_LABEL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_LABEL=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_LABEL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_LABEL parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media designation and store in array
+    MEDIA_CONFIG_DESIG_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_DESIG=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_DESIG_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_DESIG parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media menu string and store in array
+    MEDIA_CONFIG_MENU_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_MAIN_MENU_TITLE=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_MENU_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_MAIN_MENU_TITLE parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media action list and store in array
+    MEDIA_ACT_LIST_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_ACT_LIST=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_ACT_LIST_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_ACT_LIST parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media area and store in array
+    if [ "${HOST_VER}" == "5.10" ]; then
+        MEDIA_CONFIG_AREA_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_AREA=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    else
+        MEDIA_CONFIG_AREA_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_AREA=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    fi
+
+    if [ ! "${MEDIA_CONFIG_AREA_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_AREA parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media directory and store in array
+    MEDIA_CONFIG_DIR_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_DIRECTORY=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_DIR_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_DIRECTORY parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS multiple media flag and store in array
+    MEDIA_CONFIG_MULTI_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MULTIPLE_MEDIA=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_MULTI_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MULTIPLE_MEDIA parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media application flag and store in array
+    MEDIA_CONFIG_APPL_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*APPLICATION_MEDIA_FLAG=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_APPL_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read APPLICATION_MEDIA parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media decompression flag and store in array
+    MEDIA_CONFIG_DECOMP_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*DECOMPRESS_FLAG=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_DECOMP_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read DECOMPRESS_FLAG parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media remote IP flag and store in array
+    MEDIA_CONFIG_MEDIA_IP_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_NFS_IP=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_MEDIA_IP_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_NFS_IP parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Read NFS media remote IP flag and store in array
+    MEDIA_CONFIG_ID_PATH_ARRAY[${_cnt_}]=`$EGREP "^[[:blank:]]*MEDIA_PATH_ID_FILE=" ${_nfs_config_file_} \
+            |$AWK -F\= '{print $2}'`
+    if [ ! "${MEDIA_CONFIG_ID_PATH_ARRAY[${_cnt_}]}" ]; then
+        _err_msg_="Failed to read MEDIA_PATH_ID_FILE parameter from ${_nfs_config_file_}"
+        abort_script "$_err_msg_"
+    fi
+
+   let _cnt_=${_cnt_}+1
+done < ${_nfs_config_list_}
+}
+
+### Function: check_full_pathname ###
+#
+# Checks whether $1 contains a full pathname
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_full_pathname()
+{
+_file_=`$ECHO $1|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+_check_=`$ECHO $_file_|$EGREP '^[/]'`
+if [ ! "$_check_" ]; then
+    return 1
+fi
+return 0
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_id()
+{
+_check_id_=`$ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}'`
+if [ "$_check_id_" != "$1" ]; then
+    return 1
+fi
+return 0
+}
+
+### Function: check_tftp_Config ###
+#
+# Check tftp/udp6 property for inetd_start points to /etc/netboot and
+# not /tftpboot. Otherwise installadm will complain
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+check_tftp_config()
+{
+TFTP_SVC="tftp.service"
+
+XINETD="/etc/xinetd.d/"
+DISABLE=`$CAT ${XINETD}/tftp | $GREP -w disable | $AWK '{print $3}'`
+        if [[ $DISABLE == "yes" ]] ; then
+                $PERL -p -i -e 's/disable[[:blank:]]*=[[:blank:]]yes/disable\t\t\t= no/g' ${XINETD}/tftp
+                if [ $? -ne 0 ]; then
+                        _err_msg_="Failed to set disable property to "no" for tftp service"
+                        abort_script "$_err_msg_"
+                fi
+        else
+                $ECHO "tftp disable property is "no", change not required"
+        fi
+                ${SYSTEMCTL} restart ${TFTP_SVC}
+                if [ $? -ne 0 ] ; then
+                        _err_msg_="Failed to restart TFTP service"
+                        abort_script "$_err_msg_"
+                fi
+}
+
+
+### Function: check_tftp_service ###
+#
+# Check and enable tftp service to support kickstart
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+check_tftp_service()
+{
+TFTP_SVC="tftp.service"
+
+_tftp_svc_state_=`$SYSTEMCTL status ${TFTP_SVC} | $GREP -w Active | $AWK '{print $2}'`
+if [ "${_tftp_svc_state_}" != "active" ]; then
+        check_tftp_config
+        if [ "${_tftp_svc_state_}" == "inactive" ]; then
+         $SYSTEMCTL restart ${TFTP_SVC} >>/dev/null 2>&1
+                if [ $? -ne 0 ] ; then
+                        _err_msg_="Failed to restart TFTP service"
+                        abort_script "$_err_msg_"
+                fi
+         $SLEEP 2
+        fi
+fi
+}
+
+### Function: check_tftpboot_link ###
+#
+# Check and symlink tftpboot if required
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+check_tftpboot_link()
+{
+if [ ! -L /tftpboot ]; then
+    if [[ -d /tftpboot || -f /tftpboot ]]; then
+        _err_msg_="/tftpboot should not be a file/directory! Move or delete /tftpboot and rerun the script to link it"
+        abort_script "$_err_msg_"
+    fi
+    $LN -s /var/lib/tftpboot /tftpboot >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        _err_msg_="Failed to link tftpboot"
+        abort_script "$_err_msg_"
+    else
+        $ECHO "Successfully created symbolic link /tftpboot"
+    fi
+fi
+}
+
+### Function: iniget ###
+#
+# Read specified parts from a given ini file
+#
+# Arguments:
+#       -f  : specified ini file
+#       -p  : gives whole matching <line>
+#       -v  : gives only value of matching <line>
+#       raw : will print even commented (;) lines
+# Return Values:
+#       none
+#
+iniget()
+{
+if [ -n "$1" ]; then
+    INIBLOCK="$1"
+    shift 1
+else
+    $ECHO "Usage: iniget <block> -f <configfile> [-<p|v> <line>] [raw]"
+    return 1
+fi
+
+unset INIWLINE INILINE INICONFIGFILE INIPRINTTYPE
+while [ -n "$1" ]; do
+    case $1 in
+        -p)     INIWLINE=parameter
+                INILINE=$2
+                shift 2
+                ;;
+        -v)     INIWLINE=value
+                INILINE=$2
+                shift 2
+                ;;
+        -f)     INICONFIGFILE=$2
+                shift 2
+                ;;
+        raw)    INIPRINTTYPE=raw
+                shift 1
+                ;;
+        *)      return 1
+                ;;
+    esac
+done
+
+if [ -z "$INICONFIGFILE" ]; then
+    $ECHO "Usage: iniget <block> -f <configfile> [-<p|v> <line>] [raw]"
+    return 1
+fi
+
+$AWK -F= -v printtype=$INIPRINTTYPE -v line="$INILINE" -v way=$INIWLINE '
+  { sub(/[       ]*$/,"");      #remove trailing whitespace and tabs
+    if ($1=="['$INIBLOCK']") {
+        while ((getline) > 0) {
+                if ($0 ~ /^ *\[/) exit
+                if (($0 ~ /^ *;/) && (printtype!="raw")) continue
+                if ($1==line) {
+                        if (way=="parameter") {print $0; exit}
+                        if (way=="value")     {sub(/^[^=]*=/,""); print $0; exit}
+                }
+                else if (! line) print $0
+        }
+    }
+  }' $INICONFIGFILE
+}
+
+### Function: log_msg ###
+#
+# I will create the function log if one does not already exist
+# This allows user to have his/her own log function and still
+# work with the commmon functions
+#
+# Arguments:
+#       None
+# Return Values:
+#       None
+log_msg()
+{
+local logfile quiet outstr
+
+while [ -n "$1" ]; do
+    case $1 in
+        -l)     logfile=$2
+                shift 2
+                ;;
+        -q)     quiet=-q
+                shift 1
+                ;;
+        -s)     outstr=$2
+                shift 2
+                ;;
+        *)      return 1
+                ;;
+    esac
+done
+
+if [ ! "${outstr}" ]; then
+    return 1
+fi
+
+if [ "${logfile}" ]; then
+    if [ ! "${quiet}" ]; then
+        $ECHO "${outstr}" |$TEE -a ${logfile}
+    else
+        $ECHO "${outstr}" >> ${logfile}
+    fi
+else
+    if [ ! "${quiet}" ]; then
+        $ECHO "${outstr}"
+    fi
+fi
+}
+
+### Function: rotate_compress_logs ###
+#
+# Rotate and compress the logs if necessary.
+#
+# Arguments:
+#       $1 - Logfile
+#       $2 - Num Logs to keep. This number is addition to the original log
+#       $3 - Size Log in Kbytes (0 means size not relevant. Rotation always occurs)
+#       $4 - Param to compress log or not (y/n)
+#       $5 - Optional parameter specify directory where backup files will be stored.
+#            If specified, then the directory must exist
+#            If not specified, then it is the directory where the logfile exists.
+#
+# Return Values:
+#       0 : Rotation sucessful
+rotate_compress_logs()
+{
+local logfile=${1}
+local numlog=${2}
+local sizelog_kbytes=${3}
+local compress_log=${4}
+
+local _chk_size_ run_time num_exist_log
+
+if [ ! "${logfile}" -o ! "${numlog}" -o ! "${sizelog_kbytes}" -o ! "${compress_log}" ]; then
+    $ECHO "Incorrect Parameters supplied to function rotate_compress_logs"
+    return 1
+fi
+
+if [ ! -s ${logfile} ]; then
+    return 0
+fi
+
+# Test for numeric
+$ECHO ${numlog} | $EGREP '[^0-9]' >> /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    $ECHO "Numeric value only for param 2 in function rotate_compress_logs"
+    return 1
+fi
+
+# Test for numeric
+$ECHO ${sizelog_kbytes} | $EGREP '[^0-9]' >> /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    $ECHO "Numeric value only for param 3 in function rotate_compress_logs"
+    return 1
+fi
+
+# Param must be either y/n
+if [ "${compress_log}" != "y" -a "${compress_log}" != "n" ]; then
+    $ECHO "Param 4 can only have (y/n) value in function rotate_compress_logs"
+    return 1
+fi
+
+if [ "${5}" ]; then
+    local _bkup_dir_="${5}"
+else
+    local _bkup_dir_=`$DIRNAME ${logfile}`
+fi
+if [ ! -d ${_bkup_dir_} ]; then
+    $ECHO "Backup directory must exist in function rotate_compress_logs"
+    return 1
+fi
+
+# Is the logfile big enough to need rotation
+if [ ${sizelog_kbytes} -ne 0 ]; then
+    _chk_size_=`$LS -l ${logfile}|$AWK '{print $5}'`
+    if [ ${_chk_size_} -lt ${sizelog_kbytes} ]; then
+        return 0
+    fi
+fi
+
+tem_file=/tmp/temfile.$$
+# Loop until I get a file name that does not exist
+while :; do
+    $LS ${tem_file} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        break
+    fi
+    tem_file=${tem_file}.$$
+done
+$RM -f  ${tem_file}
+
+# Create a new var as BKUP dir may be different
+local _lfile_="${_bkup_dir_}/`$BASENAME ${logfile}`"
+
+$LS ${_lfile_}_#*@* 2> /dev/null \
+            |$EGREP "${_lfile_}_#[1-9]+[0-9]*@[0-9]+-[0-9]+-[0-9]+.[0-9]+.[0-9]+.[0-9]+" \
+            |$SORT -t \# -k 2,2n > ${tem_file}
+num_exist_log=`$CAT ${tem_file}|$WC -l`
+if [ `$EXPR ${num_exist_log} + 1` -ge ${numlog} ]; then
+    _cnt_=0
+    for _file_ in `$CAT ${tem_file}`; do
+        _cnt_=`$EXPR ${_cnt_} +  1`
+        if [ ${_cnt_} -ge ${numlog} ]; then
+            $RM -f ${_file_}
+        fi
+    done
+fi
+
+$LS ${_lfile_}_#*@* 2> /dev/null \
+            |$EGREP "${_lfile_}_#[1-9]+[0-9]*@[0-9]+-[0-9]+-[0-9]+.[0-9]+.[0-9]+.[0-9]+" \
+            |$SORT -t \# -k 2,2nr > ${tem_file}
+
+# Rotate the dumps
+for _file_ in `$CAT ${tem_file}`; do
+    _file_num_=`$ECHO ${_file_}|$AWK -F\# '{print $2}'|$AWK -F\@ '{print $1}'`
+    _new_file_num_=`$EXPR ${_file_num_} + 1`
+    _new_file_name_=`$ECHO ${_file_}|$SED -e "s|#${_file_num_}@|#${_new_file_num_}@|"`
+    $MV -f ${_file_} ${_new_file_name_}
+done
+$RM -f  ${tem_file}
+
+local run_time=`$DATE '+%Y-%m-%d_%H.%M.%S'`
+$MV ${logfile} ${_lfile_}_#1@${run_time}
+if [ "${compress_log}" = "y" ]; then
+    $COMPRESS -f ${_lfile_}_#1@${run_time} 2>/dev/null &
+fi
+
+}
+
+### Function: validate_ip_netmask ###
+#
+# This function will check that an
+# IP address or netmask is valid format
+#
+# Arguments:
+#       $1 : IP address to be validated
+# Return Values:
+#       None
+validate_ip_netmask()
+{
+_chk_ip_=$1
+_err_flag_=0
+
+if [[ ${_chk_ip_} =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    _orig_ifs_="$IFS"
+    IFS='.'
+
+    _chk_ip_array_=($_chk_ip_)
+    IFS="${_orig_ifs_}"
+
+    _array_length_="${#_chk_ip_array_[@]}"
+
+    for (( i=0; i<${_array_length_}; i++ )); do
+        if [ ${_chk_ip_array_[$i]} -lt 0 -o ${_chk_ip_array_[$i]} -gt 255 ]; then
+                _err_flag_=1
+        fi
+    done
+else
+        _err_flag_=1
+fi
+
+if [ ${_err_flag_} -eq 0 ]; then
+    return 0
+else
+    return 1
+fi
+}
+validate_ipv6_address()
+{
+_chk_ip_=$1
+_err_flag_=1
+
+ipv6_check="^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:)))(%.+)?\s*$"
+
+_chk_ip_minus_sub_=`$ECHO ${_chk_ip_} | $AWK -F/ '{print $1}'`
+
+if [ ${_chk_ip_minus_sub_} = "none" ]; then
+        _err_flag_=0
+elif [[ ${_chk_ip_minus_sub_} =~ ${ipv6_check} ]]; then
+        _err_flag_=0
+fi
+
+if [ ${_err_flag_} -eq 0 ]; then
+    return 0
+else
+    return 1
+fi
+}
+validate_ipv6_address_sub()
+{
+_chk_ip_=$1
+_err_flag_=1
+
+ipv6_check="^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:)))(%.+)?\s*$"
+
+if [ ${_chk_ip_} = "none" ]; then
+        _err_flag_=0
+elif [[ ${_chk_ip_} =~ ${ipv6_check} ]]; then
+        _err_flag_=0
+fi
+
+if [ ${_err_flag_} -eq 0 ]; then
+    return 0
+else
+    return 1
+fi
+}
+
+##################################################################
+## The following functions add IPF additions to /etc/ipf/ipf.conf
+##################################################################
+
+
+### Function: check_for_ipfilters ###
+##
+#   Function to check if ipfilters are enabled on the server
+#
+check_for_ipfilters()
+{
+
+if [ "$IPFILTERS" = disabled ]
+then
+#  $ECHO "$NOW -- IPFILTERS is not enabled on this Server " | $TEE -a ${LOGFILE}
+        return 0
+else
+
+   set_ipfilters
+
+   # Check then add the client into the /etc/ipf/ipf.conf file.
+   check_if_new_client_in_ipf
+
+   # Add existing hosts to ipf config file
+   add_existing_hosts_to_ipf
+
+   # Check if OK to restart IPF
+   check_if_ok_to_restart_ipf
+fi
+}
+
+### Function: set_ipfilters ###
+##
+set_ipfilters()
+{
+#
+
+# Check to ensure that the config dir exist, if not create it.
+# If the directory does not exist, the configuration file won't either
+# create a blank file at this point also.
+if [ ! -d "$IPF_CONF_DIR" ] ;then
+   $MKDIR -p $IPF_CONF_DIR >/dev/null
+   $TOUCH $IPF_CONF_FILE >/dev/null
+fi
+
+# Check that the ipf.conf file exists, if not exit and display a message.
+if [ ! -f $IPF_CONF_FILE ];then
+        _err_msg_="The IPFilter configuration file does not exist, creating it"
+        $TOUCH ${IPF_CONF_FILE} > /dev/null
+fi
+
+#### Make a copy of the configuration file in case of emergencies or rollback
+$CP -p ${IPF_CONF_FILE} ${IPF_CONF_FILE}.$NOW > /dev/null
+
+
+#### Make a copy of the configuration file in case of emergencies or rollback
+
+# Get a list of Interfaces, put each interface into a temporary file.
+#
+
+_temp_net_ifaces_=${TEM_DIR}/network_interfaces
+for _network_iface_ in `$IFCONFIG -a | $AWK -F: '{print $1}' |$EGREP -v "ether|inet|lo0" | $SORT -u`
+do
+                echo "$_network_iface_" >>$_temp_net_ifaces_
+done
+
+_temp_ipf_conf_file_clients_=${TEM_DIR}/ipf_conf_file_no_ifaces.$$
+_blank_ipf_conf_=${TEM_DIR}/blank_ipf_conf_file.$$
+$TOUCH $_blank_ipf_conf_
+#
+for _primary_iface_ in `$CAT $_temp_net_ifaces_`
+do
+# Check that the entry is not already in the IPF file
+#
+        for PORT in `$ECHO ${BLOCKED_PORTS}`
+        do
+                $GREP "block in on ${_primary_iface_} proto tcp/udp from any to any port = $PORT" $_blank_ipf_conf_ > /dev/null
+                if [ "$?" -ne 0 ]; then
+                        $ECHO "block in on ${_primary_iface_} proto tcp/udp from any to any port = $PORT"  >>$_blank_ipf_conf_
+                fi
+        done
+                if [ "$?" -eq 0 ]; then
+                   $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+                else
+                   $ECHO "$NOW -- Could not update $IPF_CONF_FILE with ${_primary_iface_}" | $TEE -a ${LOGFILE}
+                fi
+done
+
+# add the lines for the interfaces to the top of the IPF config file
+$EGREP -v "proto tcp/udp from any to any port =" $IPF_CONF_FILE > $_temp_ipf_conf_file_clients_
+$CAT $_temp_ipf_conf_file_clients_ >> $_blank_ipf_conf_
+$CP $_blank_ipf_conf_ $IPF_CONF_FILE
+
+ return 0
+
+}
+
+### Function: add_clients_to_ipf ###
+##
+##  This function will add requested clients to ipfilters
+##  If a backup IP address is input, this will be added to IPF also
+##
+add_clients_to_ipf()
+{
+
+        _client_name_=$1
+
+        if [ "$_backup_client_ip_" = "none" -o "${CLIENT_BACKUP_IP_ADDR}" = none ]; then
+           $ECHO "# Allow NFS and rpcbind for ${_client_name_}" >> ${IPF_CONF_FILE}
+           for CLIENT_PORT in `$ECHO ${BLOCKED_PORTS}`
+           do
+               $ECHO "pass in proto tcp/udp from ${_client_name_} to port = $CLIENT_PORT # ${_client_name_} Added by $SCRIPT_NAME" >> ${IPF_CONF_FILE}
+           done
+        elif [ -f ${TEM_DIR}/client_already_in_ipf.$$ -a ${CLIENT_BACKUP_IP_ADDR} ];then
+             for CLIENT_PORT in `$ECHO ${BLOCKED_PORTS}`
+             do
+                $ECHO "pass in proto tcp/udp from ${_backup_client_ip_} to port = ${CLIENT_PORT} # backup_ip for ${_client_name_}"  >> ${IPF_CONF_FILE}
+            done
+       else
+            $ECHO "# Allow NFS and rpcbind for ${_client_name_}" >> ${IPF_CONF_FILE}
+            for CLIENT_PORT in `$ECHO ${BLOCKED_PORTS}`
+            do
+                $ECHO "pass in proto tcp/udp from ${_client_name_} to port = ${CLIENT_PORT} # ${_client_name_} Added by $SCRIPT_NAME" >> ${IPF_CONF_FILE}
+                $ECHO "pass in proto tcp/udp from ${_backup_client_ip_} to port = ${CLIENT_PORT} # backup_ip for ${_client_name_}"  >> ${IPF_CONF_FILE}
+           done
+      fi
+
+if [ "$?" -eq 0 ]; then
+   $ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully updated IPF configuration for ${_client_name_}" | $TEE -a ${LOGFILE}
+  # allow restart of ipf after changing the config file.
+  $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+else
+  $ECHO -e "\n$NOW -- Could not update $IPF_CONF_FILE with ${_client_name_}" | $TEE -a ${LOGFILE}
+fi
+
+add_to_hosts_file
+
+ return 0
+
+}
+
+#
+###     Function: check_if_new_client_in_ipf    ###
+#
+# If the Client is already in the configuration file, remove it and add it again.
+#
+check_if_new_client_in_ipf()
+{
+        $EGREP -w "$CLIENT_HOSTNAME Added by manage_dhcp_clients.bsh|$CLIENT_HOSTNAME Added by manage_linux_dhcp_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+        if [ $? -eq 0 ];then
+           $TOUCH ${TEM_DIR}/new_client_was_added_by_dhcp
+        fi
+
+        $EGREP -w "$CLIENT_HOSTNAME Added by manage_upgrade_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+        if [ $? -eq 0 ];then
+           $TOUCH ${TEM_DIR}/new_client_was_added_by_upgrade
+        fi
+
+        # Check to see if the lines for the new client are already there.
+        if [ -f ${TEM_DIR}/new_client_was_added_by_upgrade ];then
+           $ECHO "$NOW - Client $CLIENT_HOSTNAME is already in ipf, no change required..." | $TEE -a ${LOGFILE}
+           $TOUCH ${TEM_DIR}/client_already_in_ipf.$$
+              if [ "$_backup_client_ip_" = "none" -o "${CLIENT_BACKUP_IP_ADDR}" = "none" ]; then
+                 $ECHO "$NOW - Client $CLIENT_HOSTNAME is already in ipf, and no backup address requested..." >/dev/null
+              else
+                 $ECHO "Backup address for $CLIENT_HOSTNAME requested, adding this for $CLIENT_HOSTNAME"
+                 remove_existing_clients_from_ipf $CLIENT_HOSTNAME
+                 add_clients_to_ipf $CLIENT_HOSTNAME
+              fi
+        elif [ -f ${TEM_DIR}/new_client_was_added_by_dhcp ];then
+              $TOUCH ${TEM_DIR}/client_already_in_ipf.$$
+              if [ "$_backup_client_ip_" = "none" -o "${CLIENT_BACKUP_IP_ADDR}" = "none" ]; then
+                 $ECHO "$NOW - Client $CLIENT_HOSTNAME is already in ipf, and no backup address requested..."
+              else
+                 $ECHO "Backup address for $CLIENT_HOSTNAME requested, adding this for $CLIENT_HOSTNAME"
+                 remove_existing_clients_from_ipf $CLIENT_HOSTNAME
+                 add_clients_to_ipf $CLIENT_HOSTNAME
+              fi
+        else
+             $ECHO "$NOW - Adding Client $CLIENT_HOSTNAME to ipf, updating configuration..." | $TEE -a ${LOGFILE}
+             remove_existing_clients_from_ipf $CLIENT_HOSTNAME
+             add_clients_to_ipf $CLIENT_HOSTNAME
+        fi
+        $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+  return 0
+}
+
+###  Function: add_existing_hosts_to_ipf     ###
+##
+##   This function will add any hosts configured in /JUMP
+##   to the IPF configuration.
+##
+add_existing_hosts_to_ipf()
+{
+#
+# Add the existing hosts from the default DHCP_CLIENT_DIR (/JUMP/DHCP_CLIENTS)
+local _temp_dhcp_clients_=${TEM_DIR}/dhcp_clients_to_add_to_ipf.$$
+
+DHCP_CLIENT_AREA="${DEFAULT_DHCP_CLIENT_AREA}/${DHCP_CLIENT_DIR}"
+if [ ! -d  ${DHCP_CLIENT_AREA} ] ;then
+  $ECHO "${DHCP_CLIENT_AREA} does not exist, no new clients to add to ipf" | $TEE -a ${LOGFILE}
+  return 0
+else
+  CLIENT_BACKUP_IP_ADDR=none
+  $LS ${DHCP_CLIENT_AREA} | $GREP -v $CLIENT_HOSTNAME  > $_temp_dhcp_clients_
+fi
+
+if [ -s "$_temp_dhcp_clients_" ];then
+for _named_client_ in `$CAT ${_temp_dhcp_clients_}`
+do
+     $EGREP -w "$_named_client_ Added by manage_dhcp_clients.bsh|$_named_client_ Added by manage_linux_dhcp_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+     if [ $? -eq 0 -a ${SCRIPT_NAME} = manage_upgrade_clients.bsh ];then
+        $ECHO "$_named_client_ is already in the IPF config added by manage_dhcp_clients.bsh" > /dev/null
+        break
+     fi
+        for PORT in `$ECHO ${BLOCKED_PORTS}`
+        do
+                $EGREP -w "$_named_client_ to port = $PORT" $IPF_CONF_FILE >/dev/null
+                if [ "$?" -eq 0 ]; then
+                        $ECHO "$NOW - Client $_named_client_ and $PORT are already in ipf file" > /dev/null
+                else
+                        $ECHO "$NOW - Client $_named_client_ and $PORT are NOT in ipf file" > /dev/null
+                        remove_existing_clients_from_ipf $_named_client_
+                        add_clients_to_ipf $_named_client_
+                fi
+        done
+done
+fi
+
+return 0
+}
+
+##
+### Function: remove_clients_from_ipf ###
+##
+##  This function will remove designated Clients from IPF.
+##
+remove_clients_from_ipf()
+{
+# Remove the lines for the client
+#
+#
+if [ ! -f $IPF_CONF_FILE ];then
+   _err_msg_="The IPFilter configuration file does not exist, nothing to remove..."
+   $ECHO "${_err_msg_}"
+   exit 1
+fi
+
+    _host_to_remove_=${1-$CLIENT_HOSTNAME}
+
+    _remove_temp_ipf_conf_file_=${TEM_DIR}/remove_temp_ipf_conf_file.$$
+    _dhcp_ipf_clients_=${TEM_DIR}/dhcp_ipf_clients.$$
+
+        $EGREP -w "$_host_to_remove_ Added by manage_dhcp_clients.bsh|$_host_to_remove_ Added by manage_linux_dhcp_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+        if [ $? -eq 0 ];then
+           $TOUCH ${TEM_DIR}/remove_client_was_added_by_dhcp
+        fi
+
+        $EGREP -w "$_host_to_remove_ Added by manage_upgrade_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+        if [ $? -eq 0 ];then
+           $TOUCH ${TEM_DIR}/remove_client_was_added_by_upgrade
+        fi
+
+if [ -f ${TEM_DIR}/remove_client_was_added_by_upgrade -a $SCRIPT_NAME = manage_upgrade_clients.bsh ];then
+     $ECHO "Client $_host_to_remove_ was added using manage_upgrade_clients.bsh script, removing entry..."
+     # Remove all instances of ${CLIENT_HOSTNAME} from ${IPF_CONF_FILE}
+     $EGREP -vw "${_host_to_remove_}" "$IPF_CONF_FILE"  > ${_remove_temp_ipf_conf_file_}
+     $CP -p ${_remove_temp_ipf_conf_file_} "${IPF_CONF_FILE}"
+     $ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully removed IPF config for ${_host_to_remove_}" | $TEE -a ${LOGFILE}
+         # Restart ipf after changing the config file.
+     $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+     check_if_ok_to_restart_ipf
+elif [ -f  ${TEM_DIR}/remove_client_was_added_by_dhcp -a $SCRIPT_NAME = manage_dhcp_clients.bsh ];then
+         $ECHO "Client $_host_to_remove_ was added using manage_dhcp_clients.bsh script, removing entry..."
+                # Remove all instances of ${CLIENT_HOSTNAME} from ${IPF_CONF_FILE}
+         $EGREP -vw "${_host_to_remove_}" "$IPF_CONF_FILE"  > ${_remove_temp_ipf_conf_file_}
+         $CP -p ${_remove_temp_ipf_conf_file_} "${IPF_CONF_FILE}"
+         $ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully removed IPF config for ${_host_to_remove_}" | $TEE -a ${LOGFILE}
+               # Restart ipf after changing the config file.
+         $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+         check_if_ok_to_restart_ipf
+elif [ -f  ${TEM_DIR}/remove_client_was_added_by_dhcp -a $SCRIPT_NAME = manage_linux_dhcp_clients.bsh ];then
+         $ECHO "Client $_host_to_remove_ was added using manage_linux_dhcp_clients.bsh script, removing entry..."
+                # Remove all instances of ${CLIENT_HOSTNAME} from ${IPF_CONF_FILE}
+         $EGREP -vw "${_host_to_remove_}" "$IPF_CONF_FILE"  > ${_remove_temp_ipf_conf_file_}
+         $CP -p ${_remove_temp_ipf_conf_file_} "${IPF_CONF_FILE}"
+         $ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully removed IPF config for ${_host_to_remove_}" | $TEE -a ${LOGFILE}
+               # Restart ipf after changing the config file.
+         $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+         check_if_ok_to_restart_ipf
+else
+         $ECHO "Client ${_host_to_remove_} cannot be removed by $SCRIPT_NAME"
+        $EGREP -w "backup_ip for ${_host_to_remove_}" "$IPF_CONF_FILE" > /dev/null
+        if [[ $? = 0 ]]; then
+         $EGREP -vw "backup_ip for ${_host_to_remove_}" "$IPF_CONF_FILE"  > ${_remove_temp_ipf_conf_file_}
+         $CP -p ${_remove_temp_ipf_conf_file_} "${IPF_CONF_FILE}"
+
+         $TOUCH ${TEM_DIR}/ok_to_restart_enable_ipf
+         check_if_ok_to_restart_ipf
+        fi
+
+
+fi
+
+return 0
+}
+
+##
+### Function: remove_existing_clients_from_ipf ###
+##
+##  This function will remove designated Clients from IPF.
+##
+remove_existing_clients_from_ipf()
+{
+# Remove the lines for the client
+#
+   _existing_host_=$1
+   _temp_ipf_conf_file_=${TEM_DIR}/ipf_conf_file.$$
+
+$EGREP -w "$1 Added by manage_dhcp_clients.bsh|$1 Added by manage_linux_dhcp_clients.bsh" "$IPF_CONF_FILE" > /dev/null
+if [ $? -eq 0 -a ${SCRIPT_NAME} = manage_upgrade_clients.bsh ];then
+         $ECHO "Client $_host_to_remove_ was added using manage_dhcp_clients.bsh script"
+#        return 0
+   else
+         # Remove all instances of ${_existing_host_} from ${IPF_CONF_FILE}
+
+         $EGREP -v "\# Allow NFS and rpcbind for ${1}| from ${1} to port = | backup_ip for ${1}" $IPF_CONF_FILE > $_temp_ipf_conf_file_
+         if [ $? -eq 0 ]; then
+              $CP $_temp_ipf_conf_file_ $IPF_CONF_FILE
+              $RM -f ${TEM_DIR}/client_already_in_ipf.$$
+              return 0
+         else
+              _err_msg_="Could not update $IPF_CONF_FILE with $1"
+         fi
+    fi
+
+
+
+$EGREP -w "backup_ip for $1" "$IPF_CONF_FILE" > /dev/null
+if [[ $? = 0 ]]; then
+        echo "BACK up found"
+        $EGREP -v "backup_ip for ${1}" $IPF_CONF_FILE > $_temp_ipf_conf_file_
+if [ $? -eq 0 ]; then
+              $CP $_temp_ipf_conf_file_ $IPF_CONF_FILE
+              return 0
+         else
+              _err_msg_="Could not update $IPF_CONF_FILE with $1"
+         fi
+
+fi
+
+
+
+
+read junk
+
+return 0
+}
+
+check_if_ok_to_restart_ipf()
+{
+#
+# Function to check if a temporary file exists, if it does, restart IPF
+if [ -f ${TEM_DIR}/ok_to_restart_enable_ipf ] ; then
+   restart_enable_ipf >> /dev/null 2>&1
+fi
+
+return 0
+}
+
+### Function: add_to_hosts_file ###
+#
+# Update the hosts file with the client
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+add_to_hosts_file()
+{
+# Do I have the entry already in the hosts file
+$CAT /etc/hosts | $EGREP -w "^[[:blank:]]*${CLIENT_IP_ADDR}" \
+      | $EGREP -w "${CLIENT_HOSTNAME}" >> /dev/null 2>&1
+if [ $? -ne 0 ]; then
+# Add the new client and IP to /etc/hosts ${CLIENT_IP_ADDR} and ${CLIENT_IP_ADDR}
+  $CAT /etc/hosts  > ${TEM_DIR}/hosts
+  $ECHO "${CLIENT_IP_ADDR}   ${CLIENT_HOSTNAME}" >> ${TEM_DIR}/hosts
+  $CP ${TEM_DIR}/hosts /etc/hosts
+        if [ $? -ne 0 ]; then
+           _err_msg_="Could not update /etc/hosts with ${CLIENT_IP_ADDR} ${CLIENT_HOSTNAME}"
+           abort_script "${_err_msg_}"
+        fi
+fi
+
+return 0
+}
+
+###     Function :  clean_old_configs ###
+#
+#       Used to clean up old ipfilter configuration files
+#
+#
+clean_old_configs()
+{
+local _tempfile_="${TEM_DIR}/${SCRIPT_NAME}_clean_old_configs.$$"
+#
+LOGS_TO_KEEP=5
+
+#$LS -1t $IPF_CONF_DIR  > $_tempfile_
+NUMBER_OF_LOGS=`$CAT $_tempfile_ | $WC -l`
+if [ $NUMBER_OF_LOGS -gt $LOGS_TO_KEEP ]
+then
+    ((LOGS_TO_DELETE=NUMBER_OF_LOGS-LOGS_TO_KEEP))
+    $CAT $_tempfile_ | $TAIL -${LOGS_TO_DELETE} | while read DEL
+    do
+        $RM -f $IPF_CONF_DIR/$DEL
+        continue
+    done
+fi
+
+return 0
+
+}
+
+## End IPF functions
+#################################################################################
+
+

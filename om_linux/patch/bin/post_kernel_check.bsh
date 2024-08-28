@@ -1,0 +1,127 @@
+#!/bin/bash
+# Red Hat Linux Patch Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : post_kernel_check.bsh
+# Date    : 30/03/2019
+# Revision: A
+# Purpose : This script is to check the kernel updates and to remove if more 
+#           than 2 kernels from client 
+#
+#
+# Version Information:
+#       Version Who             Date            Comment
+#       0.1     xanjgop & zsmrsmr         30/03/2019      Initial draft
+#
+#
+# ********************************************************************
+BASENAME=/bin/basename
+SCRIPT_NAME="$( "$BASENAME" "$0" )"
+CAT=/usr/bin/cat
+DATE=/usr/bin/date
+DATETIME="$($DATE +%d-%m-%Y_%H-%M-%S)"
+ENIQ=/eniq/installation/config
+GREP=/usr/bin/grep
+RM=/usr/bin/rm
+mkdir -p /var/ericsson/log/patch/ 2> /dev/null
+LOGPATH="/var/ericsson/log/patch/${SCRIPT_NAME}_$DATETIME.log"
+if [ ! -d /sys/firmware/efi ]; then
+UPDATED_KERNEL=$(awk -F\' '$1=="menuentry " {print $2}' /etc/grub2.cfg | grep -i -w "red" | head -1| cut -d " " -f6 | grep -w -Po '(\d+.*)[^\)]')
+else
+UPDATED_KERNEL=$(awk -F\' '$1=="menuentry " {print $2}' /etc/grub2-efi.cfg | grep -i -w "red" | head -1| cut -d " " -f6 | grep -w -Po '(\d+.*)[^\)]')
+fi
+CURRENT_KERNEL=$(uname -r)
+PATCH_BUNDLE_VER="$(cut -d "=" -f 2 /etc/patch_bundle_ver)"
+echo "patch bundle version is $PATCH_BUNDLE_VER"
+
+### Function: update_history ###
+#
+# Updates history file with ENIQ update status
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+update_history()
+{
+
+if [ -d "${ENIQ}" ]; then
+
+    if [ -s /var/tmp/patch_status_file ] ; then
+
+          if [ ! -f "${ENIQ}"/eniq_patch_history ] ; then
+
+                $CAT /var/tmp/patch_status_file >"${ENIQ}"/eniq_patch_history
+                echo "=====================================================================" >>"${ENIQ}"/eniq_patch_history
+                echo "ENIQ Status file is updated with Patch details" | tee -a "$LOGPATH"
+                $CAT "${ENIQ}"/eniq_patch_history >"${ENIQ}"/eniq_patch_status
+                $RM -rf  /var/tmp/patch_status_file
+
+          else
+                # shellcheck disable=SC2016
+                if [[ $($CAT "${ENIQ}"/eniq_patch_history | $GREP  "${PATCH_BUNDLE_VER}") ]]; then
+                        echo "ENIQ history file has the entry of Media provided. Update skipped in eniq_patch file" | tee -a "$LOGPATH"
+                        $RM -rf  /var/tmp/patch_status_file
+                else
+                        $RM -rf  "${ENIQ}"/eniq_patch_status
+                        $CAT /var/tmp/patch_status_file >>"${ENIQ}"/eniq_patch_status
+                        echo "=============================================================" >>"${ENIQ}"/eniq_patch_status
+                        $CAT "${ENIQ}"/eniq_patch_status >>"${ENIQ}"/eniq_patch_history
+                        echo "ENIQ Status file is updated with Patch details" | tee -a "$LOGPATH"
+                        $RM -rf  /var/tmp/patch_status_file
+                fi
+          fi
+
+    else
+           echo "Patch Status file not Available, Patch History file update not required" | tee -a "$LOGPATH"
+    fi
+elif [ -d /JUMP ]; then
+    echo ""
+else
+        echo "${ENIQ} doesnot exist, Cannot create patch media history file for ENIQ" | tee -a "$LOGPATH"
+fi
+}
+
+if [[   "$UPDATED_KERNEL" == "$CURRENT_KERNEL" ]]; then
+	
+            echo 
+	    echo "Kernel is up to date with latest version." | tee "$LOGPATH"
+            echo "Removing old Kernels from $(hostname)"  | tee "$LOGPATH"
+            echo 
+	    package-cleanup --oldkernels --count=2 -y 2>/dev/null | tee -a "$LOGPATH"
+            oldkernel_cleanup=$?
+            if [ ${oldkernel_cleanup} -eq 0 ]; then
+                update_history
+            fi
+
+  if [ ! -d /sys/firmware/efi ]; then
+            grub2-mkconfig -o /boot/grub2/grub.cfg > /var/post_grub_build 2>&1
+     else
+            grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg  > /var/post_grub_build 2>&1
+  fi	    
+       	    sleep 5
+            echo 
+            echo "Kernels present in $(hostname) " | tee -a "$LOGPATH"
+            rpm -q kernel | tee -a "$LOGPATH"
+            echo
+            echo "Current kernel version is: $(uname -r) " | tee -a "$LOGPATH"
+            echo
+	    echo  "log path for post kernel check  $LOGPATH"
+	    exit 0
+else
+	    echo  "Kernel version failed to update" | tee -a "$LOGPATH"
+	    echo  "log path for post check  $LOGPATH"
+	    exit 1
+fi

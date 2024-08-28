@@ -1,0 +1,210 @@
+#!/usr/bin/perl
+#!/view/eniq_view/vobs/cello/cade_A_tools_perl/SunOS/sparc/bin/perl -w
+#-----------------------------------------------------------
+# COPYRIGHT Ericsson Radio Systems  AB 2016
+#
+# The copyright to the computer program(s) herein is the
+# property of ERICSSON RADIO SYSTEMS AB, Sweden. The
+# programs may be usedand/or copied only with the written
+# permission from ERICSSON RADIO SYSTEMS AB or in accordance
+# with the terms and conditions stipulated in the agreement
+# contract under which the program(s)have been supplied.
+#-----------------------------------------------------------
+#-----------------------------------------------------------
+#
+#   PRODUCT      : Delivery Management
+#   RESP         : xmeghhr
+#   DATE         : 15/2/2019
+#   Description  : This Script is to build a rpm package
+#   REV          : A1
+# --------------------------------------------------------------
+#
+#
+use strict;
+use warnings;
+use Getopt::Long;
+use File::Copy;
+no warnings 'uninitialized';
+
+my $help;
+my $PRINTER;
+my $ERROR;
+my $LINE_NUMBER;
+my $Base_Path = "/home/lciadm100/jenkins/workspace/INFRA_KGB_Build_EC";
+my $Base_Src_Path = $Base_Path."/pkg_src";
+my $Base_Del_Path = $Base_Path."/eniq_infra_delivery";
+my $RPM_INFO_FILE = $Base_Path."/eniq_infra_tools/etc/rpm_info";
+my $RState;
+my $Module;
+my $TAR = "/bin/tar";
+my $RPMBUILD ="/usr/bin/rpmbuild";
+my $Version;
+my $Release;
+###########################################################
+###########################################################
+# Funtion Name : printer
+# Purpose      : To print values passed.
+# Return Value : NA
+###########################################################
+sub printer
+{
+    $PRINTER = $_[0] ;
+    print "------------<   $PRINTER    >------------\n";
+    return 0
+}###########################################################
+#  Function Name:  error
+#  Function Desc:  Show a uniform modern error message
+#  Return:         1
+###########################################################
+sub error
+{
+    $ERROR = $_[0] ;
+    $LINE_NUMBER=$_[1] ;
+
+    print "------------------------------------------------------------------------------\n";
+    print "  ERROR!             $ERROR \n";
+    print "  Line Number:       $LINE_NUMBER \n";
+    print "------------------------------------------------------------------------------\n";
+
+    exit 1;
+
+}
+###########################################################
+# Funtion Name : Usage
+# Purpose      : To print usage when no parameter/worng parameter are passed.
+# Return Value : NA
+###########################################################
+sub usage
+{
+        print "Unknown option: @_\n" if ( @_ );
+        print "usage: build_rpm [-r RState] [-m Module/Component] [-help|-?]\n";
+        exit;
+}
+
+
+
+###########################################################
+
+# Funtion Name : PARAMETERS
+# Purpose      : To check right parameters are being passed to the script.
+# Return Value : Fail and print Usage if wrong parameters are passed.
+###########################################################
+sub PARAMETERS
+{
+        usage() if ( @ARGV < 1 or ! GetOptions('help|?' => \$help, 'rstate|r=s' => \$RState, 'module|m=s' => \$Module,) or defined $help );
+
+
+        if ($Module)
+        {
+            printer("Module getting Built is $Module");
+
+        }
+        if ($RState)
+        {
+            printer("$RState is used to build the $Module");
+        }
+
+        $Version = substr($RState,0,3);
+        #$Version = (split /[A-Q]/,$RState)[0];
+        #$Release = (split /[A-Q]/,$RState)[1];
+        #$Version = (split /$Release/,$RState)[0];
+        $Release = substr($RState,3);
+
+        printer (" Version is : $Version ");
+        printer (" Release is : $Release ");
+
+} # Closed PARAMETER Function
+
+###########################################################
+# Funtion Name : Build_RPM
+# Purpose      : To Build RPM
+# Return Value : Failure if the rpm build fails.
+###########################################################
+sub Build_RPM
+{
+    my $Mod_Src_Path=$Base_Src_Path."/$Module";
+    my $Mod_Del_Path=$Base_Del_Path."/$Module";
+    printer("Modules Source Path is $Mod_Src_Path ");
+
+    #system("/usr/atria/bin/cleartool co -nc $Mod_Src_Path ") == 0 or die "Unable to Checkout the $Mod_Src_Path \n";
+
+    chdir($Mod_Src_Path) or error ("Unable to Change Dir $Mod_Src_Path", __LINE__);
+    system("ls -lrt");
+    printer ("Removing the .tar file if any");
+    system("rm -rf *.tar");
+
+    printer (" Taring the Src dir ");
+
+    system("rm -rf $Module*.tar");
+    system ("pwd;$TAR -cvf \"$Module.tar\" src");
+    system("ls -lrt");
+
+    printer (" Copying the Tar File from $Mod_Src_Path/src to $Mod_Del_Path/SOURCES");
+    chdir("$Mod_Del_Path/SOURCES") or error ("Unable to Change Dir $Mod_Del_Path/SOURCES", __LINE__);
+
+    system ("rm -rf *.tar");
+    copy("$Mod_Src_Path/$Module.tar","$Mod_Del_Path/SOURCES/");
+
+    printer ("Updating the Spec file with $Version and $Release");
+
+    #`sed "s/RSTATE.*/RSTATE \"$rev\"/" < $ipf > /tmp/ipf.$$
+
+    #system("/usr/atria/bin/cleartool co -nc $Mod_Del_Path/SPECS/$Module.spec") == 0 or die "Unable to Checkout the $Mod_Del_Path/SPECS/$Module.spec file \n";
+
+    `sed "s/Release.*/Release: \"$Release\"/" < $Mod_Del_Path/SPECS/$Module.spec  > /tmp/$Module.spec.$$`;
+    `cp /tmp/$Module.spec.$$  $Mod_Del_Path/SPECS/$Module.spec`;
+
+    `sed "s/Version.*/Version:  \"$Version\"/" < $Mod_Del_Path/SPECS/$Module.spec  > /tmp/$Module.spec.$$`;
+    `cp /tmp/$Module.spec.$$  $Mod_Del_Path/SPECS/$Module.spec`;
+
+    #system("/usr/atria/bin/cleartool ci -nc $Mod_Del_Path/SPECS/$Module.spec") == 0 or die "Unable to Checkout the $Mod_Del_Path/SPECS/$Module.spec file \n";
+
+    `rm -rf /tmp/$Module.spec.$$`;
+
+    system ("$RPMBUILD --define \"_topdir $Mod_Del_Path\" -ba $Mod_Del_Path/SPECS/$Module.spec") == 0 or error ( "RPM Build Failed..." , __LINE__);
+    #system("/usr/atria/bin/cleartool ci -nc $Mod_Src_Path ") == 0 or die "Unable to Checkout the $Mod_Src_Path \n";
+
+    system("rm -rf $Mod_Src_Path/$Module*.tar");
+
+}
+
+#######################################################################
+# Function : Copy_RPM_to_Package_Area
+# Arguments : NA
+# Description : Copies the end RPM built to Package Area (under which package it has to go)
+#######################################################################
+sub Copy_RPM_to_Package_Area
+{
+
+    my $RPM_BUILD_DIR = `grep $Module $RPM_INFO_FILE | awk -F"::" '{print \$3}' `;
+    my $To_Package_Dir = `grep $Module $RPM_INFO_FILE | awk -F"::" '{print \$4}' `;
+
+    if ( $To_Package_Dir )
+    {
+        chomp $RPM_BUILD_DIR;
+        chomp $To_Package_Dir;
+
+        #Remove the old rpm file if there are any
+        `rm -rf $To_Package_Dir/$Module*.rpm`;
+        `cp $RPM_BUILD_DIR/$Module-$RState.rpm $To_Package_Dir`;
+        printer ("Copied RPM $RPM_BUILD_DIR/$Module-$RState.rpm to $To_Package_Dir directory");
+    }
+    else
+    {
+        printer (" RPM to be copied directory value is empty!. Please check $RPM_INFO_FILE file.");
+        exit(5);
+    }
+
+
+
+}
+
+
+##### Main Function
+{
+    print "\n\n\n======================================================================\n";
+    PARAMETERS();
+    Build_RPM();
+    #Copy_RPM_to_Package_Area();
+    print "======================================================================\n\n\n";
+}

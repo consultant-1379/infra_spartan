@@ -1,0 +1,246 @@
+Installation:
+
+# vi /etc/hosts
+Add IP to 'nasconsole', if not done.
+
+# cd <tmp-dir-where-container-is>
+# gzcat 19089-StorageManager.tar.gz|tar xvf -
+# ./install_storage_manager.sh
+
+
+Usage: nascli [<flags>] <procedure> [<params>]
+    
+ Where <flags>:
+   -help : This output
+   -menu : Interactive Menus
+   -m <procedure> : Interactive, as via the menu
+   -s    : Silent (no questions)
+  
+ Where <procedure> [<params>]:
+   create_fs -|<sys_id> -|<size> -|<pool>[,disk,..] -|[<fs_name> ...]
+   resize_fs -|<sys_id> <fs_name> <new_size>
+   delete_fs -|<sys_id> -|[<fs_name> ...]
+   create_snapshot -|<sys_id> -|<optim>|<full> -|<pool> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   refresh_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   rollback_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   split_snapshot -|<sys_id-b> -|[<fs_name> ...]
+   delete_snapshot -|<sys_id> -|<snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+   add_client -|<sys_id> <client> -|<nfsoptions> -|[<fs_name> ...]
+   delete_client -|<sys_id> -|<client>
+   create_share -|<sys_id> -|<nfsoptions> -|[<fs_name> ...]
+   delete_share -|<sys_id> -|[<fs_name> ...]
+   get_share -|<sys_id> <fs_name>
+   create_cache -|<sys_id> -|<size> -|<pool> -|[<cache_name>]
+   delete_cache -|<sys_id> -|[<cache_name>]
+   list_cache [raw]|[-|<sys_id>]
+   list_fs [raw]|[-|<sys_id>]
+   list_snapshots [raw]|[-|<sys_id>]
+   list_shares [raw]|[-|<sys_id>]
+   list_clients [raw]|[-|<sys_id>]
+   list_all [raw]|[-|<sys_id>]
+
+Help
+./nascli create_fs
+   create_fs -|<sys_id> -|<size> -|<pool>[,disk,..] -|[<fs_name> ...]
+Typing only the function name, gives the params for that function.
+
+
+Create File Systems
+   create_fs -|<sys_id> -|<size> -|<pool>[,disk,..] -|[<fs_name> ...]
+
+./nascli create_fs - - - -
+./nascli create_fs - - -
+Creates all file systems listed in storage.ini, for this System, picking up size and pool as well from INI.
+The last dash can be omitted.
+
+./nascli create_fs oss1b - pool1b -
+Creates all file systems listed in storage.ini, for Sys-Id 'oss1b' in 'pool1b', using default size.
+
+./nascli create_fs - - - home segment1
+Creates only FS 'home' and 'segment1', all with default values.
+
+
+Resize File System
+   resize_fs -|<sys_id> <fs_name> <new_size>
+
+./nascli resize_fs - home 10g
+Increases (or decreases) 'home' to 10 GB, and updates storage.ini with new value.
+
+
+Delete File System
+   delete_fs -|<sys_id> -|[<fs_name> ...]
+
+./nascli delete_fs - 
+Deletes all file systems for this system, including all other related objects.
+I.e. a total clean out!
+
+
+Create Snapshot
+   create_snapshot -|<sys_id> -|<optim>|<full> -|<pool> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+
+./nascli create_snapshot - - - snap1 -
+Create a snapshot for all FS for this system, with postfix 'snap1'.
+Each FS will have the snap of type 'optim' or 'full', according to INI.
+
+./nascli create_snapshot - full - sysid/oss1b -
+This is a special case, where the param 4 has format: sysid/<sys-id-sec>
+It's only valid when param 2 = 'full'.
+Param 1 and 5 defines which file systems to snapshot from.
+And the snapshots, of type 'full', will be named <sys-id-sec>/<fs>
+I.e. a complete mirror, havnig another Sys Id, created in the secondary pool.
+E.g. oss1a/home in pool-A, with mirror-snap oss1b/home in pool-B.
+This is used in conjunction with split_snapshot, wee below.
+
+This is whats used in DMR and SCT:
+./nascli create_snapshot - optim - dump
+  All file systems are snapped, space-optimized. Lifetime; the duration of the Dump.
+./nascli create_snapshot - full - sysid/oss1b
+  All file systems are spapped, full-sized. Will be split afterwards, to become secondary main FS.
+./nascli create_snapshot - optim - sct01 home
+  Only home is snapped, space-optimized. Several snaps will live in parallel.
+
+If a snapshot exists when ordered for creation, it's refreshed instead.
+
+
+Refresh Snapshot
+   refresh_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+
+./nascli refresh_snapshot - snap1
+Refresh content for snapshot 'snap1' for all FS. 
+
+This, and the other snapshot manipulations functions, will online/offline each FS, if needed.
+And it will delete and add shares as well.
+I.e. it can take some time to perform the operation, for all file system.
+
+
+Rollback Snapshot
+   rollback_snapshot -|<sys_id> <snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+
+./nascli rollback_snapshot - sct01 -
+Update main-FS with content of 'sct01'.
+Snap 'sct01' will continue to exists.
+
+
+Split Snapshot
+   split_snapshot -|<sys_id-b> -|[<fs_name> ...]
+
+./nascli split_snapshot - -
+Split all existing snapshots with the secondary Sys Id name.
+E.g. oss1b/home, oss1b/segment1 ...
+Split means that the snapshot becomes a proper main FS, same as it's parent.
+
+
+Delete Snapshot
+   delete_snapshot -|<sys_id> -|<snapshot_name>|'sysid'/<sys_id> -|[<fs_name> ...]
+
+./nascli delete_snapshot - sct01 -
+Delete all snapshots with postfix 'sct01', for this system.
+
+./nascli delete_snapshot - - -
+Delete all snapshots for this system.
+
+
+Add Client
+   add_client -|<sys_id> <client> -|<nfsoptions> -|[<fs_name> ...]
+
+./nascli add_client - atrcxb948 - 
+Add 'atrcxb948' as an NFS client to all FS for this system.
+
+
+Delete Client
+   delete_client -|<sys_id> -|<client>
+
+./nascli delete_client - - 
+Delete all clients for all FS for this system.
+
+
+Create Share
+   create_share -|<sys_id> -|<nfsoptions> -|[<fs_name> ...]
+
+./nascli create_share - - -
+Create share for all my file systems
+
+./nascli create_share - ro,no_root_squash home/dump
+Create share only for snapshot 'dump' on home, exporting with read-only persmissions.
+
+
+Delete Share
+   delete_share -|<sys_id> -|[<fs_name> ...]
+
+./nascli delete_share - -
+Delete all my shares
+
+
+Get Share
+   get_share -|<sys_id> <fs_name>
+
+./nascli get_share - home
+/vx/oss1a-home
+Returns the share path.
+It doesn't access SFS, so it's a fast response.
+
+
+Create Cache
+   create_cache -|<sys_id> -|<size> -|<pool> -|[<cache_name>]
+
+./nascli create_cache - 5g - my-cache
+Create 'my-cache' in default pool (POOL_SEC), of 5 GB size.
+
+./nascli create_cache - - - -
+Create <sys_id>-cache, in default pool (POOL_SEC), with 20% of the size of all file systems of SNAP_TYPE=optim.
+
+Must be done, once, before first space-optimized snapshot is created.
+
+
+Delete Cache
+   delete_cache -|<sys_id> -|[<cache_name>]
+
+./nascli delete_cache - -
+Delete my cache. (oss1a-cache)
+
+
+List Operations
+   list_cache [raw]|[-|<sys_id>]
+   list_fs [raw]|[-|<sys_id>]
+   list_snapshots [raw]|[-|<sys_id>]
+   list_shares [raw]|[-|<sys_id>]
+   list_clients [raw]|[-|<sys_id>]
+   list_all [raw]|[-|<sys_id>]
+
+Use them individually, for example:
+
+./nascli list_snapshots -
+<snapshot1> <fs_name1>
+<snapshot2> <fs_name2>
+...
+oss1a/home/snap1 oss1a/home
+
+./nascli list_share
+<share_path1> <fs_name1> <client1>
+<share_path2> <fs_name2> <client2>
+...
+/vx/oss1a-home oss1a/home any
+/vx/oss1b-home-snap1 oss1b/home/snap1 blade2
+
+./nascli list_share
+<client1> <fs_name1>
+<client2> <fs_name2>
+...
+blade1 oss1a/home
+blade2 oss1b/home
+
+
+Or use them all together:
+
+./nascli list_all 
+Lists all objects in NAS
+
+./nascli list_all -
+Lists all my objects in NAS
+
+./nascli list_all oss2b
+Lists all objects for system 'oss2b'
+
+./nascli list_all raw
+Lists all objects in native format. Here SFS format.
+

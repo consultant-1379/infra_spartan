@@ -1,0 +1,13 @@
+#-----------------------------------------------------------------------
+# File: /ericsson|eniq/storage/etc/nascli.conf
+#
+# This file is sourced upon startup, and used by the NAS API.
+# The variables set here, can also be set in the shell, manually,
+# depending on if a temporary or permanent behaviour is desired.
+#
+# At the very first startup, it's copied from nascli.conf_template.
+#-----------------------------------------------------------------------
+
+#-----------------------------------------------------------------------
+# Path to the NAS Plug-in source code library.
+SCRIPT_PLUGIN_LIST=plugins/nas/lib/nasplugin

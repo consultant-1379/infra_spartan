@@ -1,0 +1,1175 @@
+#!/bin/bash
+# Red Hat Linux Patch Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : upgrade_patchrhel.bsh
+# Date    : 02/01/2019
+# Revision: A
+# Purpose : This script is to update the RHEL patch
+#
+#
+# Version Information:
+#       Version Who             Date            Comment
+#       0.1     xanjgop & xkumvig         02/01/2019      Initial draft
+#
+# Usage   : "upgrade_patchrhel.bsh -h" to give usage
+#
+# ********************************************************************
+ARGS="${@}"
+IFSORIG=$IFS
+
+setVars() {
+#####################################
+# Function to set up global Variables
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0 or 1
+#####################################
+
+# Commands
+BASH=/bin/bash
+AT=/usr/bin/at
+AWK=/usr/bin/awk
+BASENAME=/bin/basename
+CAT=/usr/bin/cat
+CD=/usr/bin/cd
+CHMOD=/usr/bin/chmod
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+CRONTAB=/usr/bin/crontab
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+YUMDATE=$($DATE "+%Y-%m-%d %H:%M")
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+FIND=/usr/bin/find
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+VGS=/usr/sbin/vgs
+HEAD=/usr/bin/head
+HOSTNAME=/bin/hostname
+IFCONFIG=/sbin/ifconfig
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MKFS=/usr/sbin/mkfs
+MOUNT=/usr/bin/mount
+UMOUNT=/usr/bin/umount
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PRINTF=/usr/bin/printf
+RM=/usr/bin/rm
+RPM=/usr/bin/rpm
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+WC=/usr/bin/wc
+YUM=/usr/bin/yum
+MOUNTPOINT=/usr/bin/mountpoint
+BINARY=1024
+# Flags
+DEBUG=n
+SCRIPT_NAME=$( $BASENAME $0 )
+SCRIPT_DIR=$( cd $( dirname $0 ); pwd )
+LIB_DIR=$( cd $( dirname $0 ); pwd -P )
+LIB_DIR="$LIB_DIR/../lib/"
+LOG_DIR=/var/ericsson/log/patch
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+PKGLOG=${LOG_DIR}/${SCRIPT_NAME}_DRYRUN_${DATETIME}.log
+YUMUPGLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_UPDATE_${DATETIME}.log
+YUMINSTLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_INSTALL_${DATETIME}.log
+DEPRECATELOG=${LOG_DIR}/${SCRIPT_NAME}_DEPRECATE_PACKAGE_${DATETIME}.log
+INSTALL_NEWRHEL_PACKAGE=${LOG_DIR}/${SCRIPT_NAME}_INSTALL_NEWRHEL_PACKAGE_${DATETIME}.log
+LIB_COMM=common_functions.lib
+BACK_UP_SCRIPT="$SCRIPT_DIR/OS_BACKUP.bsh"
+ROLLBACK_SCRIPT="$SCRIPT_DIR/rollback_script.sh"
+mws_ip=`cat /etc/.ks_serv_ip_patch  2> /dev/null`
+$($TOUCH  /etc/mountpath)
+MOUNT_PATH=`cat /etc/mountpath 2> /dev/null`
+$($TOUCH /etc/patch_bundle_ver)
+PATCH_BUNDLE_VER=`$CAT /etc/patch_bundle_ver | $CUT -d "=" -f 2`
+II_REPOFILE=ericINSTALLPATCH.repo
+UG_REPOFILE=temp_rhel_update.repo
+II_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=ericINSTALLPATCH.repo"
+UG_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=temp_rhel_update.repo"
+KERNEL_VER=/var/tmp/kernel_update.txt
+# IP of MWS server
+KS_IP_ADDRESS=`$CAT /etc/.ks_serv_ip 2> /dev/null`
+
+#OM media location
+OM_MEDIA_LOC=`$CAT /etc/.tmp_om_media 2> /dev/null`
+$MKDIR -p /OM_MEDIA
+$MOUNT ${KS_IP_ADDRESS}:${OM_MEDIA_LOC} /OM_MEDIA  >/dev/null 2>&1
+
+# linux media location
+LIN_MEDIA_LOC=`$CAT /etc/.tmp_lin_media 2> /dev/null`
+$MKDIR -p /LIN_MEDIA
+$MOUNT ${KS_IP_ADDRESS}:${LIN_MEDIA_LOC} /LIN_MEDIA  >/dev/null 2>&1
+
+ENIQ=`$CAT /LIN_MEDIA/kickstart/$($HOSTNAME)/$($HOSTNAME)_ks_cfg.txt 2> /dev/null | $GREP -w "CLIENT_APPL_TYPE" | $AWK -F= '{print $2}'`
+
+######################
+# Load common library
+######################
+[[ -f ${LIB_DIR}/${LIB_COMM} ]] && . ${LIB_DIR}/${LIB_COMM}
+[[ -f ${SCRIPT_DIR}/${LIB_COMM} ]] && . ${SCRIPT_DIR}/${LIB_COMM}
+[[ ! -f ${LIB_DIR}/${LIB_COMM} && ! -f ${SCRIPT_DIR}/${LIB_COMM} ]] && {
+                $ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+                exit 1
+        }
+
+return 0
+
+}
+
+usage() {
+#####################################
+# Function to output usage help
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+$CAT << EOF
+
+Usage:  ${SCRIPT_NAME} -<action> <target> [-h]
+
+        Where <action> can be one of:
+                -a (intall/update)
+                -x (clean up)
+        Optional
+        -w <whitelist file>
+        -h      Print help (this message).
+
+        Example:
+                ${SCRIPT_NAME} -a install
+                ${SCRIPT_NAME} -a update
+                ${SCRIPT_NAME} -w <whitelistfile> -a install
+
+EOF
+return 0
+}
+
+### Function: check_step ###
+#
+#   Checks if step file indicates we've already run command
+#
+# Arguments:
+#   $1 Step to check
+# Returns:
+#   0 - if already run step successfully
+#   1 - if not run step
+check_step()
+{
+    local step_check=$1 step_run
+    if [ -f ${STEPSFILE} ]; then
+        step_run=$($CAT ${STEPSFILE})
+        if [ ${step_run} -lt ${step_check} ]; then
+            return 1
+        else
+            return 0
+        fi
+    fi
+    return 1
+}
+
+### Function: done_step ###
+#
+#   Updates step file to say step has passed
+#
+# Arguments:
+#   $1 Step passed
+# Returns:
+#   None
+done_step()
+{
+    $ECHO $1 > ${STEPSFILE}
+    return 0
+}
+
+### Function: run_step ###
+#
+#   Runs command if not already run that step
+#
+# Arguments:
+#   $1 Step to check
+#   $2-$* Command to run
+# Returns:
+#   None
+run_step() {
+    local step_no=$1
+    shift
+    check_step ${step_no}
+    if [ $? -eq 0 ]; then
+        msg="Skipping Step ${step_no} as already ran successfully"
+        $ECHO -e "\n-> $msg"
+    else
+        msg="Running Step ${step_no}"
+        $ECHO -e "\n-> $msg"
+        $*
+        done_step ${step_no}
+    fi
+    return 0
+}
+
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_params()
+{
+    local last_step
+
+    if [[ -n "${RESUME_STEP}" ]]; then
+        if [[ ! ${RESUME_STEP} =~ ^[0-9]+$ ]]; then
+            exitOut 2 "Invalid value for resume step ${RESUME_STEP}"
+        fi
+        if [ -f ${STEPSFILE} ]; then
+            last_step=$($CAT ${STEPSFILE})
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, last successful step ran was ${last_step} (Yes/No)?"
+        else
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, there is no record of any step passing before (Yes/No)?"
+        fi
+        if [ "${ANS}" == "No" ]; then
+            exitOut 2 "Aborting, as do not want to resume from step ${RESUME_STEP}"
+        fi
+        RESUME_STEP=$(expr ${RESUME_STEP} - 1)
+    fi
+
+    if [[ -n "${RESUME_STEP}" ]]; then
+        done_step ${RESUME_STEP}
+    fi
+    return 0
+}
+
+### Function: user_confirm ###
+#
+# Asks the user for confirmation (Yes/No).
+#
+# Arguments:
+#    $1 = Prompt text
+# Return Values:
+# Sets: ANS (Yes/No)
+user_confirm()
+{
+    local msg=$1 ans
+
+    if [ "$NO_CONFIRM" ]; then
+        ANS="Yes"
+        return
+    fi
+
+    while :; do
+        $ECHO -e "\n${msg}"
+        read ans
+        [ ! "${ans}" ] && continue
+
+        if [ "${ans}" == "Yes" -o "${ans}" == "No" ]; then
+            ANS="${ans}"
+            break
+        fi
+    done
+}
+
+#############################################
+#                                           #
+#function is to check the whitelist file.   #
+#applicable for ENIQ patch installation     #
+#                                           #
+#############################################
+
+verifyProvidedWhitelist() {
+    if [ -f "$PROVIDED_WHITELIST" ]; then
+        WHITELIST_FILE=$PROVIDED_WHITELIST
+        logOut "INFO" "$FUNCNAME: Whitelist file [$WHITELIST_FILE] found."
+    else
+        logOut "INFO" "$FUNCNAME: Whitelist file [$WHITELIST_FILE] NOT found."
+        return 1
+    fi
+    return 0
+}
+
+############################################################
+#  function to install application patches in ENIQ server  #
+#                                                          #
+############################################################
+
+doWhitelistInstall()    {
+    repo_name=$1
+    YUMINSTALLTIME=$YUMDATE
+    logOut "INFO" "$FUNCNAME: Installing packages as per  Whitelist file."
+    logOut "DEBUG" "$FUNCNAME: About to run 'yum install $PKG'. \nplease wait......"
+        PKG=`cat $WHITELIST_FILE`
+        $YUM $repo_name -y install $PKG 2>&1 | $TEE  $YUMINSTLOG
+        if [ ${PIPESTATUS[0]} != 0 ] ; then
+                return 1
+        fi
+    logOut "DEBUG" "$FUNCNAME: Whitelist install has finished."
+    return 0
+}
+
+###################################################
+#                                                 #
+#  function to copy os backup tar file from client#
+#  to MWS                                         #
+###################################################
+
+copy_backup_file()
+{
+        file=$1
+        HOSTNAME=$(hostname)
+        MWS_OSBACK_DIR="/net/$mws_ip/OS_BACK_UP/$HOSTNAME"
+        if [ ! -d $MWS_OSBACK_DIR ]; then
+                exitOut 2 "Backup directory is not found in the MWS/NFS server."
+        fi
+        $(cp $file $MWS_OSBACK_DIR 2> /dev/null)
+        if [ $? -ne 0 ]; then
+                exitOut 2 "Issue in copying of OS_BACK_UP  file to MWS/NFS server in  $MWS_OSBACK_DIR"
+        fi
+        logOut "INFO" "successfully copied the OS_BACK_UP to MWS/NFS server in $MWS_OSBACK_DIR"
+
+}
+##############################################
+#       function to take OS Backup           #
+#                                            #
+##############################################
+
+snapshot()
+{
+        $($RM -rf /opt/OS_CONF_BKP/*)
+        $($BASH $BACK_UP_SCRIPT > /dev/null 2>&1)
+        file=$($LS /opt/OS_CONF_BKP 2> /dev/null | head -1 | $GREP -w "tar")
+        if [ -e /opt/OS_CONF_BKP/$file ]; then
+                copy_backup_file "/opt/OS_CONF_BKP/$file"
+                logOut "INFO" "OS backup  taken successfully"
+        else
+                exitOut 2 "Issue in OS backup"
+        fi
+        snapshot_size
+}
+
+#########################################################
+#                                                       #
+#function to take /boot backup and to delete stale or   #
+# unwanted entries in /boot by comparing with installed #
+#kernels                                                #
+#                                                       #
+#########################################################
+
+boot_bkp()
+{
+$RM -rf /var/tmp/.pre_bkp_boot
+$MKDIR -p /var/tmp/.pre_bkp_boot
+$CP -r /boot/. /var/tmp/.pre_bkp_boot
+
+$RPM -qa kernel | $AWK -F 'kernel-' '{print $2}' > /kernel_list
+
+kernel=$($CAT /kernel_list | xargs | $SED 's/ /|/g')
+
+logOnly "INFO" "$kernel"
+
+cd /boot
+$LS -A | $EGREP -iv "$kernel|efi|grub2|lost*|initramfs-0-rescue|vmlinuz-0-*"| $TR '\n' '\0' | xargs -0 -n1 $RM -rf
+
+$RM -rf /kernel_list
+$RM -rf /var/tmp/.bkp_boot
+$MKDIR -p /var/tmp/.bkp_boot
+$CP -r /boot/. /var/tmp/.bkp_boot
+}
+
+
+#########################################################
+#                                                       #
+#       function to take lvm snapshot of /root & /var   #
+#                                                       #
+#########################################################
+
+snap()
+{
+        $CP -r /etc/lvm/lvm.conf /etc/lvm/lvm_backup.conf
+        $SED -i 's/^[^#]*snapshot_autoextend_threshold = [0-9]*/snapshot_autoextend_threshold = 80/g' /etc/lvm/lvm.conf
+        systemctl restart lvm2-monitor
+
+        logOut "INFO" "Taking snapshot of $ROOT_VG_PART"
+#EQEV-69669 ,added $ROOT_VG_USED_SIZE and $VAR_VG_USED_SIZE
+        /sbin/lvcreate -L $SNAP_SIZE_ROOT${ROOT_VG_TOT_TYPE} -s -n rootsnap $ROOT_VG_PART
+        if [ $? -ne 0 ] ; then
+                logOut "WARN" "rootsnap already exist"
+        fi
+
+        logOut "INFO" "Taking snapshot of $VAR_VG_PART"
+        /sbin/lvcreate -L $SNAP_SIZE_VAR${VAR_VG_TOT_TYPE} -s -n varsnap $VAR_VG_PART
+        if [ $? -ne 0 ] ; then
+                logOut "WARN" "varsnap already exist"
+        fi
+
+	if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+                :
+        else
+		logOut "INFO" "Taking snapshot of $HOME_VG_PART"
+	        /sbin/lvcreate -L $SNAP_SIZE_HOME${HOME_VG_TOT_TYPE} -s -n homesnap $HOME_VG_PART
+        	if [ $? -ne 0 ] ; then
+        		logOut "WARN" "homesnap already exist"
+	        fi
+	
+        	logOut "INFO" "Taking snapshot of $VARTMP_VG_PART"
+	        /sbin/lvcreate -L $SNAP_SIZE_VARTMP${VARTMP_VG_TOT_TYPE} -s -n vartmpsnap $VARTMP_VG_PART
+        	if [ $? -ne 0 ] ; then
+        		logOut "WARN" "vartmpsnap already exist"
+	        fi
+
+        	logOut "INFO" "Taking snapshot of $VARLOG_VG_PART"
+	        /sbin/lvcreate -L $SNAP_SIZE_VARLOG${VARLOG_VG_TOT_TYPE} -s -n varlogsnap $VARLOG_VG_PART
+        	if [ $? -ne 0 ] ; then
+        		logOut "WARN" "varlogsnap already exist"
+	        fi
+	fi
+        
+}
+
+#########################################################
+#                                                       #
+#      function to check and create tmp partition       #
+#      if not already created                           #
+#                                                       #
+#########################################################
+create_tmp_partition()
+{
+        TMP_LV_CHECK1=$(df -h /tmp | grep '/tmp')
+        if [ $? -ne 0 ] ; then
+                $ECHO -e  " /tmp partition is not present"
+                tmp_backup_dir=/tmp_backup_for_new
+                if [ -d ${tmp_backup_dir} ]; then
+                        $RM -rf ${tmp_backup_dir}
+                        tmp_check=$?
+                        if [ $tmp_check -eq 0 ]; then
+                                $ECHO -e "\n Sucessfully deleted old backup for /tmp"
+                        else
+                                $ECHO -e "\n Could not delete backup directory for /tmp"
+                        fi
+                fi
+                $MKDIR ${tmp_backup_dir}
+                $CP -pR /tmp/* ${tmp_backup_dir}
+                TMP_LV_NAME='lv_tmp'
+                ROOT_VG_SUB=$(echo ${ROOT_VG_PART} | $CUT -d- -f1)
+                TMP_LV_NAME_FULL="${ROOT_VG_SUB}-${TMP_LV_NAME}"
+                /sbin/lvcreate -Zy -Wy --yes -n "$TMP_LV_NAME" -L 5G "$ROOT_VG"
+                if [ $? -ne 0 ] ; then
+                        exitOut 2 "Unable to create logical volume for /tmp"
+                fi
+                $MKFS.ext4 "$TMP_LV_NAME_FULL" >/dev/null 2>&1
+                if [ $? -ne 0 ] ; then
+                        exitOut 2 "Unable to create a file system for /tmp"
+                fi
+                $MOUNT "$TMP_LV_NAME_FULL" /tmp
+                if [ $? -ne 0 ] ; then
+                        exitOut 2 "Unable to mount /tmp"
+                fi
+                $CP -pR ${tmp_backup_dir}/* /tmp
+                $RM -rf /etc/fstab_backup
+                $CP /etc/fstab /etc/fstab_backup
+		$ECHO "$TMP_LV_NAME_FULL /tmp                   ext4    defaults        1 2 " >> /etc/fstab
+        fi
+$ECHO "$TMP_LV_CHECK1" >/dev/null 2>&1
+
+}
+
+
+##########################################################
+#                                                        #
+# function to check and resize /var/log partition to 30G #
+#          for Gen10plus server                          #
+#                                                        #
+##########################################################
+resize_varlog_partition()
+{
+#shellcheck disable=SC2016
+var_log_size=$(df -h /var/log | $AWK 'FNR==2 {print}' | $AWK '{print $2}')
+#Removing size type from variable
+var_log_size=$($ECHO "$var_log_size" | $SED 's/.$//')
+if [ "$ENIQ" == "eniq_stats" ] ; then
+        if [ "${var_log_size}" -eq 20 ] ; then
+                /sbin/lvextend -r -L 30G "${VARLOG_VG_PART}"
+                check_lvextend=$?
+                if [ "${check_lvextend}" -ne 0 ] ; then
+                        exitOut 2 "Unable to extend /var/log partition"
+                fi
+                #shellcheck disable=SC2016
+                VARLOG_VG_TOT="$(df -h /var/log | $AWK 'FNR==2 {print}' | $AWK '{print $2}')"
+                VARLOG_VG_TOT_TYPE=$($ECHO "${VARLOG_VG_TOT: -1}")
+                VARLOG_VG_TOT=$($ECHO "$VARLOG_VG_TOT" | $SED 's/.$//')
+                #shellcheck disable=SC2016
+                SNAP_SIZE_VARLOG="$($ECHO "$($ECHO "${VARLOG_VG_TOT}" 100 | $AWK '{printf "%.10f", $1*50/$2}')")"
+        fi
+fi
+}
+
+
+
+#########################################################
+#                                                       #
+#      function to check size is avaialble for snapshot #
+#                                                       #
+#########################################################
+snapshot_size()
+{
+ROOT_VG_PART=`(df -h / | $AWK 'FNR==2 {print}' | $AWK '{print $1}')`
+ROOT_LV_CHECK=$(df -h / | grep 'root')
+if [ $? -ne 0 ] ; then
+        exitOut 2 " / partition is not present"
+fi
+VAR_VG_PART=`(df -h /var | $AWK 'FNR==2 {print}' | $AWK '{print $1}')`
+VAR_LV_CHECK=$(df -h /var | grep 'var')
+if [ $? -ne 0 ] ; then
+        exitOut 2 " /var partition is not present"
+fi
+
+#idenitfy root and var VG
+ROOT_VG=`echo $ROOT_VG_PART | $CUT -d/ -f4 | $CUT -d- -f1`
+
+#identify used size of / and /var
+#ROOT_VG_USED=`(df -h / | $AWK 'FNR==2 {print}' | $AWK '{print $3}')`
+#VAR_VG_USED=`(df -h /var | $AWK 'FNR==2 {print}' | $AWK '{print $3}')`
+
+#identifying he total space of /  and /var
+ROOT_VG_TOT=`(df -h / | $AWK 'FNR==2 {print}' | $AWK '{print $2}')`
+VAR_VG_TOT=`(df -h /var | $AWK 'FNR==2 {print}' | $AWK '{print $2}')`
+
+#Finding Size type
+ROOT_VG_TOT_TYPE=`($ECHO ${ROOT_VG_TOT: -1})`
+VAR_VG_TOT_TYPE=`($ECHO ${VAR_VG_TOT: -1})`
+#identify free space in VG
+VG_FREE=`$VGS | $GREP -w $ROOT_VG | $AWK '{print $7}' | $CUT -d "<" -f2`
+VG_FREE_=`echo $VG_FREE | $SED 's/.$//'`
+
+#identify free space and used size is in GB or T
+VG_FREE_SIZE=`echo -n $VG_FREE | tail -c 1 | $TR '[a-z]' '[A-Z]'`
+#ROOT_VG_USED_SIZE=`echo -n $ROOT_VG_USED | tail -c 1`
+#VAR_VG_USED_SIZE=`echo -n $VAR_VG_USED | tail -c 1`
+#20% of used size of / and /var
+# Removing size type from variable
+ROOT_VG_TOT=`echo $ROOT_VG_TOT | $SED 's/.$//'`
+VAR_VG_TOT=`echo $VAR_VG_TOT | $SED 's/.$//'`
+
+server_model=`dmidecode -t system | grep -w 'Product Name' | cut -d ':' -f2 | cut -d ' ' -f4,5`
+if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+        :
+else
+# Finding the size and volume group of new partitions
+        #shellcheck disable=SC2016
+        HOME_VG_PART=$(df -h /home | $AWK 'FNR==2 {print}' | $AWK '{print $1}')
+        HOME_LV_CHECK=$(df -h /home | grep '/home')
+        hlv_chk=$?
+        if [ ${hlv_chk} -ne 0 ] ; then
+                exitOut 2 " /home partition is not present"
+        fi
+
+        #shellcheck disable=SC2016
+        VARTMP_VG_PART=$(df -h /var/tmp | $AWK 'FNR==2 {print}' | $AWK '{print $1}')
+        VARTMP_LV_CHECK=$(df -h /var/tmp | grep '/var/tmp')
+        vtlv_chk=$?
+        if [ ${vtlv_chk} -ne 0 ] ; then
+                exitOut 2 " /var/tmp partition is not present"
+        fi
+
+        #shellcheck disable=SC2016
+        VARLOG_VG_PART=$(df -h /var/log | $AWK 'FNR==2 {print}' | $AWK '{print $1}')
+        VARLOG_LV_CHECK=$(df -h /var/log | grep '/var/log')
+        vllv_chk=$?
+        if [ ${vllv_chk} -ne 0 ] ; then
+                exitOut 2 " /var/log partition is not present"
+        fi
+
+#identifying the total space of /home, /var/log & /var/tmp
+        HOME_VG_TOT=`(df -h /home | $AWK 'FNR==2 {print}' | $AWK '{print $2}')`
+        VARTMP_VG_TOT=`(df -h /var/tmp | $AWK 'FNR==2 {print}' | $AWK '{print $2}')`
+        VARLOG_VG_TOT=`(df -h /var/log | $AWK 'FNR==2 {print}' | $AWK '{print $2}')`
+
+#Finding Size type
+        HOME_VG_TOT_TYPE=$($ECHO "${HOME_VG_TOT: -1}")
+        VARTMP_VG_TOT_TYPE=$($ECHO "${VARTMP_VG_TOT: -1}")
+        VARLOG_VG_TOT_TYPE=$($ECHO "${VARLOG_VG_TOT: -1}")
+
+# Removing size type from variable
+        HOME_VG_TOT=`echo $HOME_VG_TOT | $SED 's/.$//'`
+        VARTMP_VG_TOT=`echo $VARTMP_VG_TOT | $SED 's/.$//'`
+        VARLOG_VG_TOT=`echo $VARLOG_VG_TOT | $SED 's/.$//'`
+fi
+if [ "${VG_FREE_SIZE}" == 'T' ]; then
+        if [ "${ROOT_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        elif [ "${ROOT_VG_TOT_TYPE}" == 'G' ]; then
+                #Converting to TB as VGS free is in TB and ROOT space GB
+                ROOT_VG_TOT=$(echo "scale=10; ${ROOT_VG_TOT} / ${BINARY}" | bc)
+                SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                ROOT_VG_TOT_TYPE='T'
+        else
+                #Converting to TB as VGS free is in TB and ROOT space MB
+                ROOT_VG_TOT=$(echo "scale=10;  ${ROOT_VG_TOT} / (${BINARY} * ${BINARY})" | bc)
+                SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                ROOT_VG_TOT_TYPE='T'
+        fi
+        if [ "${VAR_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        elif [ "${VAR_VG_TOT_TYPE}" == 'G' ]; then
+                #Converting to TB as VGS free is in TB and ROOT space GB
+                VAR_VG_TOT=$(echo "scale=10;  ${VAR_VG_TOT} / ${BINARY}" | bc)
+                SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                VAR_VG_TOT_TYPE='T'
+        else
+                #Converting to TB as VGS free is in TB and ROOT space MB
+                VAR_VG_TOT=$(echo "scale=10; ${VAR_VG_TOT} / (${BINARY} * ${BINARY})" | bc)
+                SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                VAR_VG_TOT_TYPE='T'
+        fi
+        if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+                :
+        else
+                if [ "${HOME_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                        SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                elif [ "${HOME_VG_TOT_TYPE}" == 'G' ]; then
+                        #Converting to TB as VGS free is in TB and ROOT space GB
+                        HOME_VG_TOT=$(echo "scale=10; ${HOME_VG_TOT} / ${BINARY}" | bc)
+                        SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        HOME_VG_TOT_TYPE='T'
+                else
+                        #Converting to TB as VGS free is in TB and ROOT space MB
+                        HOME_VG_TOT=$(echo "scale=10;  ${HOME_VG_TOT} / (${BINARY} * ${BINARY})" | bc)
+                        SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        HOME_VG_TOT_TYPE='T'
+                fi
+                if [ "${VARTMP_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                        SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                elif [ "${VARTMP_VG_TOT_TYPE}" == 'G' ]; then
+                        #Converting to TB as VGS free is in TB and ROOT space GB
+                        VARTMP_VG_TOT=$(echo "scale=10;  ${VARTMP_VG_TOT} / ${BINARY}" | bc)
+                        SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        VARTMP_VG_TOT_TYPE='T'
+		else
+			   #Converting to TB as VGS free is in TB and ROOT space MB
+                             VARTMP_VG_TOT=$(echo "scale=10; ${VARTMP_VG_TOT} / (${BINARY} * ${BINARY})" | bc)
+                             SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                             VARTMP_VG_TOT_TYPE='T'
+                fi
+                if [ "${VARLOG_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                	SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                elif [ "${VARLOG_VG_TOT_TYPE}" == 'G' ]; then
+                	#Converting to TB as VGS free is in TB and ROOT space GB
+                        VARLOG_VG_TOT=$(echo "scale=10;  ${VARLOG_VG_TOT} / ${BINARY}" | bc)
+                        SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        VARLOG_VG_TOT_TYPE='T'
+                else
+                        #Converting to TB as VGS free is in TB and ROOT space MB
+                        VARLOG_VG_TOT=$(echo "scale=10; ${VARLOG_VG_TOT} / (${BINARY} * ${BINARY})" | bc)
+                        SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        VARLOG_VG_TOT_TYPE='T'
+                fi
+        fi
+elif [ "${VG_FREE_SIZE}" == 'G' ]; then
+        if [ "${ROOT_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        fi
+        if [ "${ROOT_VG_TOT_TYPE}" == 'M' ]; then
+                ROOT_VG_TOT=$(echo "scale=10; ${ROOT_VG_TOT} / ${BINARY}" | bc)
+                SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                ROOT_VG_TOT_TYPE='G'
+        fi
+        if [ "${VAR_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        fi
+        if [ "${VAR_VG_TOT_TYPE}" == 'M' ]; then
+                VAR_VG_TOT=$(echo "scale=10; ${VAR_VG_TOT} /  ${BINARY}" | bc)
+                SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                VAR_VG_TOT_TYPE='G'
+        fi
+        if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+                :
+	else
+                if [ "${HOME_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                        SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                fi
+                if [ "${HOME_VG_TOT_TYPE}" == 'M' ]; then
+                        HOME_VG_TOT=$(echo "scale=10; ${HOME_VG_TOT} / ${BINARY}" | bc)
+                        SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        HOME_VG_TOT_TYPE='G'
+                fi
+                if [ "${VARTMP_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                        SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                fi
+                if [ "${VARTMP_VG_TOT_TYPE}" == 'M' ]; then
+                        VAR_VG_TOT=$(echo "scale=10; ${VARTMP_VG_TOT} /  ${BINARY}" | bc)
+                        SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        VARTMP_VG_TOT_TYPE='G'
+                fi
+                if [ "${VARLOG_VG_TOT_TYPE}" == "${VG_FREE_SIZE}" ];then
+                        SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                fi
+                if [ "${VARLOG_VG_TOT_TYPE}" == 'M' ]; then
+                        VARLOG_VG_TOT=$(echo "scale=10; ${VARLOG_VG_TOT} /  ${BINARY}" | bc)
+                        SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                        VARLOG_VG_TOT_TYPE='G'
+                fi
+        fi
+else
+        SNAP_SIZE_ROOT=`$ECHO $($ECHO ${ROOT_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        SNAP_SIZE_VAR=`$ECHO $($ECHO ${VAR_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+                :
+        else
+                SNAP_SIZE_HOME=`$ECHO $($ECHO ${HOME_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                SNAP_SIZE_VARTMP=`$ECHO $($ECHO ${VARTMP_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+                SNAP_SIZE_VARLOG=`$ECHO $($ECHO ${VARLOG_VG_TOT} 100 | $AWK '{printf "%.10f", $1*50/$2}')`
+        fi
+fi
+
+#considering / and /var used size will be always in GB
+val=`$AWK -v n1="$VG_FREE_" -v n2="$SNAP_SIZE_ROOT" 'BEGIN {printf  (n1>n2?"true":"false") }'`
+val1=`$AWK -v n1="$VG_FREE_" -v n2="$SNAP_SIZE_VAR" 'BEGIN {printf  (n1>n2?"true":"false")}'`
+if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+        val2="true"
+        val3="true"
+        val4="true"
+else
+        val2=`$AWK -v n1="$VG_FREE_" -v n2="$SNAP_SIZE_HOME" 'BEGIN {printf  (n1>n2?"true":"false") }'`
+        val3=`$AWK -v n1="$VG_FREE_" -v n2="$SNAP_SIZE_VARTMP" 'BEGIN {printf  (n1>n2?"true":"false")}'`
+        val4=`$AWK -v n1="$VG_FREE_" -v n2="$SNAP_SIZE_VARLOG" 'BEGIN {printf  (n1>n2?"true":"false")}'`
+fi
+if [ $val == "false" -o $val1 == "false" -o $val2 == "false" -o $val3 == "false" -o $val4 == "false" ]; then
+        echo "Warning: Volume group do not have enough space, so doing vgextend"
+	#shellcheck disable=SC2016
+        VG_NAME=$(lvs | grep -w "root" |  awk '{print $2}')
+        #shellcheck disable=SC2016
+        PV_NAME=$(pvs | grep -w  $VG_NAME  | awk '{print $1}' | head -1 | sed 's/.$//')
+        PV_FREE=`parted $PV_NAME unit GB print free | grep -w 'Free Space' | tail -n1 | awk '{print $3}' | sed 's/GB//'`
+        if [ "${PV_FREE%%.*}" -ge "20" ] ;then
+sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' <<EOF | fdisk ${PV_NAME} >/dev/null
+n # new partition
+
+
+
+
+w # write the partition table
+EOF
+                partprobe
+                if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+                        NEW_DISK=$(fdisk -l "$PV_NAME" | grep '/dev/sd' | tail -1 | awk '{print $1}')
+                else
+                        NEW_DISK_PARTNUM=$(fdisk -l "$PV_NAME" | tail -1 | cut -d ' ' -f2)
+                        NEW_DISK=${PV_NAME}${NEW_DISK_PARTNUM}
+                        echo -e "Newly created disk partition on " "${PV_NAME}" "is " "${NEW_DISK}"
+                fi
+                pvcreate $NEW_DISK
+                if [ $? != 0 ]; then
+                        exitOut 2 "Failed to create new PV"
+                fi
+
+                vgextend $VG_NAME $NEW_DISK
+                if [ $? != 0 ]; then
+                        exitOut 2 "Failed to extend VG on new disk"
+                fi
+        else
+                exitOut 2 "Do not have enough space in the disk to create new Partition, aborting the script"
+        fi
+
+fi
+
+#Function calling to take the  backup of /boot and Snapshot
+boot_bkp
+if [[ ${server_model} == "Gen8" ]] || [[ ${server_model} == "Gen9" ]] || [[ ${server_model} == "Gen10" ]] ; then
+        :
+else
+        create_tmp_partition
+fi
+snap
+}
+
+#########################################
+#                                       #
+#  function to check the disk space for #
+#  patch                                #
+#########################################
+
+dry_run()
+{
+                repo_name=$UG_ONLY_TEMP_REPO
+                if [ ! -f /etc/yum.conf ]; then
+                        exitOut 2  "/etc/yum.conf file does not exist"
+                else
+                        YUM_CONF=`$CAT /etc/yum.conf | $GREP -w gpgcheck`
+                        if [ $? != 0 ]; then
+                                logOut "INFO"  "gpgcheck is not present in the /etc/yum.conf file, adding gpgcheck in /etc/yum.conf file"
+                                $SED -i '/obsoletes=1/a gpgcheck=0' /etc/yum.conf
+                        else
+                                if [ "${YUM_CONF}" == "gpgcheck=1" ]; then
+                                        $SED -i 's/gpgcheck=1/gpgcheck=0/g' /etc/yum.conf
+                                fi
+                        fi
+                fi
+                $YUM clean all >/dev/null 2>&1 ; $RM -rf /var/cache/yum
+                logOut "INFO"  "Executing dry_run"
+                $YUM $repo_name update -y --setopt tsflags=test  2>&1 | $TEE  $PKGLOG
+                if [ ${PIPESTATUS[0]} != 0 ] ; then
+                        exitOut 2 "There is some issue in dry_run. Check the log $PKGLOG"
+                 fi
+                logOut "INFO"  "Required space is available for patch update"
+
+}
+
+#########################################
+#  funtion for patch update             #
+#                                       #
+#########################################
+doUpdate()  {
+
+    if [[ $ACTION == "update" || $ACTION == "upgrade" ]]; then
+        repo_name=$UG_ONLY_TEMP_REPO
+    else
+        repo_name=$II_ONLY_TEMP_REPO
+    fi
+    YUMUPDATETIME=$YUMDATE
+    logOut "INFO" "Updating OS from patch media."
+    logOut "DEBUG" "$FUNCNAME: About to run 'yum update' please wait for a while."
+    logOnly "INFO" "Saving the current kernel Version"
+    $(uname -r > /root/old_kernel_version.txt)
+    if [ -f $ROLLBACK_SCRIPT ]; then
+        $($CAT $ROLLBACK_SCRIPT > /root/rollback_script.sh;chmod 755 /root/rollback_script.sh  )
+    else
+        exitOut 2 "RollbacK script is not present in $ROLLBACK_SCRIPT"
+    fi
+    
+    if [[ $ACTION == "update" || $ACTION == "upgrade" ]]; then
+	latest_kernel=$(cat /tmp/patch_log | grep kernel.x86_64)
+    	res=$?
+    	if [ $res -eq 0 ]; then
+       	    latest_kernel_version=$(echo $latest_kernel | awk '{print $2}')
+      	    check_installed=$(rpm -qa | grep kernel-"$latest_kernel_version")
+      	    check_installed_res=$?
+            if [ $check_installed_res -eq 0 ];then
+           	if [[ ! -f /boot/vmlinuz-"$latest_kernel_version".x86_64 ]] || [[ ! -f /boot/initramfs-"$latest_kernel_version".x86_64.img ]]; then
+                    #Erase the kernel package
+                    rpm -e kernel-"$latest_kernel_version"
+                else
+                    echo "Latest initramfs and vmlinuz files are available"
+                fi
+             fi
+     	fi
+    fi
+    # Removes the duplicate packages if any
+    package-cleanup -y --cleandupes --removenewestdupes
+    $YUM $repo_name -y update 2>&1 | $TEE  $YUMUPGLOG
+        if [ ${PIPESTATUS[0]} != 0 ] ; then
+		#Clears the transactions
+		yum-complete-transaction --cleanup-only
+		exitOut 2 "Patches are not upgraded successfully"
+        fi
+    #`rpm -q --last kernel | $CUT -d " " -f1 | head  -1  | $GREP -Po '(\d+.*)' > $KERNEL_VER`
+    logOut "DEBUG" "$FUNCNAME: 'yum update' run has finished."
+    return 0
+}
+check_installed() {
+	declare -a packages_list="$1"
+	yum_input="$2"
+	for i in "${packages_list[@]}"; do
+			if [[ $2 == "remove" ]] ; then
+					$RPM -qa | $GREP -iw $i | $EGREP -iv "tftp|nss-softokn|vsftpd|libXft" >/dev/null
+					if [[ $? -eq 0 ]]; then
+							$YUM $2 --disablerepo=* $i -y >&1 | $TEE  $DEPRECATELOG
+							if [ ${PIPESTATUS[0]} != 0 ] ; then
+								exitOut 1 "Failed to remove deprecated package $i"
+							fi
+					fi
+			else
+					$RPM -qa | $GREP -iw $i | $GREP -iv glibc-debuginfo-common | $GREP -iv tftp-server >/dev/null
+					if ! [[ $? -eq 0 ]]; then
+							$YUM $yum_input -y install $i >&1 | $TEE  $INSTALL_NEWRHEL_PACKAGE
+							if [ ${PIPESTATUS[0]} != 0 ] ; then
+								exitOut 1 "failed to install $i package"
+							fi
+					fi
+			fi
+	done
+	$YUM clean all >/dev/null 2>&1 ; $RM -rf /var/cache/yum ; $SLEEP 3
+}
+
+#####################################################
+#                                                   #
+#  Exclude package function to remove the packages  #
+#      present in packages2exclude file             #
+#                                                   #
+#####################################################
+
+exclude_packages()
+{
+    if [ -f /var/tmp/om_media ]; then
+            OM_LINUX_PATH=$($CAT /var/tmp/om_media)
+    elif [ -f /etc/.tmp_om_media ]; then
+            OM_LINUX_PATH="/OM_MEDIA/om_linux/"
+    else
+        $ECHO "OM Media path not found"
+   fi
+
+    for i in $($CAT "${OM_LINUX_PATH}"/omtools/packages2exclude); do
+        pkg_name=$i
+        rpm -qi ${pkg_name} >/dev/null 2>&1
+        installed=$?
+        if [ $installed -eq 0 ]; then
+                echo "Removing package ${pkg_name}"
+                rpm -e --nodeps ${pkg_name}
+                if [ $? -eq 0 ]; then
+                      logOut "INFO" "${pkg_name} package removed successfully"
+                fi
+        fi
+    done
+}
+
+
+#################################################
+#                                               #
+#  cleanup function to remove the patch repo    #
+#  and to unmount lin media                     #
+#################################################
+
+cleanUp()       {
+
+    if [[ $ACTION == "update" || $ACTION == "upgrade" ]]; then
+            REPOFILE=$UG_REPOFILE
+        else
+            REPOFILE=$II_ONLY_TEMP_REPO
+    fi
+    exclude_packages
+    logOut "INFO" "$FUNCNAME: Cleaning up..."
+    $(> /etc/mountpath)
+    logOut "DEBUG" "$FUNCNAME: About to cleanup repository files & packages."
+    $( yum-config-manager --enable \* > /dev/null 2>&1 )
+    $(yum-config-manager --disable  /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1)
+    $RM -f /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1
+    $RM -f /etc/yum.repos.d/$II_REPOFILE > /dev/null 2>&1
+    $RM -f /etc/yum.repos.d/$UG_REPOFILE > /dev/null 2>&1
+    umount /LIN_MEDIA 2> /dev/null
+    if [ ! -d /sys/firmware/efi ]; then
+    grub2-set-default 0
+    if [ `dmidecode -t chassis | grep "Type" | awk '{print $2}'` == "Blade" ] ; then
+        cat /etc/default/grub | grep -i "edd=off" > /dev/null 2>&1
+        if [ $? -eq 0 ] ; then
+            $ECHO -e ' \n EDD parameter already disabled '
+        else
+            $ECHO -e ' \n Adding EDD parameter to grub '
+            sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="edd=off /g' /etc/default/grub
+        fi
+    fi
+    grub2-mkconfig -o /boot/grub2/grub.cfg > /var/grub_build_upg 2>&1
+    else
+    grub2-set-default 0
+    grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg  > /var/grub_build_upg 2>&1
+   fi
+    logOut "INFO" "Unmounting Linux media"
+    logOut "INFO" "Removed [/etc/yum.repos.d/$REPOFILE]"
+    return 0
+}
+
+showVars() {
+#####################################
+# Function to show variables when debugging
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+
+$ECHO -e "VARS:\n==========================
+TARGET: $TARGET
+ACTION: $ACTION
+ARGS: $ARGS
+"
+return 0
+}
+
+processOptions() {
+#####################################
+# Function to process the CLI options
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      1 on warnings
+#                       0 success
+#                       exit on error
+#                       9 illegal termination
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_rt
+case "$ACTION" in
+        install)
+                $ECHO "###################RHEL PATCH UPDATE#############################################"
+
+                [[ -d ${MOUNT_PATH}/RHEL ]] ||  exitOut "2" "MOUNT path is not available/Mount path is empty"
+                [[ -f /etc/yum.repos.d/ericINSTALLPATCH.repo ]] || exitOut 2 "ericINSTALLPATCH.repo is not created please check"
+                if [ ! -f /etc/.ks_serv_ip  ]; then
+                       logOut "INFO" "This server is installed with DVD method"
+                        ENIQ="mws"
+                fi
+                if [ "$ENIQ" == "eniq_stats" ]; then
+                        if [ ! -z $PROVIDED_WHITELIST ] ;then
+                                logOut "INFO" "Installing and updating patches in ENIQ server"
+                                verifyProvidedWhitelist || exitOut 2 "Invalid whitelist file:[$PROVIDED_WHITELIST] provided"
+                                doWhitelistInstall "$II_ONLY_TEMP_REPO" || exitOut 1 "supplementary install failed"
+                                check_installed '("cups*")' 'remove'
+                                doUpdate "$II_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+                                cleanUp "II_REPOFILE"
+                                exitOut 0 "Patch update completed "
+                        else
+                                exitOut 2 "Issue with Whitelistfile"
+                                cleanUp "II_REPOFILE"
+                        fi
+                else
+                        logOut "INFO" "Updating patch in MWS server"
+                        check_installed '("cups*")' 'remove'
+                        doUpdate "$II_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+                        cleanUp "II_REPOFILE"
+                        exitOut 0 "Patch update completed"
+                fi
+                ;;
+        upgrade)
+                [[ -d $MOUNT_PATH/Packages ]] ||  exitOut "2" "Cache path is not available/Cache  path is empty so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                [[ -f /etc/yum.repos.d/temp_rhel_update.repo ]] || exitOut 2 " Issue in repo so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                logOut "INFO" "Updating the server"
+                snapshot || logOut "INFO" "Please remove the snapshot if required"
+                dry_run "$UG_ONLY_TEMP_REPO" || exitOut 2 "No space for patch update"
+                doUpdate "$UG_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+                cleanUp "$UG_REPOFILE"
+                exitOut 0 "Patch update completed"
+                ;;
+        update)
+                [[ -d $MOUNT_PATH/RHEL ]] ||  exitOut "2" "Cached  path is not available/Mount path is empty so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                [[ -f /etc/yum.repos.d/temp_rhel_update.repo ]] || exitOut 2 " Issue in repo so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                logOut "INFO" "Updating patch in server"
+                logOut "INFO" "Patch bundle version is $PATCH_BUNDLE_VER"
+		run_step 1 snapshot
+                run_step 2 dry_run
+                run_step 3 doUpdate
+                run_step 4 cleanUp
+                $RM -rf "$STEPSFILE"
+                exitOut 0 "Patch update completed "
+                ;;
+        cleanup)
+                cleanUp "$UG_REPOFILE"
+                exitOut 0 "Clean up completed successfully"
+                ;;
+        *)
+                exitOut 1 "Unrecognised Action:[$ACTION]"
+                ;;
+esac
+logOut "DEBUG" "[$FUNCNAME:$LINENO] function should return before here."
+return 9
+}
+
+function trap_ctrlc ()
+{
+#    this function is called when Ctrl-C is sent
+    # perform cleanup here
+    echo "Ctrl-C caught...performing clean up"
+    logOut "INFO" "Doing cleanup please wait"
+    cleanUp "$UG_REPOFILE"
+#    logOut "WARN" "Run pre_upgrade_patchrhel.bsh script to continue upgrade"
+    exitOut 2 "Exiting the Script after clean up due  to Ctrl-C caught"
+}
+##################
+#                #
+#       MAIN     #
+#                #
+##################
+
+setVars
+trap trap_ctrlc  2
+$MKDIR -p "$LOG_DIR" || exitOut "1" "Unable to create $LOG_DIR"
+header "MAIN" "Host: $($HOSTNAME)" "$(datestamp 2)" "Command: \"${SCRIPT_NAME} $ARGS\""
+[[ -z "$ARGS" ]] && {
+        usage
+        exitOut 1 "No command line options supplied!"
+        }
+
+while getopts ":a:w:xdh" opt; do
+        case $opt in
+                a)
+                        ACTION="$OPTARG"
+                        ;;
+                x)
+                        ACTION="cleanup"
+                        ;;
+                w)
+                        PROVIDED_WHITELIST="$OPTARG"
+                        [[ -z $PROVIDED_WHITELIST ]] && exitOut 1 "No whitelist file specified on commandline."
+                        ;;
+                h)      # Print help and exitOut OK
+                        usage
+                        exitOut 0
+                        ;;
+                d)      # Get more output when running script
+                        DEBUG="y"
+                        ;;
+                \?)      # Hint to run usage
+                        usage
+                        exitOut 2 "Invalid option \"-$OPTARG\" supplied."
+                        ;;
+                :)      #capture options with missing args
+                        exitOut 2 "Missing argument for \"-$OPTARG\"\n\t\t\tRun \"${SCRIPT_NAME} -h\" for help\n"
+                        ;;
+        esac
+done
+
+STEPSFILE="/var/tmp/patch_upgrade_stage"
+
+# ********************************************************************
+#   Parse flags and options
+# ********************************************************************
+while getopts ":r:" arg; do
+    case $arg in
+        r)  RESUME_STEP=${OPTARG}
+            ;;
+        \?) usage
+            ;;
+    esac
+done
+
+# Should be no extra stuff on the command line
+shift $((${OPTIND} - 1))
+[[ $# -ne 0 ]] && exitOut 2  "Invalid command line option detected:[$@]\n\n$(usage)"
+if [[ -z "$ACTION" ]];  then
+        exitOut 2 "Missing command line option. Specify an Action.\n\n$(usage)"
+fi
+
+check_params
+
+processOptions || {
+        logOut "DEBUG" "$(showVars)"
+        exitOut 2 "An error occurred while running \"$SCRIPT_NAME $ARGS\"."
+                }
+
+

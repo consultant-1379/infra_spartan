@@ -1,0 +1,14 @@
+# This is only a template file.
+# Each system creates its own file to the setup script.
+# bin/setup_ssh_FileStore.sh input-file
+# Uncomment the two PW entries below to have a silent setup.
+source /ericsson/storage/etc/sourcefile
+L_PORT="22"
+L_USER_A="storadm"
+L_PW_A=$SAPASSWD
+R_HOST="nasconsole"
+R_PORT="22"
+R_USER_M="master"
+#R_PW_M="******"
+R_USER_S="support"
+#R_PW_S="******"

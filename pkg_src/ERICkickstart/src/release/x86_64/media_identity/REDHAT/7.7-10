@@ -1,0 +1,8 @@
+media_label=ERIC_LIN_RHEL_7.7_MEDIA
+media_desc=Ericsson Redhat Linux 7.7 Boot Media
+media_prefix=19089
+media_number=9038505
+media_rev=A
+media_arch=x86_64
+media_distro=RHEL
+media_distro_rev=7.7

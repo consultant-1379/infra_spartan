@@ -1,0 +1,1301 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : manage_install_patch_kickstart.bsh
+# Date    : 31/07/2018
+# Revision: A.1
+# Purpose : This script will set up the kickstart area for Patch
+#
+# Usage   : manage_install_patch_kickstart.bsh
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CMP=/usr/bin/cmp
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+FUSER=/usr/sbin/fuser
+EGREP=/usr/sfw/bin/gegrep
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MKISOFS=/usr/bin/mkisofs
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+AWK=/usr/bin/n$AWK
+NETSTAT=/usr/bin/netstat
+PG=/usr/bin/pg
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PRINTF=/usr/bin/printf
+PRTCONF=/usr/sbin/prtconf
+PWD=/usr/bin/pwd
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RMDIR=/usr/bin/rmdir
+RCP=/usr/bin/rcp
+ROUTE=/usr/sbin/route
+RSH=/usr/bin/rsh
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SHARE=/usr/sbin/share
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+SU=/usr/bin/su
+SWAP=/usr/sbin/swap
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TR=/usr/bin/tr
+UMOUNT=/usr/sbin/umount
+UNAME=/usr/bin/uname
+UNSHARE=/usr/bin/unshare
+USERADD=/usr/sbin/useradd
+WC=/usr/bin/wc
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+DEFAULT_USER="root"
+
+# Directory under which all DHCP Client info files are stored.
+# This directory is relative to the $DEFAULT_DHCP_CLIENT_AREA directory
+DHCP_CLIENT_DIR=DHCP_CLIENTS
+
+HOST_ARCH=`$UNAME -p`
+
+# Files I will check for to determine if it is a correct Patch
+# distrubtion
+INSTALL_PATCH_REPO="/etc/yum.repos.d/ericINSTALLPATCH.repo"
+
+# Directory under which all Patch medias are stored. This directory
+# is relative to the $PATCH_MEDIA_AREA directory
+INSTALL_PATCH_MEDIA_DIR="INSTALL_PATCH_MEDIA"
+
+# Gathers time&date
+NOW=$($DATE +"%Y-%m-%d-%T")
+
+# Establishes script name used for error mging
+SCRIPT_NAME=$(basename $0)
+
+# ********************************************************************
+#
+#       Functions
+#
+# ********************************************************************
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="ERROR: Script aborted...\n"
+fi
+
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: Script aborted... $_err_msg_\n" | $TEE -a ${LOGFILE}
+else
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: $_err_msg_\n"
+fi
+
+cd ${SCRIPTHOME}
+
+# Remove the kickstart area if it exists
+if [ "${INSTALL_PATCH_KICK_LOC_AREA}" ]; then
+    $RM -rf ${INSTALL_PATCH_KICK_LOC_AREA}
+fi
+
+$RM -rf ${TEM_DIR}
+if [ "$2" ]; then
+    ${2}
+else
+    exit 1
+fi
+}
+
+### Function: add_install_patch_kickstart_area ###
+#
+# Create a menu, and set up area if required
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+add_install_patch_kickstart_area()
+{
+local _install_patch_id_file_ _cnt_ _id_str_ _update_media_info_
+
+# Enable tftp service
+#check_tftp_service
+
+# Create /tftpboot sympatchk
+#check_tftpboot_link
+
+# Get/Check the location of the Patch image
+get_chk_patch_image_loc
+
+# Get info about the media
+_media_err_=0
+_media_label_=`$EGREP "^[[:blank:]]*media_label=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_label_}" ]; then
+    $ECHO "Failed to read parameter media_label from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_desc_=`$EGREP "^[[:blank:]]*media_desc=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_desc_}" ]; then
+    $ECHO "Failed to read parameter media_desc from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_prefix_=`$EGREP "^[[:blank:]]*media_prefix=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_prefix_}" ]; then
+    $ECHO "Failed to read parameter media_prefix from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_num_=`$EGREP "^[[:blank:]]*media_number=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_num_}" ]; then
+    $ECHO "Failed to read parameter media_number from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_revision_=`$EGREP "^[[:blank:]]*media_rev=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_revision_}" ]; then
+    $ECHO "Failed to read parameter media_rev from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_arch_=`$EGREP "^[[:blank:]]*media_arch=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_arch_}" ]; then
+    $ECHO "Failed to read parameter media_arch from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_distro_=`$EGREP "^[[:blank:]]*media_distro=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_distro_}" ]; then
+    $ECHO "Failed to read parameter media_distro from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_media_distro_rev_=`$EGREP "^[[:blank:]]*media_distro_rev=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_media_distro_rev_}" ]; then
+    $ECHO "Failed to read parameter media_distro_rev from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+_sprint_release_=`$EGREP "^[[:blank:]]*sprint_release=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_sprint_release_}" ]; then
+    $ECHO "Failed to read parameter sprint_release from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+_bundle_version_=`$EGREP "^[[:blank:]]*bundle_version=" ${INSTALL_PATCH_MEDIA_ID_FILE} 2>/dev/null | $AWK -F\= '{print $2}'`
+if [ ! "${_bundle_version_}" ]; then
+    $ECHO "Failed to read parameter bundle_version from ${INSTALL_PATCH_MEDIA_ID_FILE}"
+    _media_err_=1
+fi
+
+
+# Did I get all parameters
+if [ ${_media_err_} -eq 1 ]; then
+    _err_msg_=""
+    abort_script "$_err_msg_"
+fi
+
+# Do I supported this version of Patch
+if [ ! -d ${PARENT_DIR}/patch/${_media_distro_} ]; then
+    _err_msg_="Unsupported Patch Distribution....${_media_distro_}"
+    abort_script "$_err_msg_"
+else
+    INSTALL_PATCH_DISTRO_DIR=${PARENT_DIR}/patch/${_media_distro_}
+fi
+
+# Create a string that can be used for comparing whats already installed
+_new_media_version_ide="${_media_prefix_}-${_media_num_}-${_media_revision_}"
+_new_media_version_="${_bundle_version_}"
+
+# Path to where all PATCH medias are stored
+if [ ! -d ${INSTALL_PATCH_MEDIA_AREA} ]; then
+    $MKDIR -p ${INSTALL_PATCH_MEDIA_AREA}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Error making Patch media directory\n${INSTALL_PATCH_MEDIA_AREA}"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+$RM -f ${TEM_DIR}/existing_media_locations ${TEM_DIR}/existing_media_locations_1
+
+# Get a list of existing Patch areas if any
+$LS ${INSTALL_PATCH_MEDIA_AREA}/*/${INSTALL_PATCH_MEDIA_INFO_FILE} 2> /dev/null \
+    |$EGREP "${INSTALL_PATCH_MEDIA_AREA}/[1-9][0-9]*" > ${TEM_DIR}/existing_media_locations_1
+while read _install_patch_id_file_; do
+    if [ -s ${_install_patch_id_file_} ]; then
+        $ECHO ${_install_patch_id_file_} >>  ${TEM_DIR}/existing_media_locations
+    fi
+done <  ${TEM_DIR}/existing_media_locations_1
+
+# Have we got existing areas managed
+if [ -s ${TEM_DIR}/existing_media_locations ]; then
+    # Build up details of all managed kickstart areas in array
+    build_install_patch_media_info_arrays ${TEM_DIR}/existing_media_locations
+
+    # Get number of elements
+    _cnt_=${#INSTALL_PATCH_KICK_ID_ARRAY[@]}
+
+    # Loop thru and see if this version is already installed.
+    # I will not allow a duplicate.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" == "${_new_media_version_}" ]; then
+            _err_msg_="This media is already installed in\n${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}"
+            abort_script "$_err_msg_"
+        fi
+    done
+fi
+
+# Get next location for the Patch Media
+cd ${INSTALL_PATCH_MEDIA_AREA}
+_area_list_=`$LS -d * 2>/dev/null| $EGREP "^[1-9][0-9]*$"`
+_new_dir_=1
+while :; do
+    # Are there any existing directories
+    if [ "${_area_list_}" ]; then
+        # Is the area already in use. If it is then increment counter and loop
+        $ECHO ${_area_list_}|$EGREP -w ${_new_dir_}  >> /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            break
+        fi
+        let _new_dir_=_new_dir_+1
+    else
+        break
+    fi
+done
+cd ${SCRIPTHOME}
+
+# Store install_patch kickstart area
+INSTALL_PATCH_KICK_LOC_AREA=${INSTALL_PATCH_MEDIA_AREA}/${_new_dir_}
+
+# Build up the display file
+$RM -f ${TEM_DIR}/disp_file.$$
+$ECHO -e "\nAdd Install Patch Kickstart Area
+==================
+Media 		   : ${_media_desc_}
+Identity	   : ${_new_media_version_ide} 
+Location 	   : ${INSTALL_PATCH_KICK_LOC_AREA}
+Arch		   : ${_media_arch_}
+Revision 	   : ${_media_revision_}
+Bundle version     : ${_bundle_version_}
+Sprint             : ${_sprint_release_}\n\n
+" >> ${TEM_DIR}/disp_file.$$
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT $TEM_DIR/disp_file.$$ >> $LOGFILE
+    ANS="Yes"
+else
+    # Get user confirmation if required
+    _msg_="\nAre you sure you wish to add the area specified? (Yes|No)"
+    user_confirm "${_msg_}"  ${TEM_DIR}/disp_file.$$
+fi
+
+if [ "${ANS}" == "Yes" ]; then
+
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nCreating install patch kickstart directory ${INSTALL_PATCH_KICK_LOC_AREA}" | $TEE -a $LOGFILE
+    $ECHO "Please wait..."
+
+    # Copy the Media
+    $MKDIR -p ${INSTALL_PATCH_KICK_LOC_AREA}
+    cd ${PATCH_PATH}
+    $FIND . -depth -print |$CPIO -pdmu ${INSTALL_PATCH_KICK_LOC_AREA} >> /dev/null 2>/dev/null
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not copy files from ${PATCH_PATH} \nto ${INSTALL_PATCH_KICK_LOC_AREA}"
+        abort_script "$_err_msg_"
+    fi
+
+    $CAT ${INSTALL_PATCH_MEDIA_ID_FILE}|$EGREP -v "(media_location=\/|media_add_date=[0-9])"   \
+            > ${TEM_DIR}/media_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add main details to temporary patch area ini file"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store Media Location
+    $ECHO "media_location=${INSTALL_PATCH_KICK_LOC_AREA}"|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g' >> ${TEM_DIR}/media_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add location details to temporary Patch area ini file"
+        abort_script "$_err_msg_"
+    fi
+
+    # Store the media creation time
+    _add_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+    $ECHO "media_add_date=${_add_time_}" >> ${TEM_DIR}/media_info_file
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add time creation details to temporary Patch area ini file"
+        abort_script "$_err_msg_"
+    fi
+
+    # Copy the media info to the ${INSTALL_PATCH_MEDIA_INFO_FILE}
+    $CP ${TEM_DIR}/media_info_file ${INSTALL_PATCH_KICK_LOC_AREA}/${INSTALL_PATCH_MEDIA_INFO_FILE}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not add media info details to\n ${INSTALL_PATCH_MEDIA_ID_FILE}"
+        abort_script "$_err_msg_"
+    fi
+    $ECHO "Done."
+fi
+}
+
+### Function: check_install_patch_path ###
+#
+# Determine absolute path to software
+# changed for new type of media
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+check_install_patch_path()
+{
+local _patch_path_ _current_release_
+_patch_path_=$1
+_l_valid_=true
+_current_rhelpackage_dir_=${_patch_path_}/RHEL/RHEL[1-9]*/packages
+   if [ -s  ${_patch_path_} ]; then
+        if [ -d ${_current_rhelpackage_dir_} ]; then
+                _current_release_=${_patch_path_}/RHEL/RHEL[1-9]*
+                if [ "${_current_release_}" ]; then
+                        export MY_RHEL_VERSION=$(basename ${_current_release_} | cut  -d- -f2)
+                fi
+        else
+                _l_valid_=false
+        fi
+   else
+        [[ ! -s ${_patch_path_}/.patch_boot_media ]] && {
+                _l_valid_=false
+        }
+   fi
+
+        [[ ${_l_valid_} == "false" ]] && {
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nPath to Patch Software is invalid." | $TEE -a ${LOGFILE}
+        return 1
+        }
+
+return 0
+
+}
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_params()
+{
+if [ ! "${ACTION}" ]; then
+    usage_msg
+    exit 1
+fi
+
+case "${ACTION}" in
+    add)    :
+       ;;
+    list)   :
+       ;;
+    remove) :
+       ;;
+    *)      usage_msg
+            exit 1
+       ;;
+esac
+
+if [ "${ACTION}" == "add" ]; then
+    if [ "${PATH_TO_INSTALL_PATCH}" ]; then
+        # Check that a full pathname was specified
+        check_full_pathname ${PATH_TO_INSTALL_PATCH}
+        if [ $? -ne 0 ]; then
+            _err_msg_="${PATH_TO_INSTALL_PATCH} is not a full pathname."
+            abort_script "$_err_msg_"
+        fi
+    fi
+
+    # Check that a full pathname was specified for release directory
+    check_full_pathname ${INSTALL_PATCH_RELEASE_DIR}
+    if [ $? -ne 0 ]; then
+        _err_msg_="${INSTALL_PATCH_RELEASE_DIR} is not a full pathname."
+        abort_script "$_err_msg_"
+    fi
+
+        if [  "${OUT_DIR}" ]; then
+            usage_msg
+            exit 1
+        fi
+fi
+
+# Check if on root filesystem
+cd /
+_root_dev_=`$DF -lk .|$TAIL -1|$AWK '{print $1}'`
+cd ${INSTALL_PATCH_MEDIA_AREA}
+_install_patch_kick_dev_=`$DF -lk .|$TAIL -1|$AWK '{print $1}'`
+
+if [ "${_root_dev_}" == "${_install_patch_kick_dev_}" ]; then
+    _err_msg_="Install Patch Kickstart directory not allowed to be on root filesystem"
+    abort_script "$_err_msg_"
+fi
+
+cd ${SCRIPTHOME}
+}
+
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+$MKDIR -p `$DIRNAME ${LOGFILE}`
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${LOGFILE}`"
+    abort_script "$_err_msg_"
+fi
+
+if [ -d ${LOGFILE} ]; then
+    _err_msg_="${LOGFILE} is a directory"
+    abort_script "$_err_msg_"
+fi
+
+$TOUCH -a ${LOGFILE}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE}"
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: extract_pxepatch0 ###
+#
+# Extract the pxepatch.0 file from the red hat media
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+
+extract_pxepatch0()
+{
+
+
+local _patch_path_=$1
+#local _pxe_destination_=${INSTALL_PATCH_LOC_AREA}/pxepatch
+local _currentdir_="`pwd`"
+#local _tempdir_=/tmp/pxe$$
+#local _pxepatch0_
+
+$MKDIR -p ${_tempdir_}
+
+if [[ ! "$PATH" =~ "/usr/local/bin" ]]
+   then
+   PATH="$PATH:/usr/local/bin"
+   export PATH
+fi
+
+
+RPM2CPIO=${PARENT_DIR}/bin/rpm2cpio_new
+
+#SYSPATCH_FILE="`$FIND ${_patch_path_} -print | $GREP syspatch- | $HEAD -1`"
+
+#if [ ! -s ${SYSPATCH_FILE} ]; then
+#   _err_msg_="The file ${SYSPATCH_FILE} does not exist on media"
+#   abort_script "$_err_msg_"
+#fi
+
+
+#_pxepatch0_="`$RPM2CPIO ${SYSPATCH_FILE} | cpio -it | $EGREP  "\/pxepatch.0"`" >> ${TEM_DIR}/rpm2cpio.log 2>&1
+#if [ $? -ne 0 ]; then
+#   _err_msg_="Could not locate pxepatch.0"
+#   abort_script "$_err_msg_"
+#fi
+#
+#cd ${_tempdir_}
+#$RPM2CPIO $SYSPATCH_FILE | cpio -idv ${_pxepatch0_} >> ${TEM_DIR}/rpm2cpio.log 2>&1
+#if [ $? -ne 0 ]; then
+#   _err_msg_="Could not extract pxepatch.0"
+#   abort_script "$_err_msg_"
+#fi
+
+#$CP ${_pxepatch0_} ${_pxe_destination_}
+#if [ $? -ne 0 ]; then
+#   _err_msg_="Could not copy pxepatch.0 to ${_pxe_destination_}"
+#   abort_script "$_err_msg_"
+#fi
+
+cd ${_currentdir_}
+
+
+if [ ${_tempdir_} ]; then
+$RM -r ${_tempdir_}
+fi
+
+return 0
+}
+
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+PARENT_DIR=`$DIRNAME ${SCRIPTHOME}`
+}
+
+### Function: get_chk_patch_image_loc ###
+#
+# Get/Check the location of the Patch image
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_chk_patch_image_loc()
+{
+# Was I give the path to the patch
+if [ "${PATH_TO_INSTALL_PATCH}" ]; then
+    # Check for validity of Patch path
+    check_install_patch_path ${PATH_TO_INSTALL_PATCH}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Invalid Patch Distribution under path\n${PATH_TO_INSTALL_PATCH}"
+        abort_script "$_err_msg_"
+    fi
+    PATCH_PATH=${PATH_TO_INSTALL_PATCH}
+else
+    #$CLEAR
+    $PRINTF "\033c"
+    while :; do
+        $ECHO -e "\nEnter full path to the location of the Install Patch SW"
+        read _ans_
+
+        if [ ! ${_ans_} ]; then
+            continue
+        else
+            # Check that a full pathname was specified
+            check_full_pathname ${_ans_}
+            if [ $? -ne 0 ]; then
+                $ECHO "${_ans_} is not a full pathname."
+                continue
+            fi
+
+            # Check for validity of Patch path
+            check_install_patch_path ${_ans_}
+            if [ $? -eq 0 ]; then
+                PATCH_PATH=${_ans_}
+                break
+            else
+                $ECHO -e "Invalid Patch Distribution under path\n${_ans_}\n\n"
+                continue
+            fi
+        fi
+    done
+fi
+
+if [ -s ${INSTALL_PATCH_PATH}/${INSTALL_PATCH_MEDIA_INFO_FILE} ]; then
+    export INSTALL_PATCH_MEDIA_ID_FILE=${INSTALL_PATCH_PATH}/${INSTALL_PATCH_MEDIA_INFO_FILE}
+else
+    if [ -s ${INSTALL_PATCH_IDENTITY_DIR}/${MY_INSTALL_PATCH_VERSION} ]; then
+        export INSTALL_PATCH_MEDIA_ID_FILE=${INSTALL_PATCH_IDENTITY_DIR}/${MY_RHEL_VERSION}
+    else
+        _err_msg_="Could not find media identity file\n${INSTALL_PATCH_MEDIA_ID_FILE}"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+}
+
+### Function: list_install_patch_kickstart_area ###
+#
+# List current kickstart areas
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+list_install_patch_kickstart_area()
+{
+local _cnt_
+$PRINTF "\033c"
+#$CLEAR
+# Get a list of existing Patch areas if any
+$RM -f ${TEM_DIR}/existing_media_locations ${TEM_DIR}/existing_media_locations_1
+$LS ${INSTALL_PATCH_MEDIA_AREA}/*/${INSTALL_PATCH_MEDIA_INFO_FILE} 2> /dev/null \
+    |$EGREP "${INSTALL_PATCH_MEDIA_AREA}/[1-9][0-9]*" > ${TEM_DIR}/existing_media_locations_1
+while read _install_patch_id_file_; do
+    if [ -s ${_install_patch_id_file_} ]; then
+        $ECHO ${_install_patch_id_file_} >>  ${TEM_DIR}/existing_media_locations
+    fi
+done <  ${TEM_DIR}/existing_media_locations_1
+
+# Have we got existing areas managed
+if [ ! -s ${TEM_DIR}/existing_media_locations ]; then
+    $ECHO -e "\nNo install patch kickstart areas created\n"
+    return 0
+fi
+
+# Build up details of all managed kickstart areas in array
+build_install_patch_media_info_arrays ${TEM_DIR}/existing_media_locations
+
+# Get number of elements
+_cnt_=${#INSTALL_PATCH_KICK_ID_ARRAY[@]}
+
+if [ "${FORMATTED_OUTPUT}" ]; then
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        $ECHO "patch@${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}@${INSTALL_PATCH_KICK_ARCH_ARRAY[${i}]}@${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}"
+    done
+    return 0
+fi
+
+if [ "${USER_INSTALL_PATCH_KICK_AREA}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" == "${USER_INSTALL_PATCH_KICK_AREA}" ]; then
+            _found_=1
+            break
+        fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+        $ECHO "Install patch Kickstart area ${USER_INSTALL_PATCH_KICK_AREA} not found"
+        return 0
+    fi
+
+    printf "%-15s%s\n"   "Description    : "    "${INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    printf "%-15s%s\n"   "Identity       : "      "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    printf "%-15s%s\n"   "Path : "          "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    printf "%-15s%s\n"   "Architecture   : "   "${INSTALL_PATCH_KICK_ARCH_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    printf "%-15s%s\n"   "Date Added : "  "  ${INSTALL_PATCH_KICK_DATE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$         printf "%-15s%s\n" "Sprint Release : "  "  ${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    printf "%-15s%s\n\n" "Bundle version : "  "  ${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+else
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "%-8s%-15s%s\n" "[${i}]" "Description : " "${INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Identity : " "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Path : " "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Architecture : " "${INSTALL_PATCH_KICK_ARCH_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Date Added : " "${INSTALL_PATCH_KICK_DATE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+	printf "%-8s%-15s%s\n" "" "Sprint Release : "  "${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n\n" "" "Bundle version : "  "${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    done
+fi
+$MORE -d ${TEM_DIR}/install_patch_kick_menu.$$
+
+# Do I need to hold the Display for User
+if [ "${HOLD_LISTING}" ]; then
+    $ECHO -e "\nPress any key to return to menu"
+    read _any_
+fi
+}
+
+### Function: remove_install_patch_kickstart_area ###
+#
+# Remove a kickstart area
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+remove_install_patch_kickstart_area()
+{
+local _cnt_ _client_cnt_
+
+$PRINTF "\033c"
+# Get a list of existing Patch areas if any
+$RM -f ${TEM_DIR}/existing_media_locations ${TEM_DIR}/existing_media_locations_1
+$LS ${INSTALL_PATCH_MEDIA_AREA}/*/${INSTALL_PATCH_MEDIA_INFO_FILE} 2> /dev/null \
+    |$EGREP "${INSTALL_PATCH_MEDIA_AREA}/[1-9][0-9]*" > ${TEM_DIR}/existing_media_locations_1
+while read _install_patch_id_file_; do
+    if [ -s ${_install_patch_id_file_} ]; then
+        $ECHO ${_install_patch_id_file_} >>  ${TEM_DIR}/existing_media_locations
+    fi
+done <  ${TEM_DIR}/existing_media_locations_1
+
+# Have we got existing areas managed
+if [ ! -s ${TEM_DIR}/existing_media_locations ]; then
+    $ECHO -e "\nNo install patch kickstart areas created\n"
+    return 0
+fi
+
+# Build up details of all managed kickstart areas in array
+build_install_patch_media_info_arrays ${TEM_DIR}/existing_media_locations
+
+# Get number of elements
+_kick_cnt_=${#INSTALL_PATCH_KICK_ID_ARRAY[@]}
+
+# Get a list of existing Client Info file(s) if any
+$RM -f ${TEM_DIR}/existing_dhcp_clients ${TEM_DIR}/existing_dhcp_clients_1
+$LS ${DHCP_CLIENT_AREA}/* 2> /dev/null > ${TEM_DIR}/existing_dhcp_clients_1
+while read _dhcp_client_info_file_; do
+    if [ -s ${_dhcp_client_info_file_} ]; then
+        $ECHO ${_dhcp_client_info_file_} >> ${TEM_DIR}/existing_dhcp_clients
+    fi
+done < ${TEM_DIR}/existing_dhcp_clients_1
+
+# Have we got existing Client Info file(s)
+if [ -s ${TEM_DIR}/existing_dhcp_clients ]; then
+    # Build up details of all dhcp clients in array
+    build_patch_client_info_arrays ${TEM_DIR}/existing_dhcp_clients
+
+    # Get number of elements
+    _client_cnt_=${#CLIENT_HOSTNAME_ARRAY[@]}
+else
+    _client_cnt_=0
+fi
+
+if [ "${USER_INSTALL_PATCH_KICK_AREA}" ]; then
+    _found_=0
+    # Loop thru and see if this version is already installed.
+    for (( i=1; i<=${_kick_cnt_}; i++ )); do
+        if [ "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" == "${USER_INSTALL_PATCH_KICK_AREA}" ]; then
+            _found_=1
+            break
+        fi
+    done
+
+    if [ ${_found_} -ne 1 ]; then
+        $ECHO "Kickstart area ${USER_INSTALL_PATCH_KICK_AREA} not found"
+        return 0
+    fi
+
+    # Store the choice
+    _opt_=${i}
+
+    $RM -f ${TEM_DIR}/install_patch_kick_area_clients ${TEM_DIR}/user_msg
+    for (( i=1; i<=${_client_cnt_}; i++ )); do
+        if [ "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" == "${USER_INSTALL_PATCH_KICK_AREA}" ]; then
+            $ECHO "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_area_clients
+            break
+        fi
+    done
+
+    if [ -f ${TEM_DIR}/install_patch_kick_area_clients ]; then
+        $PRINTF "\033c"
+        $ECHO -e "\nKickstart areas still in use by the following kickstart clients" >> ${TEM_DIR}/user_msg
+        $CAT  ${TEM_DIR}/install_patch_kick_area_clients>> ${TEM_DIR}/user_msg
+        $MORE -d ${TEM_DIR}/user_msg
+        return 0
+    fi
+else
+    for (( i=1; i<=${_kick_cnt_}; i++ )); do
+        printf "%-8s%-15s%s\n" "[${i}]" "Description : " "${INSTALL_PATCH_KICK_DESC_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Identity : " "${INSTALL_PATCH_KICK_ID_ARRAY_1[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Path : " "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Architecture : " "${INSTALL_PATCH_KICK_ARCH_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n" "" "Date Added : " "${INSTALL_PATCH_KICK_DATE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+		printf "%-8s%-15s%s\n" "" "Sprint Release : " "${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+        printf "%-8s%-15s%s\n\n" "" "Bundle version : " "${INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_menu.$$
+    done
+    $ECHO "Select number of the area you wish to remove or (q) to quit" >> ${TEM_DIR}/install_patch_kick_menu.$$
+
+    # Display the menu and get user choice
+    while :; do
+        $PRINTF "\033c"
+        $MORE -d ${TEM_DIR}/install_patch_kick_menu.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        if [ "${_opt_}" == "q" ]; then
+            return 0
+        fi
+
+        $ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_kick_cnt_} ]; then
+            continue
+        fi
+
+        $RM -f ${TEM_DIR}/install_patch_kick_area_clients ${TEM_DIR}/user_msg
+        for (( i=1; i<=${_client_cnt_}; i++ )); do
+            if [ "${CLIENT_INSTALL_PATCH_KICK_ID_ARRAY[${i}]}" == "${INSTALL_PATCH_KICK_ID_ARRAY[${_opt_}]}" ]; then
+                $ECHO "${CLIENT_HOSTNAME_ARRAY[${i}]}" >> ${TEM_DIR}/install_patch_kick_area_clients
+                # break
+            fi
+        done
+
+        if [ -f ${TEM_DIR}/install_patch_kick_area_clients ]; then
+            $PRINTF "\033c"
+            $ECHO -e "\nKickstart areas still in use by the following kickstart clients" >> ${TEM_DIR}/user_msg
+            $CAT  ${TEM_DIR}/install_patch_kick_area_clients >> ${TEM_DIR}/user_msg
+            $ECHO "Press any key to continue" >> ${TEM_DIR}/user_msg
+            $MORE -d  ${TEM_DIR}/user_msg
+            read _any_
+            continue
+        fi
+        break
+    done
+fi
+
+# Create a user confirmation display file
+printf "%-15s%s\n"   "Description : " "${INSTALL_PATCH_KICK_DESC_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n"   "Identity : "    "${INSTALL_PATCH_KICK_ID_ARRAY_1[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n"   "Path : "        "${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n"   "Architecture : "  "${INSTALL_PATCH_KICK_ARCH_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n" "Date Added : "  "${INSTALL_PATCH_KICK_DATE_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n"   "Sprint Release : "  "${INSTALL_PATCH_SPRINT_RELEASE_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-15s%s\n\n" "Bundle version : "  "${INSTALL_PATCH_KICK_ID_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT ${TEM_DIR}/disp_file.$$ >> $LOGFILE
+    ANS="Yes"
+else
+    _msg_="\nAre you sure you wish to remove the selected kickstart area? (Yes|No)"
+    user_confirm "${_msg_}"  ${TEM_DIR}/disp_file.$$
+fi
+
+# Are we removing?
+if [ "${ANS}" == "Yes" ]; then
+    _dfstab_=/etc/exports
+    _fstab_=/etc/fstab
+
+    # Unshare the filesystem if shared out explicitly.
+    $UNSHARE ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]} >> /dev/null 2>&1
+
+    # Remove from the fstab if present
+    $CAT ${_fstab_} | $EGREP -v "^[[:blank:]]*${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/boot" > ${TEM_DIR}/fstab.$$
+
+    # Do I need to update the fstab file
+    $CMP -s ${_fstab_} ${TEM_DIR}/fstab.$$
+    if [ $? -ne 0 ]; then
+        $CAT ${_fstab_} | $EGREP "^[[:blank:]]*${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/boot" \
+            | $AWK '{print $1,$3}' > ${TEM_DIR}/umount_list.$$
+
+        while read _fs_ _mnt_dir_; do
+            $ECHO -e "\n$NOW -- $SCRIPT_NAME \nUnmounting ${_fs_}"|$TEE -a $LOGFILE
+            $UMOUNT ${_fs_} >> /dev/null 2>&1
+
+            $RMDIR ${_mnt_dir_} >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                $ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoved directory ${_mnt_dir_}"|$TEE -a $LOGFILE
+            fi
+        done < ${TEM_DIR}/umount_list.$$
+
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoving ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}/boot\nfrom ${_fstab_}"|$TEE -a $LOGFILE
+        $CP ${TEM_DIR}/fstab.$$ ${_fstab_} >> /dev/null 2>&1
+    fi
+
+    # Remove from the dfstab if present
+    $CAT ${_fstab_} | $EGREP -v "[[:blank:]]*${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}[[:blank:]]*$" > ${TEM_DIR}/fstab.$$
+
+    # Do I need to update the dfstab file
+    $CMP -s ${_dfstab_} ${TEM_DIR}/dfstab.$$
+    if [ $? -ne 0 ]; then
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoving ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}\nfrom ${_dfstab_}"|$TEE -a $LOGFILE
+        $CP ${TEM_DIR}/dfstab.$$ ${_dfstab_} >> /dev/null 2>&1
+    fi
+
+        #remove ENM_initrd if no patchks point to it
+        _l_enm_intrd_=ENM_initrd.img
+        _l_rhel_minor_ver_=$(echo ${KICK_DESC_ARRAY[${_opt_}]}|$AWK ' { print $4 } ')
+        if [ -f /tftpboot/RHEL_${_l_rhel_minor_ver_}/${_l_enm_intrd_} ]; then
+        _l_list_patchks_=$(find /tftpboot/RHEL_${_l_rhel_minor_ver_} -type l -exec ls -l {} \; -print | grep ${_l_enm_intrd_})
+        if [ -n "${_l_list_patchks_}" ]; then
+                $ECHO -e "\n$NOW -- CAN'T REMOVE ${_l_enm_intrd_}"
+        else
+                echo "\n$NOW -- WILL REMOVE ${_l_enm_intrd_}"
+                $RM -f /tftpboot/RHEL_${_l_rhel_minor_ver_}/${_l_enm_intrd_}
+                if [ $? -ne 0 ]; then
+                _err_msg_="Failed to remove ${_l_enm_intrd_}"
+                abort_script "$_err_msg_"
+                fi
+        fi
+        fi
+
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nRemoving install patch kickstart directory ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}" | $TEE -a $LOGFILE
+    $ECHO "Please wait..."
+    $RM -rf ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Failed to remove ${INSTALL_PATCH_KICK_LOCATION_ARRAY[${_opt_}]}"
+        abort_script "$_err_msg_"
+    fi
+fi
+}
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+setup_env()
+{
+# Set Remote handled FLAG. Basically determines if we are running
+# remote ERICkick directories. Needed for internal testing where we
+# are trying to avoid the need for multiple MWS. Not required in
+# customer world
+_rmt_chk_=`$CAT ${INSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_INSTALLATION_TYPE=" \
+        | $AWK -F\= '{print $2}'`
+
+if [ "${_rmt_chk_}" ]; then
+    if [ "${_rmt_chk_}" == "remote" ]; then
+        REMOTE_ERICKICK=Yes
+    fi
+fi
+
+# Set the default kickstart location if not specified & Strip of any extra '/'
+INSTALL_PATCH_MEDIA_AREA=`$CAT ${INSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_INSTALL_PATCH_MEDIA_AREA=" \
+        | $AWK -F\= '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+if [ ! "${INSTALL_PATCH_MEDIA_AREA}" ]; then
+    _err_msg_="Failed to read parameter DEFAULT_INSTALL_PATCH_MEDIA_AREA from \n${INSTALL_PATCH_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+# Parameter to indicate the media identity file of
+# the Patch media
+INSTALL_PATCH_MEDIA_INFO_FILE=`$CAT ${INSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*INSTALL_PATCH_MEDIA_INFO_FILE=" \
+        | $AWK -F\= '{print $2}'`
+if [ ! "${INSTALL_PATCH_MEDIA_INFO_FILE}" ]; then
+    _err_msg_="Failed to read parameter INSTALL_PATCH_PATCH_MEDIA_INFO_FILE from ${INSTALL_PATCH_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+
+# Make sure it is a full pathname
+check_full_pathname ${INSTALL_PATCH_MEDIA_AREA}
+if [ $? -ne 0 ]; then
+    _err_msg_="Main Patch Media area ${INSTALL_PATCH_MEDIA_AREA} is not a full pathname."
+    abort_script "$_err_msg_"
+fi
+
+if [ "${REL_DIR}" ]; then
+    INSTALL_PATCH_RELEASE_DIR="${REL_DIR}"
+else
+    INSTALL_PATCH_RELEASE_DIR="${PARENT_DIR}/release"
+fi
+
+# Make the directory if required
+INSTALL_PATCH_MEDIA_AREA=${INSTALL_PATCH_MEDIA_AREA}/${INSTALL_PATCH_MEDIA_DIR}
+if [ ! -d ${INSTALL_PATCH_MEDIA_AREA} ]; then
+    $MKDIR -p ${INSTALL_PATCH_MEDIA_AREA}
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not create kickstart SW directory ${INSTALL_PATCH_MEDIA_AREA}"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+# Set the default DHCP Client info file area
+DEFAULT_DHCP_CLIENT_AREA=`$CAT ${INSTALL_PATCH_CONFIG}|$EGREP "^[[:blank:]]*DEFAULT_DHCP_CLIENT_AREA=" \
+        | $AWK -F\= '{print $2}'`
+if [ ! "${DEFAULT_DHCP_CLIENT_AREA}" ]; then
+    _err_msg_="Failed to read parameter DEFAULT_DHCP_CLIENT_AREA from \n${INSTALL_PATCH_CONFIG}"
+    abort_script "$_err_msg_"
+fi
+DHCP_CLIENT_AREA="${DEFAULT_DHCP_CLIENT_AREA}/${DHCP_CLIENT_DIR}"
+
+export INSTALL_PATCH_IDENTITY_DIR=${INSTALL_PATCH_RELEASE_DIR}/${HOST_ARCH}/install_patch_media_identity/${VENDOR}
+if [ ! -d $INSTALL_PATCH_IDENTITY_DIR ] ; then
+        _err_msg_="Can't find release information from $INSTALL_PATCH_IDENTITY_DIR"
+        abort_script "$_err_msg_"
+fi
+
+}
+
+### Function: user_confirm ###
+#
+# Confirm details
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+user_confirm()
+{
+if [ "$NO_CONFIRM" ]; then
+    ANS="Yes"
+    return
+fi
+
+local _msg_=$1
+local _file_=$2
+
+while :; do
+    $PRINTF "\033c"
+    if [ -f "$2" ]; then
+        $CAT $2
+    fi
+    $ECHO -e "\n${_msg_}"
+    read _ans_
+
+    if [ ! "${_ans_}" ]; then
+        continue
+    fi
+
+    if [ "${_ans_}" == "Yes" -o "${_ans_}" == "No" ]; then
+        ANS="${_ans_}"
+        break
+    fi
+done
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$CLEAR
+# Loop until we get a unique file name
+_tmp_file_=/tmp/manage_install_patch_kickstart_usage.$$.$$
+while :; do
+    if [ ! -f ${_tmp_file_} ]; then
+        break
+    fi
+    _tmp_file_=${_tmp_file_}.$$
+done
+
+$ECHO "
+Usage: `$BASENAME $0` -a { add | list | remove }
+              [ -k <install_patch_kickstart_identity> ]
+              [ -l <path_to_logfile> ]
+              [ -p <path_to_patch> ] [ -N ]
+
+options:
+
+-a  : Parameter containing action to be performed
+          add : Add a new kickstart location
+         list : List current kickstart locations
+       remove : Remove a current kickstart area
+
+-l  : Optional parameter specifying the full path to logfile. If not
+      specified, a logfile will be created in ${PARENT_DIR}/log
+
+
+In the case of kickstart addition, the following paramters are valid.
+=====================================================================
+-N  : Optional parameter specifying whether the script will prompt
+      for user confirmation or not.
+
+-p  : Optional parameter specifying the full path to where the
+      Patch image is located.If not specified, then a user will
+      be prompted for location interactively.
+
+
+In the case of kickstart listing, the following paramters are valid.
+====================================================================
+
+-k  : Optional parameter specifying identity of the kickstart area
+      that is to be listed. E.g.19089-LZY2144638-H
+
+
+In the case of kickstart removal, the following paramters are valid.
+====================================================================
+
+-k  : Optional parameter specifying identity of the kickstart area
+      that is to be removed. E.g.19089-LZY2144638-H
+
+-N  : Optional parameter specifying whether the script will prompt
+      for user confirmation or not.
+
+" > ${_tmp_file_}
+$MORE -d  ${_tmp_file_}
+$RM -f ${_tmp_file_}
+}
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+#
+RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+# Determine absolute path to software
+get_absolute_path
+
+# Check for the common functions
+_common_funcs_lib_="${PARENT_DIR}/lib/common_ericks_functions.lib"
+if [ ! -s ${_common_funcs_lib_} ]; then
+    _err_msg_="${_common_funcs_lib_} not found or is empty"
+    abort_script "$_err_msg_"
+fi
+
+# Source the common functions
+. ${_common_funcs_lib_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error sourcing the common functions library\n${_common_funcs_lib_}"
+    abort_script "$_err_msg_"
+fi
+
+# Check the id of the user
+check_id ${DEFAULT_USER}
+if [ $? -ne 0 ]; then
+    _err_msg_="You must be ${DEFAULT_USER} to execute this script."
+    abort_script "$_err_msg_"
+fi
+
+while getopts ":a:FHk:l:Np:v:" arg; do
+    case $arg in
+        a) ACTION="$OPTARG"
+            ;;
+        F) FORMATTED_OUTPUT="YES"
+            ;;
+        H) HOLD_LISTING="YES"
+            ;;
+        k) USER_INSTALL_PATCH_KICK_AREA="$OPTARG"
+            ;;
+        l) LOGFILE="$OPTARG"
+            ;;
+        N) NO_CONFIRM="YES"
+            ;;
+        p) PATH_TO_INSTALL_PATCH="$OPTARG"
+            ;;
+        v) VENDOR="$OPTARG"
+            ;;
+        \?) usage_msg
+            exit 1
+        ;;
+    esac
+done
+shift `expr $OPTIND - 1`
+
+# Check for the ERICkick config file
+INSTALL_PATCH_CONFIG_TEMPLATE="${PARENT_DIR}/template/patchks_config_template"
+INSTALL_PATCH_CONFIG="${PARENT_DIR}/etc/patchks_config"
+if [ ! -s ${INSTALL_PATCH_CONFIG} ]; then
+    if [ ! -s ${INSTALL_PATCH_CONFIG_TEMPLATE} ]; then
+        _err_msg_="${INSTALL_PATCH_CONFIG_TEMPLATE} not found or is empty"
+        abort_script "$_err_msg_"
+    else
+        $CP ${INSTALL_PATCH_CONFIG_TEMPLATE} ${INSTALL_PATCH_CONFIG}
+    fi
+fi
+
+PORT_PING=${PARENT_DIR}/lib/port_ping.pl
+if [ ! -x ${PORT_PING} ]; then
+    _err_msg_="${PORT_PING} not found or not executable"
+    abort_script "$_err_msg_"
+fi
+
+#assume default vendor
+[[ ! "${VENDOR}" ]] &&  VENDOR="REDHAT"
+
+
+# Set up environment variables for script.
+setup_env
+
+trap "abort_script" 1 2 3 14 15
+# Loop until we get a unique directory name
+TEM_DIR=/tmp/manage_install_patch_kickstart.$$.$$
+while :; do
+    $LS ${TEM_DIR} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        break
+    fi
+    TEM_DIR=${TEM_DIR}.$$
+done
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory ${TEM_DIR}"
+    abort_script "$_err_msg_"
+fi
+
+# Log file
+if [ ! "${LOGFILE}" ]; then
+    LOGFILE="${PARENT_DIR}/log/manage_install_patch_kickstart.log"
+fi
+
+# Check/Create Logfile
+chk_create_logfile
+
+# Check the input parameters
+check_params
+
+# Perform Required Action
+case ${ACTION} in
+    add)          add_install_patch_kickstart_area
+        ;;
+    list)         list_install_patch_kickstart_area
+        ;;
+    remove)       remove_install_patch_kickstart_area
+        ;;
+    \?)           :
+        ;;
+esac
+
+cd ${SCRIPTHOME}
+#$RM -rf ${TEM_DIR}
+
+exit 0
+

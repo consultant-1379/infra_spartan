@@ -1,0 +1,82 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : setup_feature_path.bsh
+# Date    : 31/07/2018
+# Revision: 
+# Purpose : Help to setup feature directory structure on MWS
+#
+# Usage   : setup_feature_path.bsh
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# *****************************************************************
+ECHO=/usr/bin/echo
+MKDIR=/usr/bin/mkdir
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+#
+
+while getopts ":d:" arg; do
+  case $arg in
+    d) FEATURE_SW_DIR="$OPTARG"
+       ;;
+   \?) _err_msg_="`$BASENAME $0` -s <stage>"
+       abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+       ;;
+  esac
+done
+shift `expr $OPTIND - 1`
+
+if [ ! "${FEATURE_SW_DIR}" ]; then
+    while :; do
+        $ECHO -e "\nEnter the path where you want to setup feature software directories." 
+        read _user_input_
+
+        # Did user enter anything
+        if [ ! "${_user_input_}" ]; then
+            continue
+        fi
+        FEATURE_SW_DIR="${_user_input_}" 
+        break
+    done
+fi
+
+$MKDIR -p "${FEATURE_SW_DIR}"
+if [ $? -ne 0 ]; then
+   $ECHO "Failed to create directory ${FEATURE_SW_DIR}"
+   exit 1
+fi
+
+
+cd "${FEATURE_SW_DIR}"
+
+dir_list="eniq_techpacks eniq_parsers eniq_reports eniq_reports/reports eniq_reports/templates"
+
+for dir in ${dir_list}; do
+    $MKDIR -p ${dir}
+    if [ $? -ne 0 ]; then
+        $ECHO "Failed to create directory ${dir}"
+        exit 1
+    fi
+done
+
+$ECHO "Successfully setup feature software directories under ${FEATURE_SW_DIR}."

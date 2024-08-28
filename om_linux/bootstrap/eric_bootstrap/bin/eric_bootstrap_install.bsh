@@ -1,0 +1,774 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2001 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used 
+# and/or copied only with the written permission from Ericsson Radio 
+# Systems AB or in accordance with the terms and conditions stipulated 
+# in the agreement/contract under which the program(s) have been 
+# supplied.
+#
+# ********************************************************************
+# Name    : eric_bootstrap_install.bsh
+# Date    : 07/31/2018
+# Revision: A.4
+# Purpose : It is responsible for continuing the extraction/configuration
+#           during Ericsson bootstrap phase.
+#
+# Usage   : eric_bootstrap_install.bsh
+#
+# ********************************************************************
+#
+# 	Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GETTEXT=/usr/bin/gettext
+GREP=/usr/bin/grep
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PWD=/usr/bin/pwd
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SYSTEMCTL=/usr/bin/systemctl
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TTY=/usr/bin/tty
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+WC=/usr/bin/wc
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+# Default cache dir location
+DEF_CACHE_DIR="/var/tmp/OM_LIN_CACHE"
+
+# Bootstrap directory under O&M 
+OM_BOOTSTRAP_DIR=bootstrap
+
+# Script for caching O&M DVD
+OM_CACHE_SCRIPT=${OM_BOOTSTRAP_DIR}/bin/cache_om_sw.bsh
+
+# Cmd to exec a shell and drop user to it in case of an error
+EXEC_SHELL_CMD="exec /bin/bash -o emacs"
+
+ERIC_FIRSTBOOT_ID="firstboot.service"
+ERIC_FIRSTBOOT_FILE="/etc/systemd/system/firstboot.service"
+
+
+# Build an array to store the stage names
+BOOTSTRAP_INSTALL_STAGES=( cache_OM_data
+continue_om_phase
+cleanup )
+
+# ********************************************************************
+#
+#       Pre-execution Operations
+#
+# ********************************************************************
+L_ARCH=`$UNAME -p`
+
+# ********************************************************************
+#
+# 	functions
+#
+# ********************************************************************
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="Script aborted.......\n"    
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "$_err_msg_"|$TEE -a ${LOGFILE}
+else
+    $ECHO -e "$_err_msg_"
+fi
+
+cd $SCRIPTHOME
+$RM -rf ${TEM_DIR}
+
+if [ "$2" ]; then
+    ${2} 
+    exit 1
+else
+   exit 1
+fi
+}
+
+### Function: cache_OM_data ###
+#
+# Cache all required data from OM DVD
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+cache_OM_data()
+{
+insert_header_footer head "Entering BootStrap Stage - ${NEXT_STAGE}" ${LOGFILE}
+
+# Load/read installation paramameters.
+load_inst_bootstrap_params "${INSTALL_BOOTSTRAP_DIR}/etc/bootstrap_om_data_params.txt" OM
+
+if [ "${ERIC_SW_PATH_FILE}" ]; then
+    insert_media -l ${DVD_LABEL}  -f ${DVD_FILE} -s ${ERIC_SW_PATH_FILE} -n 5 "${DVD_DESC}"
+else
+    insert_media -l ${DVD_LABEL}  -f ${DVD_FILE} -n 5 "${DVD_DESC}"
+fi
+
+if [ ! "${SW_DIR}" ]; then
+    _err_msg_="Failed to locate OM DVD... exiting!"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi	
+
+# Not by kickstart, I should cache the media
+if [ ! "${ERIC_SW_PATH_FILE}" ]; then
+
+    _cache_om_script_=${SW_DIR}/${OM_CACHE_SCRIPT}
+
+    # Check that the caching script exists
+    if [ ! -f ${_cache_om_script_} -o ! -s ${_cache_om_script_} ]; then
+	_err_msg_="Failed to find OM caching script ${_cache_om_script_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+    # Cache the required O&M SW
+    $ECHO "Caching OM DVD...Please Wait"
+    $TTY |$GREP -w console >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+	${_cache_om_script_} -c ${DEF_CACHE_DIR} -d ${SW_DIR} >/dev/console </dev/console 2>&1
+    else
+	${_cache_om_script_} -c ${DEF_CACHE_DIR} -d ${SW_DIR}
+    fi
+
+    if [ $? -ne 0 ]; then
+	_err_msg_="Failed BootStrap Stage - ${NEXT_STAGE}...exiting!" |$TEE -a ${LOGFILE}
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    else
+        # Save cache dir param for use later
+	$ECHO ${DEF_CACHE_DIR} > ${INSTALL_BOOTSTRAP_DIR}/etc/cache_dir
+    fi
+else
+    # Set kickstart area as the cache directory.
+    $ECHO ${SW_DIR} > ${INSTALL_BOOTSTRAP_DIR}/etc/cache_dir
+fi
+
+insert_header_footer foot "Successfully completed BootStrap Stage - ${NEXT_STAGE} SW." ${LOGFILE}
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_id()
+{
+_check_id_=`$ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}'`
+if [ "$_check_id_" != "$1" ]; then
+    _err_msg_="You must be $1 to execute this script."
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+}
+
+### Function: chk_user_stage ###
+#
+# If stage specified, make sure it is nummeric and
+# in range
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+chk_user_stage()
+{
+if [ "$USER_STAGE" == "cleanup" ]; then
+    return 0
+fi
+
+$ECHO ${BOOTSTRAP_INSTALL_STAGES[*]} | $EGREP -w ${USER_STAGE} >> /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    _err_msg_="Specified stage ${USER_STAGE} not a valid installation stage"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+}
+
+
+### Function: cleanup ###
+#
+# Final stage. Clean up
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+cleanup()
+{
+$ECHO "Entering ERIC Bootstrap Stage cleanup" | $TEE -a ${LOGFILE}
+
+$RM -rf /etc/systemd/system/serial-getty@ttyS0.service
+
+# Remove the files / config that manages the installation through boots
+remove_boot_files_config
+
+if [ ! -s ${INSTALL_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${INSTALL_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"    
+fi
+
+_cache_dir_=`$CAT ${INSTALL_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+#Check and delete the ericRHEL repo if it exists
+rhel_repo=`ls /etc/yum.repos.d/ericRHEL.repo`
+if [ -s ${rhel_repo} ]; then
+	$RM -rf ${rhel_repo}
+fi
+
+# If the file/directory has not already been deleted., then check if
+# I have to delete it
+if [ -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+
+    # Read the config type parameter (if any) set in install command
+    if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+	_config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $2}'`
+    fi
+
+    if [ "${_config_type_}" ]; then
+	_boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+    else
+	_boot_client_id_="${INST_TYPE_ID}"
+    fi
+
+    # Read install paramameters.
+    load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+    if [ "${DEL_CACHE_DIR}" == "YES" ]; then
+	# Check if cache directory is local or actually a kickstart area.
+	$DF -lk ${_cache_dir_}  >> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	    $RM -rf ${_cache_dir_}
+	fi
+    fi
+fi
+
+
+$INIT 6
+}
+
+### Function: continue_om_phase ###
+#
+# Runs stage continue_om_phase.
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+continue_om_phase()
+{
+insert_header_footer head "Entering Boot Install Stage ${NEXT_STAGE}" ${LOGFILE}
+
+# Load/read installation paramameters.
+load_inst_bootstrap_params "${INSTALL_BOOTSTRAP_DIR}/etc/bootstrap_om_data_params.txt" OM
+
+# Has the O&M DVD being cached already
+if [ -d ${DEF_CACHE_DIR} ]; then
+    if [ ! -x ${DEF_CACHE_DIR}/${CONT_INST_SCRIPT} -o ! -s ${DEF_CACHE_DIR}/${CONT_INST_SCRIPT} ]; then
+	_err_msg_="O&M SW not cached correctly in ${DEF_CACHE_DIR}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+    SW_DIR=${DEF_CACHE_DIR}
+else
+    if [ "${ERIC_SW_PATH_FILE}" ]; then
+	insert_media -l ${DVD_LABEL}  -f ${DVD_FILE} -s ${ERIC_SW_PATH_FILE} -n 5 "${DVD_DESC}"
+    else
+	insert_media -l ${DVD_LABEL}  -f ${DVD_FILE} -n 5 "${DVD_DESC}"
+    fi
+fi
+
+if [ ! "${SW_DIR}" ]; then
+    _err_msg_="Failed to locate OM DVD... exiting!"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+_continue_om_script_=${SW_DIR}/${CONT_INST_SCRIPT}
+
+# Check that the continue script exists
+if [ ! -f ${_continue_om_script_} -o ! -s ${_continue_om_script_} ]; then
+     _err_msg_="Failed to find OM continue script\n${_continue_om_script_}"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+$RM -rf /var/lib/rpm/__db*
+$RM -rf /var/cache/yum
+/usr/bin/rpm --rebuilddb
+#/usr/bin/yum history sync > /dev/null 2>&1
+
+$TTY |$GREP -w console >> /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "Using console based installation environment..."
+    ${_continue_om_script_} -b ${INSTALL_BOOTSTRAP_DIR}  >/dev/console </dev/console 2>&1
+	if [ $? -ne 0 ]; then
+           abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+	else
+	   local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    	   set_next_stage ${_next_stage_}
+	fi
+else
+    echo "Using non-console based installation environment..."
+    ${_continue_om_script_} -b ${INSTALL_BOOTSTRAP_DIR}
+	if [ $? -ne 0 ]; then
+	    abort_script "$_err_msg_"
+	else
+            local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    	    set_next_stage ${_next_stage_}
+	fi
+
+fi
+
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+get_absolute_path() 
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+PARENT_DIR=`$DIRNAME ${SCRIPTHOME}`
+}
+
+### Function: get_array_element ###
+#
+# Get the current array element number
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_array_element()
+{	
+_array_length_=${#BOOTSTRAP_INSTALL_STAGES[*]}
+_array_length_=`${EXPR} ${_array_length_} - 1`
+
+for (( _elem_=0; _elem_<=${_array_length_}; _elem_++ )); do
+    $ECHO ${BOOTSTRAP_INSTALL_STAGES[${_elem_}]} | $GREP -w ${NEXT_STAGE} >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        ARRAY_ELEM=${_elem_}
+        break
+    fi
+done
+}
+
+### Function: get_next_stage ###
+#
+# Get the stage to be run
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+get_next_stage()
+{
+ARRAY_ELEM=0
+
+if [ -s ${STAGEFILE} ]; then
+    NEXT_STAGE=`$CAT ${STAGEFILE}|$EGREP -v '^[ 	]*#' | $SED -e 's| ||g'`
+    if [ ! "$NEXT_STAGE" ]; then
+        _err_msg_="ERROR: Failed to read stage from ${STAGEFILE}, exiting."
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+    if [ "$NEXT_STAGE" == "cleanup" ]; then
+        return 0
+    else
+        $ECHO ${BOOTSTRAP_INSTALL_STAGES[*]} | $GREP -w ${USER_STAGE} >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            _err_msg_="Specified stage ${USER_STAGE} is not a valid installation stage"
+            abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+        fi
+    fi
+    # Get the element number so we can move along the array
+    get_array_element
+else
+    $MKDIR -p `$DIRNAME ${STAGEFILE}`
+    if [ $? -ne 0 ]; then
+        _err_msg_="Failed to create directory `$DIRNAME ${STAGEFILE}`, exiting."
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+    NEXT_STAGE=${BOOTSTRAP_INSTALL_STAGES[${ARRAY_ELEM}]}
+fi
+}
+
+### Function: insert_header_footer ###
+#
+#   Insert a stage header/footer message
+#
+# Arguments:
+#	$1 : head/foot
+#	$2 : Message
+#	$3 : Logfile
+# Return Values:
+#	none
+insert_header_footer()
+{
+if [ $# -ne 3 ]; then
+    _err_msg_="3 Parameters must be passed to header/footer function"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi	
+
+if [ "$1" != "head" -a "$1" != "foot" ]; then
+    _err_msg_="Only Param of head/foot is allowed...exiting!"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi	
+_type_=$1
+
+_msg_=$2
+
+_logfile_=$3
+$MKDIR -p `$DIRNAME ${_logfile_}`
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${_logfile_}`"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi	
+
+$TOUCH -a ${_logfile_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${_logfile_}"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi	
+
+_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+if [ "$_type_" == "head" ]; then
+    $ECHO "=====================================================" >> ${_logfile_}
+    $ECHO -e "=====================================================" >> ${_logfile_}
+fi
+$ECHO "$_time_ : $_msg_"|$TEE -a ${_logfile_}
+if [ "$_type_" == "foot" ]; then
+    $ECHO "=====================================================" >> ${_logfile_}
+    $ECHO -e "=====================================================" >> ${_logfile_}
+fi
+}
+
+### Function: load_inst_bootstrap_params ###
+#
+# Loads/reads installation bootstrap paramameters.
+#
+# Arguments:
+#	${1} : File conaining Installation params/data
+#	${2} : Param to indicate which data to load
+# Return Values:
+#	none
+load_inst_bootstrap_params()
+{
+_inst_data_file_=${1}
+_data_load_type_=${2}
+
+if [ ! -s ${_inst_data_file_} ]; then
+    _err_msg_="${_inst_data_file_} not found or empty"
+    abort_script "$_err_msg_"    
+fi
+
+# Get the continuation script name
+CONT_INST_SCRIPT=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "CONT_INST_SCRIPT_${L_ARCH}"`
+if [ ! "${CONT_INST_SCRIPT}" ]; then
+    CONT_INST_SCRIPT=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "CONT_INST_SCRIPT"`
+    if [ ! "${CONT_INST_SCRIPT}" ]; then
+	_err_msg_="Could not read parameter CONT_INST_SCRIPT from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Description of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DEL_CACHE_DIR=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DEL_CACHE_DIRC_${L_ARCH}"`
+if [ ! "${DEL_CACHE_DIR}" ]; then
+    DEL_CACHE_DIR=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DEL_CACHE_DIR"`
+    if [ ! "${DEL_CACHE_DIR}" ]; then
+	_err_msg_="Could not read parameter DEL_CACHE_DIR from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Description of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_DESC=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_DESC_${L_ARCH}"`
+if [ ! "${DVD_DESC}" ]; then
+    DVD_DESC=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_DESC"`
+    if [ ! "${DVD_DESC}" ]; then
+	_err_msg_="Could not read parameter DVD_DESC from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the ID File Name of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_FILE_${L_ARCH}"`
+if [ ! "${DVD_FILE}" ]; then
+    DVD_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_FILE"`
+    if [ ! "${DVD_FILE}" ]; then
+	_err_msg_="Could not read parameter DVD_FILE from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Label of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_LABEL=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_LABEL_${L_ARCH}"`
+if [ ! "${DVD_LABEL}" ]; then
+    DVD_LABEL=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_LABEL"`
+    if [ ! "${DVD_LABEL}" ]; then
+	_err_msg_="Could not read parameter DVD_LABEL from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the name of the file that may contain the kickstart path
+ERIC_SW_PATH_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "ERIC_SW_PATH_FILE_${L_ARCH}"`
+if [ ! "${ERIC_SW_PATH_FILE}" ]; then
+    ERIC_SW_PATH_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "ERIC_SW_PATH_FILE"`
+    if [ ! "${ERIC_SW_PATH_FILE}" ]; then
+	_err_msg_="Could not read parameter ERIC_SW_PATH_FILE from file ${_inst_data_file_}"
+	abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+if [ -s "${ERIC_BOOTSTRAP_CONF_DIR}/${ERIC_SW_PATH_FILE}" ]; then
+    ERIC_SW_PATH_FILE="${ERIC_BOOTSTRAP_CONF_DIR}/${ERIC_SW_PATH_FILE}"
+else
+    unset ERIC_SW_PATH_FILE
+fi
+}
+
+### Function: log ###
+#
+# Basically outputs to the screen and the logfile
+# insertcd function
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+log() 
+{
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "$*" |$TEE -a ${LOGFILE}
+else
+    $ECHO -e "$*"
+fi
+}
+
+### Function: remove_boot_files_config ###
+#
+# Remove the files / config that manages the installation through boots
+#
+# Arguments:
+#	$1 : Stage to be set to. 
+# Return Values:
+#	none
+remove_boot_files_config()
+{
+if [ ! -s ${ERIC_FIRSTBOOT_FILE} ]; then
+    return 0
+fi
+
+#$SYSTEMCTL stop ${ERIC_FIRSTBOOT_ID}
+$SYSTEMCTL disable ${ERIC_FIRSTBOOT_ID}
+$RM -f ${ERIC_FIRSTBOOT_FILE}
+
+cd $SCRIPTHOME
+}
+
+### Function: set_next_stage ###
+#
+# Set up the stage to be run
+#
+# Arguments:
+#	$1 : Stage to be set to. 
+# Return Values:
+#	none
+set_next_stage()
+{
+_stage_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+$ECHO "# Setting new stage at $_stage_time_" > ${STAGEFILE} | $TEE -a ${LOGFILE}
+$ECHO "${BOOTSTRAP_INSTALL_STAGES[$1]} " >> ${STAGEFILE} | $TEE -a ${LOGFILE}
+}
+
+# ********************************************************************
+#
+# 	Main body of program
+#
+# ********************************************************************
+#
+# Determine absolute path to software
+get_absolute_path
+
+# Check that the effective id of the user is root
+check_id root
+
+# Main Directory for the ERIC Boot Install SW
+INSTALL_BOOTSTRAP_DIR=`$DIRNAME ${SCRIPTHOME}`
+
+# Log file
+RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+$MKDIR -p ${INSTALL_BOOTSTRAP_DIR}/log
+LOGFILE="${INSTALL_BOOTSTRAP_DIR}/log/`${HOSTNAME}`_eric_bootstrap_install_log_${RUN_TIME}"
+
+# Create a temporary Directory
+TEM_DIR=/tmp/eric_bootstrap_install.$$.$$
+$RM -rf ${TEM_DIR}
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory $TEM_DIR"
+    abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+fi
+
+while getopts ":s:" arg; do
+  case $arg in
+    s) USER_STAGE="$OPTARG" 
+       ;;
+   \?) _err_msg_="`$BASENAME $0` -s <stage>"
+       abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+       ;;
+  esac
+done
+shift `expr $OPTIND - 1`
+
+# If stage specified, make sure it is in range
+if [ "$USER_STAGE" ]; then
+    chk_user_stage
+fi
+
+# ERIC Config Directory
+ERIC_BOOTSTRAP_CONF_DIR="${INSTALL_BOOTSTRAP_DIR}/config"
+if [ ! -s ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type ]; then
+    _err_msg_="Mandatory installation file not detectetd\n${ERIC_BOOTSTRAP_CONF_DIR}/inst_type"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+PORT_PING=${PARENT_DIR}/lib/port_ping.pl
+if [ ! -x ${PORT_PING} ]; then
+    _err_msg_="${PORT_PING} not found or not executable"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+# Set up Variable to hold installation type
+INST_TYPE_ID=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type`
+
+# Source the common functions
+if [ -s ${INSTALL_BOOTSTRAP_DIR}/lib/common_bootstrap_functions ]; then
+    . ${INSTALL_BOOTSTRAP_DIR}/lib/common_bootstrap_functions
+else
+    _err_msg_="File ${INSTALL_BOOTSTRAP_DIR}/lib/common_bootstrap_functions not found"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+# No more CDE for now.
+$DTCONFIG -d > /dev/null 2>&1
+
+# File to hold stage information
+$MKDIR -p ${INSTALL_BOOTSTRAP_DIR}/etc
+STAGEFILE=${INSTALL_BOOTSTRAP_DIR}/etc/bootstrap_install_stage
+
+if [ "$USER_STAGE" ]; then
+    NEXT_STAGE="${USER_STAGE}"
+else
+    get_next_stage
+fi
+
+# If we read cleanup from the stagefile
+if [ "$NEXT_STAGE" == "cleanup" ]; then
+    # We exit unless the user specified that the stage be run again
+    if [ ! "$USER_STAGE" ]; then
+	# Clean up as it may not be done already
+	remove_boot_files_config
+        $ECHO "All Stages are already completed"
+        exit 0
+    fi
+fi
+
+while :; do
+    _nxt_stage_="${NEXT_STAGE}"
+    $_nxt_stage_
+    if [ $? -ne 0 ]; then
+        _err_msg_="Error in Stage ${NEXT_STAGE}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+    # Exit if the user specified to run a specific stage only
+    if [ "$USER_STAGE" ]; then
+        break
+    fi
+
+    # If we read cleanup from the stagefile
+    if [ "$NEXT_STAGE" == "cleanup" ]; then
+        break
+    fi
+
+    get_next_stage
+done
+
+exit 0

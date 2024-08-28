@@ -1,0 +1,8 @@
+media_label=ERIC_LIN_RHEL_7.6_MEDIA
+media_desc=Ericsson Redhat Linux 7.6 Boot Media
+media_prefix=19089
+media_number=CXP9037123
+media_rev=A
+media_arch=x86_64
+media_distro=RHEL
+media_distro_rev=7.6

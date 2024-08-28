@@ -1,0 +1,58 @@
+###########################################################
+#
+# This file describes the properties of the O&M SW 
+# media. It describes
+#
+###########################################################
+# Media Identity Type
+MEDIA_TYPE=om_linux
+
+# File that ensures we are looking at the correct media
+MEDIA_FILE=.om_linux
+
+# Media label. It is the default directory that the media 
+# will be installed in
+MEDIA_LABEL=om_linux
+
+# Media Designation. Used primarily for printouts
+MEDIA_DESIG=O&M_Linux
+
+# String for Main menu title associated with this media
+MEDIA_MAIN_MENU_TITLE=Maintain Operation & Maintenance Linux distributions
+
+# Media Action List. The list order in the variable will
+# indicate the order of the menu. This actions are
+# reserved words and MUST not be altered. These keywords
+# signify different actions in the scripts that read them.
+MEDIA_ACT_LIST=add::list::remove
+
+# Parent Directory under which all O&M media will be stored
+MEDIA_AREA=/JUMP
+
+# Directory under which all O&M media will be stored. This 
+# directory is relative to MEDIA_AREA
+MEDIA_DIRECTORY=OM_LINUX_MEDIA
+
+# Flag to determine whether we should allow more that one media
+# in an NFS area. EG. OSS-RC can have 2 media images associated 
+# with one NFS area (i386,sparc)
+MULTIPLE_MEDIA=N
+
+# Flag to determine whether this media is considered to be an 
+# an application media or not. Will a user select this media
+# to install a particular OSS application/function
+APPLICATION_MEDIA_FLAG=N
+
+# Flag to determine whether we should decompress the comtents 
+# of the media or not
+DECOMPRESS_FLAG=N
+
+# IP address of server serving out the medias. Must be IP address 
+# or 'local'
+MEDIA_NFS_IP=local
+
+# Parameter indicating the string that the installation framework
+# will use to identify file holding network path to required media.
+# This only is relevant to Application Medias but MUST be defined
+MEDIA_PATH_ID_FILE=om_sw_locate
+

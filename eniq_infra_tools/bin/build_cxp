@@ -1,0 +1,317 @@
+#!/usr/bin/perl
+#-----------------------------------------------------------
+# COPYRIGHT Ericsson Radio Systems  AB 2016
+#
+# The copyright to the computer program(s) herein is the 
+# property of ERICSSON RADIO SYSTEMS AB, Sweden. The 
+# programs may be usedand/or copied only with the written 
+# permission from ERICSSON RADIO SYSTEMS AB or in accordance 
+# with the terms and conditions stipulated in the agreement
+# contract under which the program(s)have been supplied.
+#-----------------------------------------------------------
+#-----------------------------------------------------------
+#
+#   PRODUCT      : Delivery Management
+#   RESP         : xgirred
+#   DATE         : 9/7/2018
+#   Description  : This Script is to build a CXP Package
+#   REV          : A1 
+# --------------------------------------------------------------
+#   
+# 
+use strict;
+use warnings;
+use Getopt::Long;
+use File::Copy;
+no warnings 'uninitialized';
+
+my $PRINTER;
+my $ERROR;
+my $LINE_NUMBER;
+my $CLEARTOOL="/usr/atria/bin/cleartool";
+my $Base_Path = "/vobs/oss_sck";
+my $Base_Src_Path = $Base_Path."/eniq_infra_src";
+my $Base_Del_Path = $Base_Path."/eniq_infra_delivery";
+my $Base_Tools_Bin_Path = $Base_Path."/eniq_infra_tools/bin";
+my $RState;
+my $Package;
+my $TAR = "/bin/tar";
+my $Base_OM_Path = "/vobs/oss_sck/eniq_infra_OM";
+my $default_temp_dir = "/tmp/ENIQ_OM/";
+
+
+
+
+###########################################################
+# Funtion Name : printer
+# Purpose      : To print values passed.
+# Return Value : NA
+###########################################################
+sub printer
+{
+    $PRINTER = $_[0] ;                   
+    print "------------<   $PRINTER    >------------\n";              
+    return 0    
+}
+
+
+###########################################################
+#  Function Name:  error
+#  Function Desc:  Show a uniform modern error message
+#  Return:         1
+###########################################################
+sub error
+{
+    $ERROR = $_[0] ;                  
+    $LINE_NUMBER=$_[1] ;            
+
+    print "------------------------------------------------------------------------------\n";
+    print "  ERROR!             $ERROR \n";
+    print "  Line Number:       $LINE_NUMBER \n";
+    print "------------------------------------------------------------------------------\n";
+
+    exit 1;
+
+}
+
+###########################################################
+# Funtion Name : get_Package_Name
+# Purpose      : To Get the Package Name from the Vobs list
+# Return Value : Product Name
+###########################################################
+sub get_Package_Name
+{
+    my $flag = 1;
+    my $product;
+
+    while ( $flag == 1)
+    {
+        my @sortlist;
+        my $pronumber=0;
+        my @list = `$CLEARTOOL ls -vob_only -s -nxn $Base_OM_Path | grep -iv cxp`;
+        foreach my $lines (@list)
+        {
+            chomp $lines;
+            $lines =~ s/.*OM\///;
+            push (@sortlist, "$lines");
+        }
+
+        chomp @sortlist;
+        print "\t\tNumber \t\t\tProduct\n";
+        print "\t\t***************************************\n\n";
+        foreach my $proline (@sortlist)
+        {
+            $pronumber=$pronumber+1;
+            print "\t\t${pronumber}) \t\t\t$proline\n";
+        }
+        print "\nPlease choose a number: ";
+        my $prochoice = <STDIN>;
+        chomp $prochoice;
+        if (($prochoice > 0) && ($prochoice <= ${pronumber}))
+        {
+            $prochoice=$prochoice-1;
+            $product = $sortlist[$prochoice];
+            printer ("Product Choice is $prochoice");
+            printer ("Prodcut is $product");
+            $flag = 0;
+        }
+        else
+        {
+            print "\nWARNING!!!!!!! - Please choose a number between 1~${pronumber}\n";
+            $flag = 1;
+        }
+    }
+    return $product;
+
+}
+
+###########################################################
+# Funtion Name : get_rstate
+# Purpose      : To use the new R-State used by User to deliver/build a Package
+# Return Value : New R-State provide by User.
+###########################################################
+sub get_rstate
+{
+    my $package = shift;
+    my $newrstate;
+    my $rstflag=1;
+    my $Package_pkg_Info = $Base_OM_Path."/$package/cxp_info";
+
+    my $prevrstate = `grep VERSION $Package_pkg_Info | cut -d = -f 2`;
+    chomp $prevrstate;
+
+    print "Previous R-State is : $prevrstate \n";
+
+    while ( $rstflag == 1 )
+    {
+        print "Please enter the New RState :";
+        $newrstate = <STDIN>;
+        chomp $newrstate;
+        $newrstate =~ s/\s+//g;
+        $newrstate = uc $newrstate; 
+
+        if ( $newrstate =~ /^R([0-9])+([A-Z])+/)
+        {
+            $rstflag =0;
+        }
+        else
+        {
+            print "\nPlease enter a Valid R-State. Example : R9A01\n";
+            $rstflag =1;
+        }
+    }
+
+    return $newrstate;
+
+}
+
+###########################################################
+# Funtion Name : copy_rpm_for_tar
+# Purpose      : To Copy the RPM packages to make a tar 
+# Return Value : NA
+###########################################################
+sub copy_rpm_for_tar
+{
+    my ($package,@list) = @_;
+
+    my $temp_dir = $default_temp_dir."$package/";
+
+    if ( -d "$temp_dir")
+    {
+        #rmdir ("$temp_dir") or error ("Unable to delete directory , $temp_dir", __LINE__);
+        `rm -rf $temp_dir`;
+        mkdir ("$temp_dir") or error ("Unable to create directory , $temp_dir", __LINE__);
+        chmod (0775,"$temp_dir") or error ("Unable to set Permission to $temp_dir", __LINE__);
+    }
+    else
+    {
+        mkdir ("$temp_dir") or error ("Unable to create directory , $temp_dir", __LINE__);
+        chmod (0775,"$temp_dir") or error ("Unable to set Permission to $temp_dir", __LINE__);
+    }
+    
+
+    foreach my $mod (@list)
+    {
+        chomp $mod;
+        #copy ( "$Base_Del_Path/$mod/RPMS/$mod*.rpm", "$temp_dir") or error ("Unable to Copy File from $Base_Del_Path/$mod/RPMS/$mod*.rpm to $temp_dir", __LINE__);
+        `cp $Base_Del_Path/$mod/RPMS/$mod*.rpm $temp_dir`;
+        my $result = `echo $?`;
+
+        if ( $result != 0)
+        {
+            error ("Unable to Copy File from $Base_Del_Path/$mod/RPMS/$mod*.rpm to $temp_dir", __LINE__); 
+        }
+
+    }
+}
+
+
+##########################################################
+# Funtion Name : Tar the Modules using New R-State.
+# Purpose      : To tar the pacakge with the rpm modules.
+# Return Value : Failuer if tar fails.
+#########################################################
+sub tar_Package
+{
+
+    my $pkg = $_[0];
+    my $rstate = $_[1];
+    my $om_src_pkg_dir = "/vobs/oss_sck/eniq_infra_OM/".$pkg;
+    chomp $pkg;
+    chomp $rstate;
+
+    printer ("Taring the $pkg" );
+
+    my $temp_dir = $default_temp_dir."/$pkg";
+
+    `mkdir -p $temp_dir`;
+
+    chdir("$default_temp_dir") or error ("Unable to change $default_temp_dir directory");
+
+    `cp $om_src_pkg_dir/* $temp_dir`;
+
+    `tar -zcvf $pkg\_$rstate."tar.gz" $pkg`;
+
+    #system( "tar -zcvf \"$pkg\_$rstate.tar.gz\" $pkg");
+
+    #`cp $pkg*.tar.gz ..`;
+
+    printer ("Taring completed!!!!");
+
+    printer ("Tar File has been placed in $default_temp_dir with file name $pkg\_$rstate.tar.gz");    
+
+    `rm -rf $temp_dir`;
+
+    printer "Cleaning Up Completed.... !";
+
+
+}
+
+
+###############################################################
+# Function : update_RState
+# Purpose  : To update the RState in cxp_info at package level.
+# Return value : NA
+###############################################################
+sub update_RState
+{
+
+    my $local_pkg_name = $_[0];
+    my $local_rstate    = $_[1];
+
+    if ( -e "$Base_OM_Path/$local_pkg_name/cxp_info" )
+    {
+        printer "$Base_OM_Path/cxp_info exists. Updating the New RState...";
+
+        chomp($local_rstate);
+        chomp($local_pkg_name);
+
+        `sed "s/VERSION.*/VERSION=\"$local_rstate\"/" < $Base_OM_Path/$local_pkg_name/cxp_info  > /tmp/$local_pkg_name.cxp_info.$$`;
+        `cp /tmp/$local_pkg_name.cxp_info.$$  $Base_OM_Path/$local_pkg_name/cxp_info`;
+
+        `rm -rf /tmp/$local_pkg_name.cxp_info.$$`;
+
+    }
+
+    else
+    {
+        error (" $Base_OM_Path/$local_pkg_name/cxp_info doesn't exists. Please check.", __LINE__);
+    }
+        
+         
+
+
+
+}
+
+
+
+###########################################################
+# Funtion Name : Build_Package
+# Purpose      : To Build Package
+# Return Value : Failure if the rpm build fails.
+###########################################################
+sub Build_Package
+{
+    my $Package = get_Package_Name(); 
+    chomp($Package);
+
+    printer ("Package Selected is $Package");
+
+    my $New_RState = get_rstate($Package);
+
+    update_RState($Package,$New_RState);
+
+    tar_Package($Package,$New_RState);
+    
+}
+
+
+
+##### Main Function
+{
+    print "\n\n\n======================================================================\n";
+    Build_Package();
+    print "======================================================================\n\n\n";
+}
+

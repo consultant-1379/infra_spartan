@@ -1,0 +1,1701 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : manage_nfs_media.bsh
+# Date    : 31/07/2018
+# Revision: A
+# Purpose : This script will manage all OSS NFS media
+#
+# Usage   : manage_nfs_media.bsh
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+DATE=/usr/bin/date
+DIRNAME=/usr/bin/dirname
+ECHO=/usr/bin/echo
+ENV=/usr/bin/env
+FIND=/usr/bin/find
+EGREP=/usr/bin/egrep
+HOSTNAME=/usr/bin/hostname
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+PRINTF=/usr/bin/printf
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+SED=/usr/bin/sed
+SORT=/usr/bin/sort
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+DEFAULT_USER="root"
+
+# Gathers time&date
+NOW=$($DATE +"%Y-%m-%d-%T")
+
+# Establishes script name used for error mging
+SCRIPT_NAME=$(basename "$0")
+
+# ********************************************************************
+#
+#       Functions
+#
+# ********************************************************************
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="ERROR: Script aborted...\n"
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: Script aborted...$_err_msg_\n" | $TEE -a "${LOGFILE}"
+else
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: $_err_msg_\n"
+fi
+
+cd "$SCRIPTHOME" || exit
+$RM -rf "${TEM_DIR}"
+
+# Remove the install area if it exists
+if [ "${RM_DIRECTORY}" ]; then
+    $RM -rf "${RM_DIRECTORY}"
+fi
+
+if [ "$2" ]; then
+    ${2}
+else
+   exit 1
+fi
+}
+
+### Function: add_nfs_media_area ###
+#
+# Add a new NFS Media area.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+add_nfs_media_area()
+{
+local _nfs_id_file_ _id_ _media_id_file_ _media_id_file_loc_ _media_config_label_ _media_id_label_
+
+unset RM_DIRECTORY MEDIA_ID_FILES
+unset NFS_MEDIA_LABEL_ARRAY NFS_MEDIA_DESC_ARRAY NFS_MEDIA_VER_ARRAY
+unset NFS_MEDIA_ARCH_ARRAY NFS_MEDIA_LOCATION_ARRAY NFS_MEDIA_DATE_ARRAY
+
+# Get/Check the location of the NFS media. Also set location of
+# ${MEDIA_ID_FILES}
+if [ "${USER_PARAM_INPUT}" ]; then
+    get_chk_nfs_media_loc add "${ADD_MEDIA_PATH}"
+else
+    get_chk_nfs_media_loc add
+fi
+
+# Load info about the media
+load_new_media_info "${MEDIA_ID_FILES}"
+
+# Make the media area directory id required
+if [ ! -d ${NFS_MEDIA_AREA} ]; then
+    $MKDIR -p "${NFS_MEDIA_AREA}"
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not create ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media area directory\n${NFS_MEDIA_AREA}"
+        abort_script "$_err_msg_"
+    fi
+fi
+# Load the existing Media info
+NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+_media_config_label_="${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}"
+_media_id_file_=".${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]}_identity"
+load_existing_media_area_info "${NFS_MEDIA_AREA}" "${_media_config_label_}" "${_media_id_file_}"
+
+# Have we got existing areas managed
+if [ -s "${TEM_DIR}"/existing_media_locations ]; then
+    # Get number of elements
+    _cnt_=${#NFS_MEDIA_VER_ARRAY[@]}
+
+    # Loop thru and see if this version is already installed.
+    # I will not allow a duplicate.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        for _id_ in $($ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+            $ECHO "${TEM_MEDIA_VERSION}" | $EGREP -w "${_id_}" >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                _err_msg_="This media ${_id_} is already installed in\n${NFS_MEDIA_LOCATION_ARRAY[${i}]}"
+                abort_script "$_err_msg_"
+            fi
+        done
+    done
+fi
+
+# Set/Create Media location
+NFS_MEDIA_LOC_AREA=${NFS_MEDIA_AREA}/${TEM_MEDIA_DIR}
+if [ "${MEDIA_CONFIG_MULTI_ARRAY[${MEDIA_ARR_INDEX}]}" == "N" ]; then
+    if [ -d "${NFS_MEDIA_LOC_AREA}" ]; then
+        _err_msg_="NFS media area directory already exists\n${NFS_MEDIA_LOC_AREA}"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+# Build up the display file
+$RM -f "${TEM_DIR}"/disp_file.$$
+$ECHO -e "\nAdd ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media area
+
+Media    : ${TEM_MEDIA_DESC}
+Version  : ${TEM_MEDIA_VERSION}
+Location : ${NFS_MEDIA_LOC_AREA}\n\n
+" >> "${TEM_DIR}"/disp_file.$$
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT "$TEM_DIR"/disp_file.$$ >> "$LOGFILE"
+    ANS="Yes"
+else
+    # Get user confirmation if required
+    _msg_="\nAre you sure you wish to add the area specified? (Yes|No)"
+    user_confirm "${_msg_}"  "${TEM_DIR}"/disp_file.$$
+fi
+
+if [ "${ANS}" == "Yes" ]; then
+    # No interrupts allowed from now
+    trap "no_intr_allowed" 1 2 3 14 15
+
+    if [ ! -d "${NFS_MEDIA_LOC_AREA}" ]; then
+        $MKDIR -p "${NFS_MEDIA_LOC_AREA}"/"${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}"
+        if [ $? -ne 0 ]; then
+            _err_msg_="Could not create media area directory ${NFS_MEDIA_LOC_AREA}/${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]}"
+            abort_script "$_err_msg_"
+        fi
+    fi
+
+    $RM -f "${TEM_DIR}"/decomp_list "${TEM_DIR}"/identity_file
+    _add_time_=$($DATE '+%Y-%b-%d_%H.%M.%S')
+    $ECHO "Adding ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media...Please Wait"
+    cd "${ADD_MEDIA_PATH}" || exit
+    $FIND . -depth -print | $CPIO -pdmu "${NFS_MEDIA_LOC_AREA}"/"${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}" >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        RM_DIRECTORY=${NFS_MEDIA_LOC_AREA}
+        _err_msg_="Could not copy files from ${ADD_MEDIA_PATH} to ${NFS_MEDIA_LOC_AREA}/${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]}"
+        abort_script "$_err_msg_"
+    fi
+    if [ "${MEDIA_CONFIG_DECOMP_ARRAY[${MEDIA_ARR_INDEX}]}" == "Y" ]; then
+        decompress_sw_area "${NFS_MEDIA_LOC_AREA}"
+    fi
+
+    # Update Identity file with details
+    _media_location_="${NFS_MEDIA_LOC_AREA}"
+    _media_id_file_loc_="${_media_location_}/${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}/${_media_id_file_}"
+
+    if [ "${BUILT_NFS}" ]; then
+        $CP /dev/null "${_media_id_file_loc_}"
+    fi
+
+    # Update media Identity file
+    update_media_identity_file "${_media_id_file_loc_}" "${_media_location_}"
+
+    # Store the identity file
+    $CP "${TEM_DIR}"/identity_file "${_media_id_file_loc_}"
+    if [ $? -ne 0 ]; then
+        RM_DIRECTORY=${NFS_MEDIA_LOC_AREA}
+        _err_msg_="Could not create identity file ${_media_id_file_loc_}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Share out the ${NFS_MEDIA_LOC_AREA} if required
+    # LINUX does not require adding NFS as /JUMP is shared out by default
+    # and sharing out child directories is not done.
+    #_share_dir_="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+
+    # Create the RHEL & O&M location files if required
+    if [ "${LIN_X86_LOC}" ]; then
+        $ECHO "${LIN_X86_LOC}" > "${NFS_MEDIA_LOC_AREA}"/lin_i86pc.loc
+    fi
+    if [ "${OM_SW_LOC}" ]; then
+        $ECHO "${OM_SW_LOC}" > "${NFS_MEDIA_LOC_AREA}"/om_sw.loc
+    fi
+
+    $ECHO -e "\nSuccessfully added ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media"
+
+
+    # Remove traps on interrupts
+    trap 1 2 3 14 15
+fi
+
+# Initialise variables
+unset ADD_MEDIA_PATH MEDIA_ACTION
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_absolute_path()
+{
+_dir_=$($DIRNAME $0)
+SCRIPTHOME=$(cd "$_dir_" 2>/dev/null && pwd || $ECHO "$_dir_")
+PARENT_DIR=$($DIRNAME $SCRIPTHOME)
+}
+
+### Function: get_chk_nfs_media_loc ###
+#
+# Get/Check the location of the NFS media
+#
+# Arguments:
+#   $1 : Manadatory parameter...Action (add/merge)
+#   $2 : Optional Parameter...Path to new media path
+# Return Values:
+#   none
+get_chk_nfs_media_loc()
+{
+local _media_path_ _chk_path_ _chk_file_ _found_=1
+local _media_action_="${1}"
+if [ "${2}" ]; then
+    local _media_path_="${2}"
+fi
+
+local _chk_path_ _chk_file_ _found_=1
+# Was I give the path to the media
+if [ "${_media_path_}" ]; then
+    # Check that a full pathname was specified
+    check_full_pathname "${_media_path_}"
+    if [ $? -ne 0 ]; then
+        _err_msg_="${_media_path_} is not a full pathname."
+        abort_script "$_err_msg_"
+    fi
+
+    # Check that it is a valid media
+    check_valid_media "${_media_path_}" "${MEDIA_CONFIG_FILE_ARRAY[${MEDIA_ARR_INDEX}]}"
+    if [ $? -ne 0 ]; then
+        _err_msg_="Could not locate media check file(s) in ${_media_path_}"
+        abort_script "$_err_msg_"
+    fi
+else
+    $PRINTF "\033c"
+    while :; do
+        $ECHO -e "\nEnter full path to the location of the ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media"
+        read -r _media_path_
+
+        if [ ! "${_media_path_}" ]; then
+            continue
+        fi
+
+        # Check that a full pathname was specified
+        check_full_pathname "${_media_path_}"
+        if [ $? -ne 0 ]; then
+            $ECHO "${_media_path_} is not a full pathname."
+            continue
+        fi
+
+        # Check that it is a valid media
+        check_valid_media "${_media_path_}" "${MEDIA_CONFIG_FILE_ARRAY[${MEDIA_ARR_INDEX}]}"
+        if [ $? -ne 0 ]; then
+            $ECHO -e "Could not locate media check file(s) in \n${_media_path_}"
+            continue
+        fi
+
+        break
+    done
+fi
+if [ "${_media_action_}" == "add" ]; then
+    ADD_MEDIA_PATH=$($ECHO "${_media_path_}" | $SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+else
+    MERGE_MEDIA_PATH=$($ECHO "${_media_path_}" |$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+    $ECHO -e "$MERGE_MEDIA_PATH" >> /dev/null 2>&1 
+fi
+}
+
+
+### Function: list_nfs_media_area ###
+#
+# List existing NFS Media area.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+list_nfs_media_area()
+{
+$PRINTF "\033c"
+
+# Initialise variables and files
+local _cnt_ _cnt1_ _ver_ _add_date_ _media_config_label_ _media_id_file_
+
+$RM -f "${TEM_DIR}"/disp_file.$$
+
+if [ "${USER_PARAM_INPUT}" ]; then
+    # Load the existing Media info
+    NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+    _media_config_label_="${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}"
+    _media_id_file_=".${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]}_identity"
+    load_existing_media_area_info "${NFS_MEDIA_AREA}" "${_media_config_label_}" "${_media_id_file_}"
+
+    # Get number of elements
+    _cnt_=${#NFS_MEDIA_LABEL_ARRAY[@]}
+
+    _found_=0
+    # Loop thru and see if this version is managed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${LIST_MEDIA_PATH}" ]; then
+            if [ "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" == "${LIST_MEDIA_PATH}" ]; then
+                _found_=1
+                break
+            else
+                _found_=2
+            fi
+        elif [ "${LIST_MEDIA_VER}" ]; then
+            $ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$EGREP -w "${LIST_MEDIA_VER}" >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                _found_=1
+                break
+            else
+                _found_=3
+            fi
+        else
+            :
+        fi
+    done
+    if [ ${_found_} -ne 1 ]; then
+        if [ ${_found_} -eq 2 ]; then
+            _err_msg_="Invalid LIST_MEDIA_PATH ${LIST_MEDIA_PATH} specified for ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media\n"
+            abort_script "$_err_msg_"
+        elif [ ${_found_} -eq 3 ]; then
+             _err_msg_="Invalid LIST_MEDIA_VER ${LIST_MEDIA_VER} specified for ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media\n"
+             abort_script "$_err_msg_"
+        fi
+
+    fi
+
+    printf "%-15s%s\n"   "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+    _cnt1_=0
+    for _ver_ in $($ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+        if [ ${_cnt1_} -eq 0 ]; then
+            printf "%-15s%s\n"   "Version"    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+        else
+            printf "%-15s%s\n"   ""    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+        fi
+        let _cnt1_=${_cnt1_}+1
+    done
+    printf "%-15s%s\n"   "Path"        "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+    _cnt1_=0
+    for _add_date_ in `$ECHO "${NFS_MEDIA_DATE_ARRAY[${i}]}"|$SED -e 's|,| |g'`; do
+        if [ ${_cnt1_} -eq 0 ]; then
+            printf "%-15s%s\n" "Date Added"  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+        else
+            printf "%-15s%s\n" ""  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+        fi
+        let _cnt1_=${_cnt1_}+1
+    done
+
+    $ECHO -e "\n" >> "${TEM_DIR}"/disp_file.$$
+    $CAT "${TEM_DIR}"/disp_file.$$
+    $ECHO -e "\n"
+else
+    # Load the existing Media info
+    NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+    _media_id_file_=".${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]}_identity"
+    _media_config_label_="${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}"
+    load_existing_media_area_info "${NFS_MEDIA_AREA}" "${_media_config_label_}" "${_media_id_file_}"
+
+    # Get number of elements
+    _cnt_=${#NFS_MEDIA_LABEL_ARRAY[@]}
+
+    if [ ${_cnt_} -gt 0 ]; then
+        for (( i=1; i<=${_cnt_}; i++ )); do
+            printf "%-8s%-15s%s\n" "[${i}]" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+
+            _cnt1_=0
+            for _ver_ in $($ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+                if [ ${_cnt1_} -eq 0 ]; then
+                    printf "%-8s%-15s%s\n" "" "Version"    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+                else
+                    printf "%-8s%-15s%s\n" "" "" "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+                fi
+                let _cnt1_=${_cnt1_}+1
+            done
+
+            printf "%-8s%-15s%s\n" "" "Path" "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+
+            _cnt1_=0
+            for _add_date_ in $($ECHO "${NFS_MEDIA_DATE_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+                if [ ${_cnt1_} -eq 0 ]; then
+                    printf "%-8s%-15s%s\n" "" "Date Added"  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+                else
+                    printf "%-8s%-15s%s\n" "" ""  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+                fi
+                let _cnt1_=${_cnt1_}+1
+            done
+            $ECHO -e "\n" >> "${TEM_DIR}"/disp_file.$$
+        done
+        $MORE -d  "${TEM_DIR}"/disp_file.$$
+
+        $ECHO -e "\nPress return key to return to menu"
+        read -r _any_
+    fi
+fi
+
+# Initialise variables
+unset LIST_MEDIA_PATH MEDIA_ACTION LIST_MEDIA_VER
+
+# Do I need to hold the Display for User
+if [ "${HOLD_LISTING}" ]; then
+    $ECHO -e "\nPress return key to return to menu"
+    read -r _any_
+fi
+}
+
+
+### Function: load_existing_media_area_info ###
+#
+# Load the existing NFS Media info
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+load_existing_media_area_info()
+{
+local _nfs_media_area_=${1}
+local _media_config_label_=${2}
+local _media_id_file_=${3}
+
+unset NFS_MEDIA_LABEL_ARRAY NFS_MEDIA_DESC_ARRAY NFS_MEDIA_VER_ARRAY
+unset NFS_MEDIA_ARCH_ARRAY NFS_MEDIA_LOCATION_ARRAY NFS_MEDIA_DATE_ARRAY
+$RM -f "${TEM_DIR}"/existing_media_locations "${TEM_DIR}"/existing_media_locations_1
+
+# Get a list of existing NFS area(s) if any
+$LS "${_nfs_media_area_}"/*/*/"${_media_config_label_}"/"${_media_id_file_}" 2> /dev/null >> "${TEM_DIR}"/existing_media_locations_1
+$LS "${_nfs_media_area_}"/*/*/*/"${_media_config_label_}"/"${_media_id_file_}" 2> /dev/null >> "${TEM_DIR}"/existing_media_locations_1
+while read _nfs_id_file_; do
+    if [ -s ${_nfs_id_file_} ]; then
+        $ECHO "${_nfs_id_file_}" >>  "${TEM_DIR}"/existing_media_locations
+    fi
+done <  "${TEM_DIR}"/existing_media_locations_1
+
+# Have we got existing media Info file(s)
+if [ ! -s "${TEM_DIR}"/existing_media_locations ]; then
+
+    # It is okay to have no media if adding
+    if [ "${MEDIA_ACTION}" == "add" ]; then
+        return 0
+    fi
+
+    if [ ! "${USER_PARAM_INPUT}" ]; then
+        $ECHO -e  "No ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media seem to be managed\n"
+        $ECHO "Press return key to return to menu"
+        read -r _any_
+        return 0
+    else
+        _err_msg_="The specified ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media does not seem to be managed\n"
+        abort_script "$_err_msg_"
+    fi
+fi
+
+
+# Build up details of all media area info in array
+build_nfs_media_area_info  "${TEM_DIR}"/existing_media_locations
+
+if [ ! "${NFS_MEDIA_LABEL_ARRAY[1]}" ]; then
+    if [ ! "${USER_PARAM_INPUT}" ]; then
+        $ECHO -e "No ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media seem to be managed\n"
+        $ECHO "Press return key to return to menu"
+        read -r _any_
+        return 0
+    else
+        _err_msg_="The specified ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media does seem to be managed\n"
+        abort_script "$_err_msg_"
+    fi
+fi
+}
+
+### Function: load_new_media_info ###
+#
+# Load the new NFS Media info
+#
+# Arguments:
+#   $1 : Path(s) to media identity file(s)
+# Return Values:
+#   none
+load_new_media_info()
+{
+local _media_err_=0
+local _media_id_files_="${1}" _media_id_file_
+local _tem_media_label_ _tem_media_desc_ _tem_media_prefix_ _tem_media_num_ _tem_media_rev_
+local _tem_media_dir_ _tem_media_arch_ _tem_media_version_ _tem_arch_
+unset TEM_MEDIA_LABEL TEM_MEDIA_DESC TEM_MEDIA_VERSION TEM_MEDIA_DIR TEM_MEDIA_ARCH
+
+for _media_id_file_ in "${_media_id_files_}"; do
+    # Read the media label from the ID file
+    _tem_media_label_=$($EGREP "^[[:blank:]]*media_label=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_label_}" ]; then
+        $ECHO "Failed to read parameter media_label from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # If there is more than one media id file, make sure label is the same
+    if [ ! "${TEM_MEDIA_LABEL}" ]; then
+        TEM_MEDIA_LABEL=${_tem_media_label_}
+    else
+        if [ "${TEM_MEDIA_LABEL}" != "${_tem_media_label_}"  ]; then
+            $ECHO -e "Parameter media_label is different in \n${_media_id_files_}"
+            _media_err_=1
+        fi
+    fi
+
+    # Read the media description from the ID file
+    _tem_media_desc_=$($EGREP "^[[:blank:]]*media_desc=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_desc_}" ]; then
+        $ECHO "Failed to read parameter media_desc from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # If there is more than one media id file, make sure description is the same
+    if [ ! "${TEM_MEDIA_DESC}" ]; then
+        TEM_MEDIA_DESC=${_tem_media_desc_}
+    else
+        if [ "${TEM_MEDIA_DESC}" != "${_tem_media_desc_}" ]; then
+            $ECHO -e "Parameter media_desc is different in \n${_media_id_files_}"
+            _media_err_=1
+        fi
+    fi
+
+    # Read the media prefix from the ID file
+    _tem_media_prefix_=$($EGREP "^[[:blank:]]*media_prefix=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_prefix_}" ]; then
+        $ECHO "Failed to read parameter media_prefix from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # Read the media number from the ID file
+    _tem_media_number_=$($EGREP "^[[:blank:]]*media_number=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_number_}" ]; then
+        $ECHO "Failed to read parameter media_number from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # Read the media revision from the ID file
+    _tem_media_rev_=$($EGREP "^[[:blank:]]*media_rev=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_rev_}" ]; then
+        $ECHO "Failed to read parameter media_rev from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # Create version string
+    _tem_media_version_="${_tem_media_prefix_}-${_tem_media_number_}-${_tem_media_rev_}"
+
+    # If there is more than one media id file, make sure version is the same
+    if [ ! "${TEM_MEDIA_VERSION}" ]; then
+        TEM_MEDIA_VERSION=${_tem_media_version_}
+    else
+        if [ "${TEM_MEDIA_VERSION}" == "${_tem_media_version_}" ]; then
+            $ECHO -e "Media versions are the same in \n${_media_id_files_}"
+            _media_err_=1
+        fi
+        TEM_MEDIA_VERSION="${TEM_MEDIA_VERSION},${_tem_media_version_}"
+    fi
+
+    # Read the media directory from the ID file
+    _tem_media_dir_=$($EGREP "^[[:blank:]]*media_dir=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_dir_}" ]; then
+        $ECHO "Failed to read parameter media_dir from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # If there is more than one media id file, make sure directory is the same
+    if [ ! "${TEM_MEDIA_DIR}" ]; then
+        TEM_MEDIA_DIR=${_tem_media_dir_}
+    else
+        if [ "${TEM_MEDIA_DIR}" != "${_tem_media_dir_}" ]; then
+            $ECHO -e "Parameter media_dir is different in \n${_media_id_files_}"
+            _media_err_=1
+        fi
+    fi
+
+    # Read the media architecture type from the ID file
+    _tem_media_arch_=$($EGREP "^[[:blank:]]*media_arch=" "${_media_id_file_}" 2>/dev/null | $AWK -F\= '{print $2}')
+    if [ ! "${_tem_media_arch_}" ]; then
+        $ECHO "Failed to read parameter media_arch from ${_media_id_file_}"
+        _media_err_=1
+    fi
+
+    # If there is more than one media id file, make sure architectures are ok
+    if [ ! "${TEM_MEDIA_ARCH}" ]; then
+        TEM_MEDIA_ARCH=${_tem_media_arch_}
+    else
+        $RM -f "${TEM_DIR}"/arch_type
+        for _tem_arch_ in $($ECHO "${TEM_MEDIA_ARCH}"|$SED -e 's|,| |g'); do
+            # I won't store common as arch type id i386/sparc specified
+            if [ "${_tem_arch_}" == "common" ]; then
+                continue
+            fi
+            $ECHO "${_tem_arch_}" >> "${TEM_DIR}"/arch_type
+        done
+
+        for _tem_arch_ in $($ECHO "${_tem_media_arch_}"|$SED -e 's|,| |g'); do
+            # I won't store common as arch type id i386/sparc specified
+            if [ "${_tem_arch_}" == "common" ]; then
+                continue
+            fi
+            # Check if in file. It should not be. If so then something is messed up badly
+            $EGREP "^[[:blank:]]*${_tem_arch_}" "${TEM_DIR}"/arch_type >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                $ECHO -e "Duplicate architecture type detected '${_tem_arch_}' in \n${_media_id_files_}"
+                _media_err_=1
+            fi
+            $ECHO "${_tem_arch_}" >> "${TEM_DIR}"/arch_type
+        done
+
+        if [ -s "${TEM_DIR}"/arch_type ]; then
+            TEM_MEDIA_ARCH=$($ECHO \`$CAT "${TEM_DIR}"/arch_type|$SORT -u\`|$SED -e 's| |,|g')
+        else
+            TEM_MEDIA_ARCH=common
+        fi
+    fi
+
+    # Did I get all parameters correctly
+    if [ "${_media_err_}" -eq 1 ]; then
+        _err_msg_=""
+        abort_script "$_err_msg_"
+    fi
+done
+}
+
+
+
+### Function: load_nfs_media_config ###
+#
+# Load up the NFS media config
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+load_nfs_media_config()
+{
+# Get a list of existing media Info file(s) if any
+$RM -f "${TEM_DIR}"/nfs_config_file_list "${TEM_DIR}"/nfs_config_file_list_1
+$LS "${NFS_MEDIA_CONFIG_DIR}"/* 2> /dev/null > "${TEM_DIR}"/nfs_config_file_list_1
+while read _nfs_media_config_file_; do
+    if [ -s ${_nfs_media_config_file_} ]; then
+        $ECHO "${_nfs_media_config_file_}" >> "${TEM_DIR}"/nfs_config_file_list
+    fi
+done < "${TEM_DIR}"/nfs_config_file_list_1
+
+# Have we got existing NFS config file(s)
+if [ ! -s "${TEM_DIR}"/nfs_config_file_list ]; then
+    _err_msg_="No NFS Media config files found in \n${NFS_MEDIA_CONFIG_DIR}\n"
+    abort_script "$_err_msg_"
+fi
+
+# Build up details of all media config info in array
+build_nfs_config_info "${TEM_DIR}"/nfs_config_file_list
+
+if [ ! "${MEDIA_CONFIG_FILE_ARRAY[1]}" ]; then
+    _err_msg_="No NFS Media config files found in \n${NFS_MEDIA_CONFIG_DIR}\n"
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: no_intr_allowed ###
+#
+# Function just to return to a trap when interrupts are not allowed
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+no_intr_allowed()
+{
+:
+}
+
+
+### Function: remove_nfs_media_area ###
+#
+# Remove existing NFS Media area.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+remove_nfs_media_area()
+{
+$PRINTF "\033c"
+
+# Initialise variables and files
+local _cnt_ _cnt1_ _ver_ _add_date_ _media_id_file_ _media_config_label_
+
+# Load the existing Media info
+NFS_MEDIA_AREA="${MEDIA_CONFIG_AREA_ARRAY[${MEDIA_ARR_INDEX}]}/${MEDIA_CONFIG_DIR_ARRAY[${MEDIA_ARR_INDEX}]}"
+_media_config_label_="${MEDIA_CONFIG_LABEL_ARRAY[${MEDIA_ARR_INDEX}]}"
+_media_id_file_=".${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]}_identity"
+load_existing_media_area_info "${NFS_MEDIA_AREA}" "${_media_config_label_}" "${_media_id_file_}"
+
+# Get number of elements
+_cnt_=${#NFS_MEDIA_LABEL_ARRAY[@]}
+
+$RM -f "${TEM_DIR}"/disp_file.$$
+if [ "${USER_PARAM_INPUT}" ]; then
+    _found_=0
+    # Loop thru and see if this version is managed.
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        if [ "${RM_MEDIA_PATH}" ]; then
+            if [ "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" == "${RM_MEDIA_PATH}" ]; then
+                _found_=1
+                break
+            else
+                _found_=2
+            fi
+        elif [ "${RM_MEDIA_VER}" ]; then
+            $ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$EGREP -w "${RM_MEDIA_VER}" >> /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                _found_=1
+                break
+            else
+                _found_=3
+            fi
+        else
+            :
+        fi
+    done
+    if [ ${_found_} -ne 1 ]; then
+        if [ ${_found_} -eq 2 ]; then
+            _err_msg_="Invalid RM_MEDIA_PATH ${RM_MEDIA_PATH} specified for ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media\n"
+            abort_script "$_err_msg_"
+        elif [ ${_found_} -eq 3 ]; then
+             _err_msg_="Invalid RM_MEDIA_VER ${RM_MEDIA_VER} specified for ${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]} media\n"
+             abort_script "$_err_msg_"
+        fi
+    fi
+
+    # Store the choice
+    _opt_=${i}
+else
+    if [ ${_cnt_} -eq 0 ]; then
+        # Initialise variables
+        unset RM_MEDIA_PATH MEDIA_ACTION RM_MEDIA_VER
+        return 0
+    fi
+
+    for (( i=1; i<=${_cnt_}; i++ )); do
+        printf "%-8s%-15s%s\n" "[${i}]" "Description" "${NFS_MEDIA_DESC_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+
+        _cnt1_=0
+        for _ver_ in $($ECHO "${NFS_MEDIA_VER_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Version"    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" "" "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+
+        printf "%-8s%-15s%s\n" "" "Path" "${NFS_MEDIA_LOCATION_ARRAY[${i}]}" >> "${TEM_DIR}"/disp_file.$$
+
+        _cnt1_=0
+        for _add_date_ in $($ECHO "${NFS_MEDIA_DATE_ARRAY[${i}]}"|$SED -e 's|,| |g'); do
+            if [ ${_cnt1_} -eq 0 ]; then
+                printf "%-8s%-15s%s\n" "" "Date Added"  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+            else
+                printf "%-8s%-15s%s\n" "" ""  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+            fi
+            let _cnt1_=${_cnt1_}+1
+        done
+        $ECHO -e "\n" >> "${TEM_DIR}"/disp_file.$$
+    done
+    $ECHO "Select number of the area you wish to remove or (q) to quit" >> "${TEM_DIR}"/disp_file.$$
+
+    # Display the menu and get user choice
+    while :; do
+        $PRINTF "\033c"
+        $MORE -d  "${TEM_DIR}"/disp_file.$$
+        read _opt_
+
+        if [ ! ${_opt_} ]; then
+            continue
+        fi
+
+        if [ "${_opt_}" == "q" ]; then
+            return 0
+        fi
+
+        $ECHO "${_opt_}" | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+            continue
+        fi
+
+        break
+    done
+
+fi
+
+# Create a user confirmation display file
+$RM -f "${TEM_DIR}"/disp_file.$$
+printf "%-15s%s\n"   "Description" "${NFS_MEDIA_DESC_ARRAY[${_opt_}]}" >> "${TEM_DIR}"/disp_file.$$
+_cnt1_=0
+for _ver_ in $($ECHO ${NFS_MEDIA_VER_ARRAY[${_opt_}]}|$SED -e 's|,| |g'); do
+    if [ ${_cnt1_} -eq 0 ]; then
+        printf "%-15s%s\n"   "Version"    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+    else
+        printf "%-15s%s\n"   ""    "${_ver_}" >> "${TEM_DIR}"/disp_file.$$
+    fi
+    let _cnt1_=${_cnt1_}+1
+done
+printf "%-15s%s\n"   "Path"        "${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}" >> "${TEM_DIR}"/disp_file.$$
+_cnt1_=0
+for _add_date_ in $($ECHO ${NFS_MEDIA_DATE_ARRAY[${_opt_}]}|$SED -e 's|,| |g'); do
+    if [ ${_cnt1_} -eq 0 ]; then
+        printf "%-15s%s\n" "Date Added"  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+    else
+        printf "%-15s%s\n" ""  "${_add_date_}" >> "${TEM_DIR}"/disp_file.$$
+    fi
+    let _cnt1_=${_cnt1_}+1
+done
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT "${TEM_DIR}"/disp_file.$$ >> "$LOGFILE"
+    ANS="Yes"
+else
+    _msg_="\nAre you sure you wish to remove the selected media area? (Yes|No)"
+    user_confirm "${_msg_}"  "${TEM_DIR}"/disp_file.$$
+fi
+
+# Are we removing?
+if [ "${ANS}" == "Yes" ]; then
+    # No interrupts allowed from now
+    trap "no_intr_allowed" 1 2 3 14 15
+
+    $ECHO -e "Removing ${NFS_MEDIA_LABEL_ARRAY[${_opt_}]} media directory \n${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+    $ECHO "Please wait..."
+    $RM -rf "${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+    if [ $? -ne 0 ]; then
+        _err_msg_="Failed to remove ${NFS_MEDIA_LOCATION_ARRAY[${_opt_}]}"
+        abort_script "$_err_msg_"
+    else
+        $ECHO "Media successfully removed."
+    fi
+
+    # Remove traps on interrupts
+    trap 1 2 3 14 15
+
+    if [ ! "${USER_PARAM_INPUT}" ]; then
+        $ECHO -e "\nPress return key to return to menu"
+        read -r _any_
+    fi
+fi
+
+# Initialise variables
+unset RM_MEDIA_PATH MEDIA_ACTION RM_MEDIA_VER
+}
+
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+$MKDIR -p $($DIRNAME ${LOGFILE})
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory $($DIRNAME ${LOGFILE})"
+    abort_script "$_err_msg_"
+fi
+
+$TOUCH -a "${LOGFILE}"
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE}"
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: decompress_sw_area ###
+#
+# Add a new NFS Media area.
+#
+# Arguments:
+#       $1 : SW area
+# Return Values:
+#       none
+decompress_sw_area()
+{
+local _sw_area_=${1}
+$RM -f "${TEM_DIR}"/decomp_list  "${TEM_DIR}"/decomp_err_file
+$FIND ${_sw_area_} -type f \( -name *.7z -o -name *.zip -o -name *.bz2 -o -name *.gz -o -name *.Z \) -print >> "${TEM_DIR}"/decomp_list
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_sw_area_}
+    _err_msg_="Could not get list of files to decompress"
+    abort_script "$_err_msg_"
+fi
+
+for _file_ in $(cat ${TEM_DIR}/decomp_list); do
+    $SEVENZ -y  -o$($DIRNAME ${_file_}) x ${_file_} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        $TOUCH "${TEM_DIR}"/decomp_err_file
+        RM_DIRECTORY=${_sw_area_}
+        _err_msg_="Could not add NFS Media, ensure the disk is not full"
+        abort_script "$_err_msg_"
+    fi
+    $RM "${_file_}"
+done
+}
+
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+setup_env()
+{
+# Set Remote handled FLAG. Basically determines if we are running
+# remote ERICautoinstall directories. Needed for internal testing where we
+# are trying to avoid the need for multiple MWS. Not required in
+# customer world
+_rmt_chk_=$($CAT "${ERICKS_CONFIG}"|$EGREP "^[[:blank:]]*DEFAULT_INSTALLATION_TYPE=" \
+        | $AWK -F\= '{print $2}')
+
+if [ "${_rmt_chk_}" ]; then
+    if [ "${_rmt_chk_}" == "remote" ]; then
+        REMOTE_ERICKS=Yes
+	$ECHO -e "$REMOTE_ERICKS" >> /dev/null 2>&1
+    fi
+fi
+}
+
+
+### Function: update_media_identity_file ###
+#
+# Update media Identity file
+#
+# Arguments:
+#   $1 : Media Identity File
+#   $2 : Media location
+# Return Values:
+#   none
+update_media_identity_file()
+{
+local _media_id_file_loc_="${1}"
+local _media_location_="${2}"
+
+$RM -f "${TEM_DIR}"/arch_type
+$ECHO "media_label=${TEM_MEDIA_LABEL}" >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not media label details to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+$ECHO "media_desc=${TEM_MEDIA_DESC}" >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not media label details to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+if [ -s ${_media_id_file_loc_} ]; then
+    # Get previous version details
+    _prev_media_version_=$($EGREP "^[[:blank:]]*media_version=" ${_media_id_file_loc_} 2>/dev/null\
+             | $AWK -F\= '{print $2}')
+    if [ ! "${_prev_media_version_}" ]; then
+        RM_DIRECTORY=${_media_location_}
+        _err_msg_="Failed to read previous media version from ${_media_id_file_loc_}"
+        abort_script "$_err_msg_"
+    fi
+    TEM_MEDIA_VERSION="${_prev_media_version_},${TEM_MEDIA_VERSION}"
+
+    # Get previous architecture details
+    _prev_arch_=$($EGREP "^[[:blank:]]*media_arch=" ${_media_id_file_loc_} 2>/dev/null\
+             | $AWK -F\= '{print $2}')
+    if [ ! "${_prev_arch_}" ]; then
+        _err_msg_="Failed to read previous architecture type from ${_media_id_file_loc_}"
+        abort_script "$_err_msg_"
+    fi
+
+    for _tem_arch_ in $($ECHO ${TEM_MEDIA_ARCH}|$SED -e 's|,| |g'); do
+        # I won't store common as arch type id i386/sparc specified
+        if [ "${_tem_arch_}" == "common" ]; then
+            continue
+        fi
+
+        # Check if in file. It should not be. If so then something is messed up badly
+        $EGREP "^[[:blank:]]*${_tem_arch_}" "${TEM_DIR}"/arch_type >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            _err_msg_="Duplicate architecture type detected '${_tem_arch_}'"
+            abort_script "$_err_msg_"
+        fi
+        $ECHO "${_tem_arch_}" >> "${TEM_DIR}"/arch_type
+    done
+
+    if [ -s "${TEM_DIR}"/arch_type ]; then
+        TEM_MEDIA_ARCH=$($ECHO \`$CAT "${TEM_DIR}"/arch_type|$SORT -u\`|$SED -e 's| |,|g')
+    else
+        TEM_MEDIA_ARCH=common
+    fi
+
+        # Get previous add date details
+    _prev_date_=$($EGREP "^[[:blank:]]*media_add_date=" "${_media_id_file_loc_}" 2>/dev/null\
+             | $AWK -F\= '{print $2}')
+    if [ ! "${_prev_date_}" ]; then
+        _err_msg_="Failed to read previous date from ${_media_id_file_loc_}"
+        abort_script "$_err_msg_"
+    fi
+    _add_time_="${_prev_date_},${_add_time_}"
+
+else
+    for _tem_arch_ in $($ECHO ${TEM_MEDIA_ARCH}|$SED -e 's|,| |g'); do
+        # I won't store common as arch type id i386/sparc specified
+        if [ "${_tem_arch_}" == "common" ]; then
+            continue
+        fi
+        $ECHO "${_tem_arch_}" >> "${TEM_DIR}"/arch_type
+    done
+    if [ -s "${TEM_DIR}"/arch_type ]; then
+        TEM_MEDIA_ARCH=$($ECHO \`$CAT ${TEM_DIR}/arch_type|$SORT -u\`|$SED -e s'| |,|g')
+    else
+        TEM_MEDIA_ARCH=common
+    fi
+fi
+
+$ECHO "media_version=${TEM_MEDIA_VERSION}" >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not media add version details to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the media location
+$ECHO "media_location=${_media_location_}"|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g' >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not add location details to to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+$ECHO "media_arch=${TEM_MEDIA_ARCH}" >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not media architecture details to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the media creation time
+$ECHO "media_add_date=${_add_time_}" >> "${TEM_DIR}"/identity_file
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not add time creation details to temporary media identity file"
+    abort_script "$_err_msg_"
+fi
+
+# Store the identity file
+$CP "${TEM_DIR}"/identity_file "${_media_id_file_loc_}"
+if [ $? -ne 0 ]; then
+    RM_DIRECTORY=${_media_location_}
+    _err_msg_="Could not create identity file ${_media_id_file_loc_}"
+    abort_script "$_err_msg_"
+fi
+
+}
+
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_params()
+{
+local _num_media_id_ _found_ _err_
+# Was parameter MEDIA_TYPE or MEDIA_ACTION not specified.
+# If not assume interactive
+if [ ! "${MEDIA_TYPE}" ] ||  [ ! "${MEDIA_ACTION}" ]; then
+    unset MEDIA_TYPE MEDIA_ACTION MEDIA_PATH MEDIA_VER USER_PARAM_INPUT
+    return 0
+fi
+
+# Check the media type parameter
+if [ ! "${MEDIA_TYPE}" ]; then
+    usage_msg
+    _err_msg_=""
+    abort_script "$_err_msg_"
+else
+    _found_=0
+    _num_media_id_=${#MEDIA_CONFIG_TYPE_ARRAY[@]}
+    for (( i=1; i<=${_num_media_id_}; i++ )); do
+        if [ "${MEDIA_CONFIG_TYPE_ARRAY[${i}]}" == "${MEDIA_TYPE}" ]; then
+            MEDIA_ARR_INDEX=${i}
+            _found_=1
+        fi
+    done
+    if [ ${_found_} -eq 0 ]; then
+        _err_msg_="Unknown user specified MEDIA_TYPE '${MEDIA_TYPE}'"
+        abort_script "$_err_msg_"
+    fi
+fi
+# Check the media action parameter
+if [ ! "${MEDIA_ACTION}" ]; then
+    usage_msg
+    _err_msg_="Incorrect usage - no action (add|list|remove) specified"
+    abort_script "$_err_msg_"
+else
+    case "${MEDIA_ACTION}" in
+        add)     ;;
+        list)    ;;
+        remove)  ;;
+        *)       usage_msg
+                 _err_msg_="Incorrect usage for action \"${MEDIA_ACTION}\""
+                 abort_script "$_err_msg_"
+                 ;;
+    esac
+
+fi
+
+# Check Media Path
+_err_=0
+if [ ! "${MEDIA_PATH}" ]; then
+    if [ "${MEDIA_ACTION}" == "add" ]; then
+            _err_=1
+    elif [ "${MEDIA_ACTION}" == "list" ]; then
+        if [ ! "${MEDIA_VER}" ]; then
+            _err_=1
+        fi
+    else
+        if [ ! "${MEDIA_VER}" ]; then
+            _err_=1
+        fi
+    fi
+fi
+
+if [ ${_err_} -eq 1 ]; then
+    usage_msg
+    _err_msg_="Incorrect usage for action \"${MEDIA_ACTION}\""
+    abort_script "$_err_msg_"
+fi
+
+if [ "${MEDIA_ACTION}" == "add" ]; then
+    ADD_MEDIA_PATH=$($ECHO "${MEDIA_PATH}" |$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+    # Check that a full pathname was specified
+    check_full_pathname "${ADD_MEDIA_PATH}"
+    if [ $? -ne 0 ]; then
+        _err_msg_="${ADD_MEDIA_PATH} is not a full pathname."
+        abort_script "$_err_msg_"
+    fi
+elif [ "${MEDIA_ACTION}" == "list" ]; then
+    if [ "${MEDIA_PATH}" ]; then
+        LIST_MEDIA_PATH=$($ECHO "${MEDIA_PATH}" |$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+            # Check that a full pathname was specified
+        check_full_pathname "${LIST_MEDIA_PATH}"
+        if [ $? -ne 0 ]; then
+            _err_msg_="${IST_MEDIA_PATH} is not a full pathname."
+            abort_script "$_err_msg_"
+        fi
+    else
+        LIST_MEDIA_VER=${MEDIA_VER}
+    fi
+else
+    if [ "${MEDIA_PATH}" ]; then
+        RM_MEDIA_PATH=$($ECHO "${MEDIA_PATH}" |$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+        # Check that a full pathname was specified
+        check_full_pathname "${RM_MEDIA_PATH}"
+        if [ $? -ne 0 ]; then
+            _err_msg_="${RM_MEDIA_PATH} is not a full pathname."
+            abort_script "$_err_msg_"
+        fi
+    else
+        RM_MEDIA_VER=${MEDIA_VER}
+    fi
+fi
+
+# Did user specify file containing RHEL & O&M location details
+if [ "${LOC_DET_FILE}" ]; then
+    # Does file exist
+    if [ ! -s "${LOC_DET_FILE}" ]; then
+        _err_msg_="RHEL & O&M location details file not found or empty\n${LOC_DET_FILET}"
+        abort_script "$_err_msg_"
+    fi
+
+    # Validate the Data
+    LIN_X86_LOC=$($CAT "${LOC_DET_FILE}"|$EGREP '^[[:blank:]]*LIN_X86_LOC='               \
+        |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+    OM_SW_LOC=$($CAT "${LOC_DET_FILE}"|$EGREP '^[[:blank:]]*OM_SW_LOC='                   \
+        |$AWK -F"=" '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+
+    if [ ! "${LIN_X86_LOC}" ]; then
+        _err_msg_="No RHEL location details found in\n${LOC_DET_FILET}"
+        abort_script "$_err_msg_"
+    fi
+
+    if [ ! "${OM_SW_LOC}" ]; then
+        _err_msg_="No O&M location details found in\n${LOC_DET_FILET}"
+        abort_script "$_err_msg_"
+    fi
+
+    if [ "${LIN_X86_LOC}" ]; then
+        if [ ! -d "${LIN_X86_LOC}" ]; then
+            _err_msg_="Could not locate \${LIN_X86_LOC} directory\n${LIN_X86_LOC}"
+            abort_script "$_err_msg_"
+        fi
+    fi
+
+    if [ "${OM_SW_LOC}" ]; then
+        if [ ! -d "${OM_SW_LOC}" ]; then
+            _err_msg_="Could not locate \${LIN_X86_LOC} directory\n${LIN_X86_LOC}"
+            abort_script "$_err_msg_"
+        fi
+    fi
+
+    if [ "${OM_SW_LOC}" ]; then
+        if [ ! -d "${OM_SW_LOC}" ]; then
+            _err_msg_="Could not locate \${OM_SW_LOC} directory\n${OM_SW_LOC}"
+            abort_script "$_err_msg_"
+        fi
+    fi
+fi
+
+# Set a flag to show that the user input required params
+USER_PARAM_INPUT="Y"
+}
+
+### Function: check_valid_media ###
+#
+# Get/Check the location of the NFS media
+#
+# Arguments:
+#    $1 : Path to media
+#    $2 : Media check file(s)
+# Return Values:
+#   none
+check_valid_media()
+{
+local _media_path_=${1}
+local _media_chk_files_=${2}
+local _media_dir_ _chk_path_ _chk_file_ _found_=1
+for _chk_file_ in $($ECHO ${_media_chk_files_}|$SED -e 's|\|| |g'); do
+    _chk_path_="${_media_path_}/${_chk_file_}"
+    if [ -s ${_chk_path_} ]; then
+        if [ "${HOST_VER}" == "5.11" ]; then
+            _media_dir_=$($EGREP -w media_dir ${_chk_path_} | $AWK -F'/' '{print $2}' | $AWK -F'.' '{print $1$2}')
+            if [[ $_media_dir_ -le 170 ]]; then
+                $ECHO "!!! *********************************************** !!!"
+                $ECHO "!!! Media specified is not supported for RHEL"
+                $ECHO "!!! Please use latest ERICkick pkg for RHEL & !!!"
+                $ECHO "!!! cache using /ericsson/kickstart/bin/manage_nfs_media.bsh script !!!"
+                $ECHO "!!! *********************************************** !!!"
+                $CAT "${_chk_path_}"
+                return "${_found_}"
+            fi
+        fi
+        if [ ! "${MEDIA_ID_FILES}" ]; then
+            MEDIA_ID_FILES=${_chk_path_}
+        else
+            MEDIA_ID_FILES="${MEDIA_ID_FILES} ${_chk_path_}"
+        fi
+        _found_=0
+    fi
+done
+return "${_found_}"
+}
+
+
+### Function: display_main_menu ###
+#
+# Display the main Menu
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+display_main_menu()
+{
+if [ "${USER_PARAM_INPUT}" ]; then
+    display_media_menu
+else
+    # Get number of elements
+    local _num_media_id_=${#MEDIA_CONFIG_TYPE_ARRAY[@]}
+    local _main_menu_opt_
+
+    $RM -f "${TEM_DIR}"/main_menu
+    $ECHO "NFS MEDIA MENU" >> "${TEM_DIR}"/main_menu
+    $ECHO "==============" >> "${TEM_DIR}"/main_menu
+        #next from the template list won't print the ones containing
+        # MEDIA_MAIN_MENU_TITLE=Profile
+        let _count_profiles_no_=0
+    for (( i=1; i<=${_num_media_id_}; i++ )); do
+        if [ "${MEDIA_CONFIG_MENU_ARRAY[${i}]}" != "Profile" ]; then
+        printf "%-8s%s\n" "[${i}]" "${MEDIA_CONFIG_MENU_ARRAY[${i}]}" >> "${TEM_DIR}"/main_menu
+        else
+        let _count_profiles_no_=${_count_profiles_no_}+1
+        fi
+
+    done
+        let _updated_num_media_id_=${_num_media_id_}-${_count_profiles_no_}
+    $ECHO -e "\nSelect number of the NFS Media you wish to manage or (q) to quit" >> "${TEM_DIR}"/main_menu
+    # Display the menu and get user choice
+    while :; do
+        $PRINTF "\033c"
+        $MORE -d "${TEM_DIR}"/main_menu
+        read _main_menu_opt_
+
+        if [ ! ${_main_menu_opt_} ]; then
+            continue
+        fi
+
+        if [ "${_main_menu_opt_}" == "q" ]; then
+            return 0
+        fi
+
+        $ECHO "${_main_menu_opt_}" | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_main_menu_opt_} -lt 1 -o ${_main_menu_opt_} -gt ${_updated_num_media_id_} ]; then
+            continue
+        fi
+
+        MEDIA_ARR_INDEX=${_main_menu_opt_}
+        display_media_menu
+    done
+fi
+}
+
+### Function: display_media_menu ###
+#
+# Display the main Menu
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+display_media_menu()
+{
+local _media_act_ _cnt_ _nfs_media_opt_
+
+if [ "${USER_PARAM_INPUT}" ]; then
+    case "${MEDIA_ACTION}" in
+        add)      add_nfs_media_area
+            ;;
+        list)     list_nfs_media_area
+            ;;
+        remove)   remove_nfs_media_area
+            ;;
+        *)        _err_msg_="Unknown User specified Media action '${MEDIA_ACTION}'"
+                abort_script "$_err_msg_"
+            ;;
+
+    esac
+else
+    $RM -f "${TEM_DIR}"/media_menu
+
+    $ECHO -e "${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} MEDIA MENU\n" >> "${TEM_DIR}"/media_menu
+
+    # Get a list of valid menu options
+    _cnt_=1
+    _media_act_list_=$($ECHO "${MEDIA_ACT_LIST_ARRAY[${MEDIA_ARR_INDEX}]}"|$SED -e 's|::| |g')
+    for _media_act_ in ${_media_act_list_}; do
+        _media_act_array_[${_cnt_}]="${_media_act_}"
+        let _cnt_=${_cnt_}+1
+    done
+
+    _num_opts_=${#_media_act_array_[@]}
+
+    for (( i=1; i<=${_num_opts_}; i++ )); do
+        case "${_media_act_array_[${i}]}" in
+            add)      printf "%-8s%s\n" "[${i}]" "Add new ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media" >> "${TEM_DIR}"/media_menu
+                ;;
+            list)         printf "%-8s%s\n" "[${i}]" "List existing ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media" >> "${TEM_DIR}"/media_menu
+                ;;
+            remove)       printf "%-8s%s\n" "[${i}]" "Remove existing ${MEDIA_CONFIG_DESIG_ARRAY[${MEDIA_ARR_INDEX}]} media" >> "${TEM_DIR}"/media_menu
+                ;;
+            *)    _err_msg_="Unknown Media action '${_media_act_}' found for "${MEDIA_CONFIG_TYPE_ARRAY[${MEDIA_ARR_INDEX}]}
+                abort_script "$_err_msg_"
+                ;;
+        esac
+    done
+
+    $ECHO -e "\nSelect number of the Media action you wish to perform or (q) to quit" >> "${TEM_DIR}"/media_menu
+    # Display the menu and get user choice
+    while :; do
+        $PRINTF "\033c"
+        $MORE -d "${TEM_DIR}"/media_menu
+        read _nfs_media_opt_
+
+        if [ ! ${_nfs_media_opt_} ]; then
+            continue
+        fi
+
+        if [ "${_nfs_media_opt_}" == "q" ]; then
+            return 0
+        fi
+        $ECHO "${_nfs_media_opt_}" | $EGREP '[^0-9]' >> /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            continue
+        fi
+        if [ ${_nfs_media_opt_} -lt 1 -o ${_nfs_media_opt_} -gt ${_num_opts_} ]; then
+            continue
+        fi
+
+        MEDIA_ACTION="${_media_act_array_[${_nfs_media_opt_}]}"
+        case "${MEDIA_ACTION}" in
+            add)      add_nfs_media_area
+                ;;
+            list)     list_nfs_media_area
+                ;;
+            remove)   remove_nfs_media_area
+                ;;
+            *)    :
+                ;;
+
+        esac
+    done
+fi
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$PRINTF "\033c"
+$ECHO "
+Usage: $($BASENAME $0) -a { add | list | remove }
+
+options:
+
+-a  : Parameter containing action to be performed
+          add : Add a new media location
+         list : List current media locations
+       remove : Remove a current media area
+
+"
+}
+
+### Function: user_confirm ###
+#
+# Confirm details
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+user_confirm()
+{
+if [ "$NO_CONFIRM" ]; then
+    ANS="Yes"
+    return
+fi
+
+local _msg_=$1
+local _file_=$2
+
+while :; do
+    $PRINTF "\033c"
+    if [ -f "$2" ]; then
+        $CAT $2
+    fi
+    $ECHO -e "\n${_msg_}"
+    read _ans_
+
+    if [ ! "${_ans_}" ]; then
+        continue
+    fi
+
+    if [ "${_ans_}" == "Yes" -o "${_ans_}" == "No" ]; then
+        ANS="${_ans_}"
+        break
+    fi
+done
+}
+
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+#
+
+# Determine absolute path to software
+get_absolute_path
+
+# Check for the common functions
+_common_funcs_lib_="${PARENT_DIR}/lib/common_ericks_functions.lib"
+if [ ! -s ${_common_funcs_lib_} ]; then
+    _err_msg_="${_common_funcs_lib_} not found or is empty"
+    abort_script "$_err_msg_"
+fi
+
+# Source the common functions
+. ${_common_funcs_lib_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error sourcing the common functions library\n${_common_funcs_lib_}"
+    abort_script "$_err_msg_"
+fi
+
+# Check the id of the user
+check_id "${DEFAULT_USER}"
+if [ $? -ne 0 ]; then
+    _err_msg_="You must be ${DEFAULT_USER} to execute this script."
+    abort_script "$_err_msg_"
+fi
+
+while getopts ":a:Bf:Hl:m:Np:v:" arg; do
+    case $arg in
+        a) MEDIA_ACTION="$OPTARG"
+            ;;
+        B) BUILT_NFS="YES"
+            ;;
+        f) LOC_DET_FILE="$OPTARG"
+            ;;
+        H) HOLD_LISTING="YES"
+            ;;
+        l) LOGFILE="$OPTARG"
+            ;;
+        m) MEDIA_TYPE="$OPTARG"
+            ;;
+        N) NO_CONFIRM="YES"
+            ;;
+        p) MEDIA_PATH="$OPTARG"
+            ;;
+        v) MEDIA_VER="$OPTARG"
+            ;;
+       \?) usage_msg
+           exit 1
+        ;;
+    esac
+done
+shift `expr $OPTIND - 1`
+
+# Check for the ERICkickstart config file
+ERICKS_CONFIG_TEMPLATE="${PARENT_DIR}/template/ericks_config_template"
+ERICKS_CONFIG="${PARENT_DIR}/etc/ericks_config"
+if [ ! -s ${ERICKS_CONFIG} ]; then
+    if [ ! -s ${ERICKS_CONFIG_TEMPLATE} ]; then
+        _err_msg_="${ERICKS_CONFIG_TEMPLATE} not found or is empty"
+        abort_script "$_err_msg_"
+    else
+        $CP "${ERICKS_CONFIG_TEMPLATE}" "${ERICKS_CONFIG}"
+    fi
+fi
+
+# Make directory for the NFS media directory if required
+NFS_MEDIA_CONFIG_DIR="${PARENT_DIR}/etc/nfs_media_config"
+if [ ! -d ${NFS_MEDIA_CONFIG_DIR} ]; then
+    $MKDIR -p ${NFS_MEDIA_CONFIG_DIR}
+fi
+
+
+# Check for the NFS media template directory if required
+NFS_MEDIA_CONFIG_TEMPL_DIR="${PARENT_DIR}/template/media_config_template"
+if [ ! -d ${NFS_MEDIA_CONFIG_TEMPL_DIR} ]; then
+    _err_msg_="Directory ${NFS_MEDIA_CONFIG_TEMPL_DIR} not found"
+    abort_script "$_err_msg_"
+fi
+
+# Set up NFS media config files from template files if required
+cd "${NFS_MEDIA_CONFIG_TEMPL_DIR}" || exit
+for _templ_file_ in `$LS *_template`; do
+    _file_=$($ECHO "${_templ_file_}"|$SED -e 's|_template||')
+    if [ ! -s ${NFS_MEDIA_CONFIG_DIR}/${_file_} ]; then
+        $CP "${_templ_file_}" "${NFS_MEDIA_CONFIG_DIR}/${_file_}"
+    fi
+done
+
+# Create a temporary Directory
+# Loop until we get a unique directory name
+TEM_DIR=/tmp/manage_nfs_media.$$.$$
+while :; do
+    $LS "${TEM_DIR}" >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        break
+    fi
+    TEM_DIR="${TEM_DIR}".$$
+done
+$MKDIR -p "${TEM_DIR}"
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory ${TEM_DIR}"
+    abort_script "$_err_msg_"
+fi
+
+# Log file
+if [ ! "${LOGFILE}" ]; then
+    LOGFILE="$PARENT_DIR/log/manage_nfs_media.log"
+fi
+
+# Load up the NFS media config
+load_nfs_media_config
+
+# Check/Create Logfile
+chk_create_logfile
+
+# Set up environment variables for script.
+setup_env
+
+# Check the input parameters
+check_params
+
+# Get the show on the road
+display_main_menu
+
+cd "${SCRIPTHOME}" || exit
+$RM -rf "${TEM_DIR}"
+exit 0
+

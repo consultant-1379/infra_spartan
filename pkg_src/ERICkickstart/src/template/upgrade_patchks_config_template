@@ -1,0 +1,24 @@
+# This file contains certain parameters that determine how
+# ERICkickstart behaves.
+#
+# NOTE : DO NOT PUT VALUES INSIDE ""
+
+# Parameter to indicate the  default area under which the
+# main Patch media directory will be stored. This MUST
+# not be more than 4 chatracters in length
+DEFAULT_UPGRADE_PATCH_MEDIA_AREA=/JUMP
+
+# Parameter to indicate the  default area under which the
+# main PKS Root Certicicate directory will be stored.
+DEFAULT_DHCP_CLIENT_AREA=/JUMP
+
+# Parameter to indicate the media identity file of
+# the Linux media
+UPGRADE_PATCH_MEDIA_INFO_FILE=.upgrade_patch_boot_media
+
+# Parameter to indicate that firewall is enabled
+FIREWALL=disabled
+
+# Ports blocked by IPFilters
+#BLOCKED_PORTS="111 2049"
+

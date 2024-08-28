@@ -1,0 +1,13 @@
+;--------------------------------------------------------------------------
+; Cache OM Details
+;--------------------------------------------------------------------------
+[ERIC_INST_TYPE_OM]
+CONT_INST_SCRIPT=bootstrap/bin/continue_om_installation.bsh
+DEL_CACHE_DIR=NO
+DVD_DESC=Operation and Maintenance DVD
+DVD_FILE=.om_linux
+DVD_LABEL=om_linux
+ERIC_SW_PATH_FILE=om_sw_locate
+PATCH_SERVER_OM=NO
+PATCH_DIRS=RHELOS
+SETUP_LDAP_OM=NO

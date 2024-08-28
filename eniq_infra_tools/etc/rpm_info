@@ -1,0 +1,3 @@
+# Module/RPM Name :: SRC directory :: RPM Built Directory :: To which Package path the RPM has to be transferred 
+ERICstmapi::/vobs/oss_sck/eniq_infra_src/ERICstmapi::/vobs/oss_sck/eniq_infra_delivery/ERICstmapi/RPMS/::/vobs/oss_sck/eniq_infra_OM/storage
+ERICstmnas::/vobs/oss_sck/eniq_infra_src/ERICstmnas::/vobs/oss_sck/eniq_infra_delivery/ERICstmnas/RPMS::/vobs/oss_sck/eniq_infra_OM/storage

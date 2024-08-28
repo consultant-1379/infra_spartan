@@ -1,0 +1,3640 @@
+#!/bin/bash
+
+#
+##
+#
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+#
+# ********************************************************************
+#
+# Name    : mws_configure.bsh
+# Purpose : This script will configure the MWS
+#
+# Usage   : See usage_msg()
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+GAWK=/usr/bin/gawk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CP=/usr/bin/cp
+#CD=/usr/bin/cd
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DMIDECODE=/usr/sbin/dmidecode
+DIRNAME=/usr/bin/dirname
+DHCPD=/usr/sbin/dhcpd
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+#GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+ISOS_PATH=/JUMP/MEDIA
+IFCONFIG=/usr/sbin/ifconfig
+IP=/usr/sbin/ip
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MOUNT=/usr/bin/mount
+MV=/usr/bin/mv
+NSLOOKUP=/usr/bin/nslookup
+#PYTHON=/usr/bin/python
+RPM=/usr/bin/rpm
+RM=/usr/bin/rm
+ROUTE=/usr/sbin/route
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SYSTEMCTL=/usr/bin/systemctl
+SHUTDOWN=/usr/sbin/shutdown
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+TTY=/usr/bin/tty
+UMOUNT=/usr/bin/umount
+#UNIQ=/usr/bin/uniq
+YUM=/usr/bin/yum
+OM_MEDIA=$(pwd)
+OM_MEDIA_LOC="$OM_MEDIA/../"
+PACKAGES_INCLUDE=/var/tmp/packages2include
+$CAT > ${PACKAGES_INCLUDE} <<EOF
+bc
+bind
+bind-utils
+device-mapper-multipath
+device-mapper-multipath-libs
+dos2unix.x86_64
+dhcp
+expect
+autofs
+glibc-*.i686
+nss-softokn-freebl-*.i686
+isomd5sum.x86_64
+libaio
+lsof
+ltrace
+libXext-devel.x86_64
+libsss_autofs.x86_64
+net-tools
+nfs-utils
+kernel-devel
+openssh-clients
+pexpect
+policycoreutils-python
+perl
+perl-Data-Dumper
+psmisc.x86_64
+pytz
+python-paramiko
+rsync
+rpcbind
+screen
+strace
+sysstat
+sysfsutils
+tcpdump
+tftp
+xinetd
+tftp-server
+traceroute
+tcsh
+unzip
+vim-common
+vim-enhanced
+wget
+yum-utils
+EOF
+
+cat /etc/default/grub | sed -i 's/crashkernel=auto/crashkernel=128M/g' /etc/default/grub
+if [ ! -d /sys/firmware/efi ]; then
+grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+else
+grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg  >/dev/null 2>&1
+fi
+
+
+
+# ********************************************************************
+#
+#       Generic Functions
+#
+# ********************************************************************
+
+### Function: now ###
+# Arguments: none
+# Returns: date&time 2018-09-06-14:04:21
+now()
+{
+   $DATE +"%Y-%m-%d-%T"
+}
+
+
+### Function: abort_script ###
+#
+#   This function is called when the script is aborted.
+#   It can be aborted by a signal sent by the kernel such as CTRL-C
+#   or if a serious error is encountered during runtime.
+#
+# Arguments:
+#       $1 = Error message from part of program (Not always used)
+#       $2 = Other error than 1 (optional)
+# Return Values: none
+abort_script()
+{
+    local err_msg="$@"
+    log -p "ERROR: Script aborted... ${err_msg}"
+    systemctl unmask serial-getty@ttyS0.service >/dev/null 2>&1
+    systemctl start serial-getty@ttyS0.service >/dev/null 2>&1
+    exit 2
+}
+
+### Function: console_check ###
+#
+#   This function is called when the script is not running in console.
+#   It can be aborted by a signal sent by the kernel such as CTRL-C
+#   or if a serious error is encountered during runtime.
+#
+# Arguments:
+#       
+#       
+# Return Values: 0 or 1
+
+console_check()
+{
+   flag=1
+   if [ "$($TTY)" = "/dev/ttyS0" ]; then
+      flag=0
+   fi
+  return $flag
+
+}
+
+
+### Function: user_confirm ###
+#
+# Asks the user for confirmation (Yes/No).
+#
+# Arguments:
+#    $1 = Prompt text
+# Return Values:
+# Sets: ANS (Yes/No)
+user_confirm()
+{
+    local msg=$1 ans
+
+    if [ "$NO_CONFIRM" ]; then
+        ANS="Yes"
+        return
+    fi
+
+    while :; do
+        $ECHO -e "\n${msg}"
+        read ans
+        [ ! "${ans}" ] && continue
+
+        if [ "${ans}" == "Yes" -o "${ans}" == "No" ]; then
+            ANS="${ans}"
+            break
+        fi
+    done
+}
+
+### Function: log ###
+#
+#   Logs in-params with time stamp
+#   If no in-params, stdin will be logged
+#
+# Arguments:
+#    $1 = '-p' To also print the text to screen (optional)
+#    $1/2-n Text to log (optional)
+# Uses: LOGFILE
+# Returns:
+log()
+{
+   local scr=">>"
+   if [ "$1" = "-p" ]; then
+      scr="|$TEE -a"
+      shift
+   fi
+   if [[ -n "$1" ]]; then
+      eval $ECHO \"$(now) -- \$*\" ${scr} ${LOGFILE}
+   else
+      eval $ECHO \"$(now) -- \" ${scr} ${LOGFILE}
+      eval $CAT ${scr} ${LOGFILE}
+   fi
+}
+
+### Function: check_step ###
+#
+#   Checks if step file indicates we've already run command
+#
+# Arguments:
+#   $1 Step to check
+# Returns:
+#   0 - if already run step successfully
+#   1 - if not run step
+check_step()
+{
+    local step_check=$1 step_run
+    if [ -f ${STEPSFILE} ]; then
+        step_run=$($CAT ${STEPSFILE})
+        if [ ${step_run} -lt ${step_check} ]; then
+            return 1
+        else
+            return 0
+        fi
+    fi
+    return 1
+}
+
+### Function: done_step ###
+#
+#   Updates step file to say step has passed
+#
+# Arguments:
+#   $1 Step passed
+# Returns:
+#   None
+done_step()
+{
+    $ECHO $1 > ${STEPSFILE}
+    return 0
+}
+
+### Function: run_step ###
+#
+#   Runs command if not already run that step
+#
+# Arguments:
+#   $1 Step to check
+#   $2-$* Command to run
+# Returns:
+#   None
+run_step() {
+    local step_no=$1
+    shift
+    check_step ${step_no}
+    if [ $? -eq 0 ]; then
+        msg="\033[1;32m Skipping Step ${step_no} \033[0m as already ran successfully"
+        $ECHO -e "\n-> $msg"
+        log "$msg"
+    else
+        msg="\033[1;33m Running Step ${step_no} \033[0m"
+        $ECHO -e "\n-> $msg"
+        log "$msg"
+        $*
+        done_step ${step_no}
+    fi
+    return 0
+}
+
+### Function: do_cmd ###
+#
+#   Logs and executes specified command
+#   If cmd fails, script is aborted.
+#
+# Arguments:
+#   $1-n Command with params
+# Returns:
+do_cmd()
+{
+   log $*
+   $* || abort_script "Failed:" $*
+   return 0
+}
+
+### Function: doo ###
+#
+#   Logs and executes specified command
+#
+# Arguments:
+#   $1-n Command with params
+# Returns: Cmd return code returned
+doo()
+{
+   log $*
+   eval $*
+}
+
+### Function: no_intr_allowed ###
+#
+# Function just to return to a trap when interrupts are not allowed
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+no_intr_allowed()
+{
+:
+}
+
+# ********************************************************************
+#
+#       Help Functions
+#
+# ********************************************************************
+
+### Function: validate_prefix_length ###
+#
+# This function will check that an IP prefix length is valid format
+#
+# Arguments:
+#       $1 : IP prefix length to be validated
+# Return Values:
+#       0 if successful, 1 if not
+validate_prefix_len()
+{
+    local prefix=$1
+
+    if [[ ${prefix} =~ ^[0-9]{1,2}$ ]]; then
+        if [ ${prefix} -lt 0 -o ${prefix} -gt 32 ]; then
+            return 1
+        fi
+    else
+        return 1
+    fi
+    return 0
+}
+
+
+### Function: validate_ip ###
+#
+# This function will check that an IP address is valid format
+#
+# Arguments:
+#       $1 : IP address to be validated
+# Return Values:
+#       0 if successful, 1 if not
+
+validate_ip()
+{
+    echo "$1" | grep -w -E -o '^(25[0-4]|2[0-4][0-9]|1[0-9][0-9]|[1]?[1-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)' > /dev/null
+    res=$?
+    if [ $res -eq 0 ]
+    then
+        return 0
+    else
+        return 1
+    fi
+}
+
+### Function: validate_netmask ###
+#
+# This function will check that an netmask address is valid format
+#
+# Arguments:
+#       $1 : netmask address to be validated
+# Return Values:
+#       0 if successful, 1 if not
+
+validate_netmask()
+{
+
+    grep -E -q '^(254|252|248|240|224|192|128)\.0\.0\.0|255\.(254|252|248|240|224|192|128|0)\.0\.0|255\.255\.(254|252|248|240|224|192|128|0)\.0|255\.255\.255\.(254|252|248|240|224|192|128|0)' <<< "$1" && return 0 || return 1
+    re_nmask=$?
+    if [ $re_nmask -eq 0 ]
+    then
+        return 0
+    else
+        return 1
+    fi
+
+}
+
+### Function: check_ip_rechablity ###
+#
+# Checking the IP reachability
+#
+# Arguments:
+#     #1: Interface to configure
+# Sets:
+#     IF_NIC, IF_IP, IF_PREFIX_LEN
+# Return Values: none
+check_ip_reachability()
+{
+    ping -c2 "$1" > /dev/null
+    re=$?
+    if [ $re -eq 0 ]; then
+      return 0
+    else
+      return 1
+    fi
+}
+
+### Function: validate_duplicate_nic ###
+#
+# Validating given Interface name
+#
+# Arguments:
+#     #1: Type of Interface
+      #2 Name of the interface
+# Return Values: 0 or 1
+
+validate_duplicate_nic()
+{
+    curt_nic_type=$1
+    curt_nic_name=$2
+    ext_nic_name=""
+    if [ -s "${PARAMSFILE}" ]; then
+      
+      get_param "${curt_nic_type}"_NIC
+      old_nic_name=${PARAM_NAME}
+
+      # shellcheck disable=SC2016
+      ext_nic_name=$($CAT "${PARAMSFILE}"|$GREP -w "${curt_nic_name}" |awk -F'[_.]' '{print $1}'| head -1)
+      
+      if [[ -z  "${old_nic_name}" && -z "${ext_nic_name}" ]];
+      then
+           return 0
+      elif [[ -n "${old_nic_name}" && -n "${ext_nic_name}" ]];
+      then
+            if [[ "${old_nic_name}" == "${curt_nic_name}" ]] && [[ "${ext_nic_name}" == "STORAGE" ]];
+            then
+                return 0
+            elif [[ "${old_nic_name}" == "${curt_nic_name}" ]] && [[ "${ext_nic_name}" == "BACKUP" ]];
+            then
+                return 0
+            elif [[ "${old_nic_name}" == "${curt_nic_name}" ]] && [[ "${ext_nic_name}" == "MANAGEMENT" ]];
+            then 
+                return 0
+            else
+                return 1
+            fi
+      elif [[ -z "${old_nic_name}" && -n "${curt_nic_name}" ]];
+      then
+            return 1
+      fi
+    else
+
+       return 0
+    fi
+}
+
+### Function: duplicate_ip_validate ###
+#
+# Validating given IP  Address assign to Interface
+#
+# Arguments:
+#     #1: Type of Interface
+      #2  IP address of the interface
+# Return Values: 0 or 1
+
+duplicate_ip_validate()
+{
+    interface_type=$1
+    cur_ip=$2
+    ext_nic=""
+    if [ -s "${PARAMSFILE}" ]; then
+        
+        get_param "${interface_type}"_IP
+        old_ip=${PARAM_NAME}
+        ext_ip=$($CAT "${PARAMSFILE}"|$GREP -oE "${cur_ip}")
+        # shellcheck disable=SC2016
+        ext_nic=$($CAT "${PARAMSFILE}"|$GREP -w "${cur_ip}" |awk -F'[_.]' '{print $1}'| head -1)
+
+        if [[ -z  "${old_ip}" && -z "${ext_ip}" ]] ;
+        then 
+            return 0
+        elif [[  -n "${old_ip}" && -n "${ext_ip}" ]] ;
+        then
+            if [[ "${old_ip}" == "${ext_ip}" ]] && [[ "${interface_type}" == "STORAGE" ]] ;
+            then
+                     return 0
+            elif [[ "${old_ip}" == "${ext_ip}" ]] && [[ "${interface_type}" == "BACKUP" ]] ;
+            then
+                return 0
+            elif [[ "${old_ip}" == "${ext_ip}" ]] && [[ "${interface_type}" == "MANAGEMENT" ]] ;
+            then
+                return 0
+            else
+                return 1
+            fi
+
+        elif [[ -z "${old_ip}" && -n "${ext_ip}" ]] ;
+        then
+            return 1
+        fi
+    else
+        return 0
+    fi
+
+}
+
+
+### Function: read_interface_values ###
+#
+# Gettinng input values from USER for IP configurations
+#
+# Arguments:
+#     #1: Type of Interface
+# Return Values: none
+
+read_interface_values()
+{
+    local if_type=$1 old_nic old_ip old_netmask new_netmask
+    IF_NIC=""
+    IF_IP=""
+    IF_PREFIX_LEN=""
+    IF_GATEWAY=""
+    $ECHO -e "\n-->Provide ${if_type} VLAN configuration Details."
+    # shellcheck disable=SC2016
+    deployment_type=$(dmidecode -t system|grep -iw "Product Name"|awk -F: '{print $2}'|cut -d' ' -f4,5)
+    if [ "${deployment_type}" == "Gen10 Plus" ]; then
+
+        if [ -s "${PARAMSFILE}" ]; then
+            get_param "${if_type}"_vl_id
+            old_nic=${PARAM_NAME}
+            get_param "${if_type}"_IP
+            old_ip=${PARAM_NAME}
+            get_param "${if_type}"_NETMASK
+            old_netmask=${PARAM_NAME}
+            get_param "${if_type}"_GATEWAY
+            old_gateway=${PARAM_NAME}
+        fi
+
+        while [[ -z "${IF_NIC}" ]]; do
+
+                # $ECHO -e "\nWhat is the ${if_type} VLAN ID [${old_nic}]:"
+                # read IF_NIC
+                 
+                while true; do
+                    $ECHO "${if_type} VLAN ID [${old_nic}]:"
+                    read -r IF_NIC
+                    if [[ -z "${IF_NIC}" ]]; then
+                        IF_NIC=${old_nic}
+                    fi
+                    if [[ "${IF_NIC}" =~ ^[0-9]+$ ]]; then
+                        break
+                    else
+                       $ECHO "${IF_NIC} Invalid VLAN ID entered."
+                    fi
+                done
+                                         
+                while [[ -z "${IF_IP}" ]]; do
+
+                        $ECHO "${if_type} VLAN IP [${old_ip}]:"
+                        read -r IF_IP
+                        if [[ -z "${IF_IP}" ]]; then
+                                IF_IP=${old_ip}
+                        fi
+                        validate_ip "${IF_IP}"
+                        res_ip=$?
+                        if [ $res_ip -ne 0 ]; then
+                               $ECHO -e "\n${IF_IP} is an Invalid IP entered"
+                                IF_IP=""
+                        else
+                               duplicate_ip_validate "${if_type}" "${IF_IP}"
+                               #duplicate_ip_validate "${IF_IP}"
+                                ip_val=$?
+                                if [ $ip_val -ne 0 ]; then
+                                   
+                                    $ECHO -e "\nWARNING: ${IF_IP} is already assigned to ${ext_nic} VLAN.Please validate and provide proper IP details for ${if_type} VLAN."
+                                    IF_IP=""
+                                    
+                                fi
+                        fi
+                 
+                done
+
+                while [[ -z "${IF_PREFIX_LEN}" ]]; do
+                        $ECHO "${if_type} VLAN IP Netmask [${old_netmask}]:"
+                        read -r new_netmask
+                        if [[ -z "${new_netmask}" ]]; then
+                                new_netmask=${old_netmask}
+                        fi
+                        validate_netmask "${new_netmask}"
+                        res_nm=$?
+                        if [ $res_nm -ne 0 ]; then
+                                $ECHO -e "${new_netmask} is an Invalid Netmask entered"
+                                IF_PREFIX_LEN=""
+                        else
+                                get_network_prefix_from_netmask "${new_netmask}" "${if_type}"
+                                
+                        fi
+                done
+                while [[ -z "${IF_GATEWAY}" ]]; do
+                        $ECHO "${if_type} VLAN IP gateway [${old_gateway}]: "
+                        read -r IF_GATEWAY
+                        if [[ -z "${IF_GATEWAY}" ]]; then
+                                IF_GATEWAY=${old_gateway} 
+                        fi
+                        validate_ip "${IF_GATEWAY}"
+                        res_gw=$?
+                        if [ $res_gw -ne 0 ]; then
+                                $ECHO -e "\n${IF_GATEWAY} is Invalid IP entered"
+                                IF_GATEWAY=""
+                        fi
+                        
+                done
+
+                user_confirm "Going to configure ${if_type} VLAN on bond0.${IF_NIC} with IP ${IF_IP}/${IF_PREFIX_LEN}, Are these values correct? (Yes/No)"
+                if [ "${ANS}" == "No" ]; then
+                        IF_NIC=""
+                        ANS=""
+                        IF_IP=""
+                        IF_PREFIX_LEN=""
+                        IF_GATEWAY=''
+                fi
+        done
+        update_params "${if_type}"_vlan bond0."${IF_NIC}"
+        update_params "${if_type}"_IP "${IF_IP}"
+        update_params "${if_type}"_NETMASK "${new_netmask}"
+        update_params "${if_type}"_GATEWAY "${IF_GATEWAY}"
+        update_params "${if_type}"_vl_id "${IF_NIC}"
+        
+        
+    else
+       
+        if [ -s "${PARAMSFILE}" ]; then
+            get_param "${if_type}"_NIC
+            old_nic=${PARAM_NAME}
+            get_param "${if_type}"_IP
+            old_ip=${PARAM_NAME}
+            get_param "${if_type}"_NETMASK
+            old_netmask=${PARAM_NAME}
+            get_param "${if_type}"_GATEWAY
+            old_gateway=${PARAM_NAME}
+        fi
+        while [[ -z "${IF_NIC}" ]]; do
+        #      user_confirm "Do you want to configure a ${if_type} VLAN (Yes/No):"
+        #      if [ "${ANS}" == "No" ]; then
+        #         return 0
+        #      fi
+             $ECHO "${if_type} VLAN NIC Name [${old_nic}]: "
+             read -r IF_NIC
+             if [[ -z "${IF_NIC}" ]]; then
+                IF_NIC=${old_nic}
+             fi
+        #Executing below to check the given interface exists in the server
+        interface_list=$($LS /sys/class/net/ | grep -v lo)
+        valid_interface=$($ECHO "${interface_list}" | $GREP -w "${IF_NIC}")
+        if [[ -z "${valid_interface}" ]] ; then
+                abort_script "Invalid Interface ${IF_NIC} Name entered"
+        else
+              validate_duplicate_nic "${if_type}" "${valid_interface}"
+              res_nic=$?
+              if [ "${res_nic}" -ne 0 ];
+              then
+                  echo "Already ${valid_interface} Interface name value assinged to ${ext_nic_name} VLAN Interface. Please ensure name of Interface value for ${if_type} and re-run the script again." 
+                  exit 1
+              fi
+        fi
+        
+        while [[ -z "${IF_IP}" ]]; do
+
+            $ECHO "${if_type} VLAN IP [${old_ip}]:"
+            read -r IF_IP
+            if [[ -z "${IF_IP}" ]]; then
+                    IF_IP=${old_ip}
+            fi
+            validate_ip "${IF_IP}"
+            res_ip=$?
+            if [ $res_ip -ne 0 ]; then
+                    $ECHO -e "\n${IF_IP} is an Invalid IP entered"
+                    IF_IP=""
+            else
+                    duplicate_ip_validate "${if_type}" "${IF_IP}"
+                    ip_val=$?
+                    if [ $ip_val -ne 0 ]; then
+                        
+                        $ECHO -e "\nWARNING: ${IF_IP} is already assigned to ${ext_nic} VLAN. Please validate and provide proper IP details for ${if_type} VLAN."
+                        IF_IP=""
+                        
+                    fi
+            fi
+            
+        done
+        while [[ -z "${IF_PREFIX_LEN}" ]]; do
+            $ECHO "${if_type} VLAN IP Netmask [${old_netmask}]: "
+            read -r new_netmask
+           
+            if [[ -z "${new_netmask}" ]]; then
+                new_netmask=${old_netmask}
+            fi
+            validate_netmask "${new_netmask}"
+            res_nm=$?
+            if [ $res_nm -ne 0 ]; then
+                $ECHO -e "\n${new_netmask} Invalid Netmask entered"
+                IF_PREFIX_LEN=""
+            else
+                get_network_prefix_from_netmask "${new_netmask}" "${if_type}"
+            fi
+        done
+
+        while [[ -z "${IF_GATEWAY}" ]]; do
+        $ECHO "${if_type} VLAN IP gateway [${old_gateway}]:"
+        read -r IF_GATEWAY
+        if [[ -z "${IF_GATEWAY}" ]]; then
+                IF_GATEWAY=${old_gateway}
+        fi
+        validate_ip "${IF_GATEWAY}"
+        res_ip=$?
+        if [ $res_ip -ne 0 ]; then
+                $ECHO -e "\n${IF_GATEWAY} Invalid IP entered"
+                IF_GATEWAY=""
+        fi
+        done
+
+        user_confirm "Going to configure ${if_type} VLAN on NIC ${IF_NIC} with IP ${IF_IP}/${IF_PREFIX_LEN}, Are these values correct? (Yes/No)"
+        if [ "${ANS}" == "No" ]; then
+            IF_NIC=""
+            ANS=""
+            IF_IP=""
+            IF_PREFIX_LEN=""
+            IF_GATEWAY=''
+        fi
+    done
+    update_params "${if_type}"_NIC "${IF_NIC}"
+    update_params "${if_type}"_IP "${IF_IP}"
+    update_params "${if_type}"_NETMASK "${new_netmask}"
+    update_params "${if_type}"_GATEWAY "${IF_GATEWAY}"
+fi
+    return 0
+}
+
+### Function: read_interface_type ###
+#
+# Script will read type of interface
+#
+# Arguments:
+#     
+# Return Values: none
+
+read_interface_type()
+{
+	$ECHO -e "\n-->Please provide following inputs for IP Configuration."
+    # shellcheck disable=SC2016
+    deployment_type=$(dmidecode -t system| $GREP -iw "Product Name"| $AWK -F: '{print $2}'| $CUT -d' ' -f4,5)
+	if [ "${deployment_type}" == "Gen10 Plus" ]; then
+        # shellcheck disable=SC2016
+		active_interface=$($IP -o -f inet addr show | $AWK '/scope global/ {print $2}')
+        act_res=$?
+		if [ $act_res -eq 0 ]; then
+			 
+			if [ -s "${PARAMSFILE}" ]; then
+				get_param IF_SEC_NIC
+				old_sec_nic=${PARAM_NAME}
+			fi 
+			# IF_SEC_NIC=""
+			# while [[ -z "${IF_SEC_NIC}" ]]; do
+			# 	$ECHO -e "\nEnter the secondary NIC [${old_sec_nic}] :"
+			# 	read IF_SEC_NIC
+            #     sec_if=${IF_SEC_NIC}
+
+			# 	 if [[ -z "${IF_SEC_NIC}" ]]; then
+			# 	 	IF_SEC_NIC=${old_sec_nic}
+            #      # break
+			# 	 fi
+			# 	interface_val=$(ls /sys/class/net/ | grep -v lo)
+			# 	validate_nic=$(echo $interface_val | grep -w ${IF_SEC_NIC})
+			# 	if [ ! "${validate_nic}" ]; then
+			# 		$ECHO -e "\nInvalid NIC entered"
+			# 		IF_SEC_NIC=""
+			# 	else
+			# 		IF_SEC_NIC=${sec_if}
+			# 	fi
+            #done
+            #update_params IF_SEC_NIC ${sec_if}
+
+            
+
+            while [[ -z "${IF_SEC_NIC}" ]]; do
+                $ECHO "Enter the secondary NIC [${old_sec_nic}]: "
+                read -r passive_int
+                if [[ -z "${passive_int}" ]]; then
+                        passive_int=${old_sec_nic}
+                fi
+                interface_val=$($LS /sys/class/net/ | grep -v lo)
+                validate_nic=$(echo "${interface_val}" | grep -w "${passive_int}")
+                if [ ! "${validate_nic}" ]; then
+                    $ECHO -e "\n${passive_int} is an Invalid NIC entered"
+                    IF_SEC_NIC=""
+                else
+                    IF_SEC_NIC=${passive_int}
+                    update_params IF_SEC_NIC "${passive_int}"
+                fi
+            done
+                
+	
+		fi
+	fi
+	nic_type=("STORAGE" "BACKUP" "MANAGEMENT")
+	for nic in "${nic_type[@]}";do
+		user_confirm "Do you want to configure a ${nic} VLAN (Yes/No):"
+		if [ "${ANS}" == "No" ]; then
+            $SED -i "/${nic}/d" "${PARAMSFILE}"
+		    continue
+		fi
+		read_interface_values "${nic}"
+       
+	done
+
+ return 0
+}
+
+### Function: display_interface_values ###
+#
+# All IP address related User Inputs will show on the screen
+#
+# Arguments:
+#     
+# Return Values: none
+
+display_interface_values()
+{
+  if [ -s "${PARAMSFILE}" ]; then
+
+    config_nic_type=("STORAGE" "BACKUP" "MANAGEMENT")
+    #config_nic_type=STORAGE
+    msg="Provided VLAN Configuration Summary Details:"
+    edg=$($ECHO "$msg" | $SED 's/./-/g')
+    $ECHO -e "\n$msg"
+    $ECHO "$edg"
+
+    for cfgnic in "${config_nic_type[@]}";
+    do
+
+        get_param "${cfgnic}"_IP
+        cur_ip=${PARAM_NAME}
+        get_param "${cfgnic}"_NETMASK
+        cur_netmask=${PARAM_NAME}
+        get_param "${cfgnic}"_GATEWAY
+        cur_gateway=${PARAM_NAME}
+        # shellcheck disable=SC2016
+        deployment_type=$(dmidecode -t system| $GREP -iw "Product Name"| $AWK -F: '{print $2}'| $CUT -d' ' -f4,5)
+        if [ "${deployment_type}" == "Gen10 Plus" ]; then
+            
+            get_param "${cfgnic}"_vl_id
+            cur_vlan_id=${PARAM_NAME}
+
+            if [[ -n "${cur_vlan_id}" && -n "${cur_ip}" && -n "${cur_netmask}" && -n "${cur_gateway}" ]];
+            then
+
+                echo -e "\n${cfgnic} VLAN Details:"
+                echo "${cfgnic}_VLAN_ID: ${cur_vlan_id}"
+                echo "${cfgnic}_VLAN_IP: ${cur_ip}"
+                echo "${cfgnic}_NETMASK: ${cur_netmask}"
+                echo "${cfgnic}_GATEWAY: ${cur_gateway}"
+            else
+                $ECHO -e "\n${cfgnic} VLAN: None"
+            fi
+        else
+            get_param "${cfgnic}"_NIC
+            cur_nic=${PARAM_NAME}
+
+            if [[ -n "${cur_nic}" && -n "${cur_ip}" && -n "${cur_netmask}" && -n "${cur_gateway}" ]];
+            then
+                echo -e "\n${cfgnic} VLAN Details:"
+                echo "${cfgnic}_NIC_NAME: ${cur_nic}"
+                echo "${cfgnic}_VLAN_IP: ${cur_ip}"
+                echo "${cfgnic}_NETMASK: ${cur_netmask}"
+                echo "${cfgnic}_GATEWAY: ${cur_gateway}"
+            else
+                $ECHO -e "\n${cfgnic} VLAN: None"
+            fi
+        fi
+    done
+  else
+     abort_script "Unable to get the IP configuration details. Please re-run the script again."
+  fi
+
+}
+
+vlan_confirm()
+{
+
+        while true; do
+                user_confirm "Going to configure above VLAN(s), Are these values correct? (Yes/No)"
+                
+                if [ "${ANS}" == "No" ]; then
+                      
+                      read_interface_type
+                      display_interface_values
+                      continue
+                else 
+                     break
+                fi
+        done
+
+}
+
+configure_nic_interface()
+{
+# shellcheck disable=SC2016
+
+deployment_type=$(dmidecode -t system|grep -iw "Product Name"|awk -F: '{print $2}'|cut -d' ' -f4,5)
+if [ "${deployment_type}" == "Gen10 Plus" ]; then
+	type_nic=$1
+	bond_if=$2
+	ip_adrr=$3
+	pre_fix_len=$4 
+	gate_addr=$5
+    vlan_id=$6
+
+     
+    if [ ! -f "${path_interface}"/ifcfg-"${bond_if}" ]; then
+       
+        $ECHO -e "--> Configuring ${type_nic} VLAN with ${bond_if} ${ip_adrr}/${pre_fix_len}"
+        if [ -f /etc/sysconfig/network-scripts/ifcfg-"${bond_if}" ]; then
+            $CP /etc/sysconfig/network-scripts/ifcfg-"${bond_if}" /etc/sysconfig/network-scripts/bkp-interfaces/
+        fi
+        VLAN_UUID=$(uuidgen "${bond_if}")
+        # shellcheck disable=SC2016
+        active_interface=$($IP -o -f inet addr show | $AWK '/scope global/ {print $2}')
+        
+        {
+            $ECHO "DEVICE=${bond_if}"
+            $ECHO "VLAN=yes"
+            $ECHO "TYPE=Vlan"
+            $ECHO "NAME=${bond_if}"
+            $ECHO "PHYSDEV=bond0"
+            $ECHO "VLAN_ID=${vlan_id}"
+            $ECHO "REORDER_HDR=yes"
+            $ECHO "GVRP=no"
+            $ECHO "MVRP=no"
+            #echo "HWADDR=${HWADDRESS}" >> "${path_interface}/ifcfg-bond0.${IF_NIC}"
+            $ECHO "PROXY_METHOD=none"
+            $ECHO "BROWSER_ONLY=no"
+            $ECHO "BOOTPROTO=none"
+            $ECHO "IPADDR=${ip_adrr}"
+            $ECHO "PREFIX=${pre_fix_len}"
+            $ECHO "GATEWAY=${gate_addr}"
+            $ECHO "DEFROUTE=no"
+            $ECHO "IPV4_FAILURE_FATAL=no"
+            $ECHO "IPV6INIT=yes"
+            $ECHO "IPV6_AUTOCONF=yes"
+            $ECHO "IPV6_DEFROUTE=yes"
+            $ECHO "IPV6_FAILURE_FATAL=no"
+            $ECHO "IPV6_ADDR_GEN_MODE=stable-privacy"
+            $ECHO "UUID=${VLAN_UUID}"
+            $ECHO "ONBOOT=yes"
+        } > "${path_interface}"/ifcfg-"${bond_if}"
+
+        
+        $SYSTEMCTL restart network
+        sleep 5
+        #shellcheck disable=SC2016
+        IP_ADDR_PLUMBED=$($IP addr show "${bond_if}"| $GREP "inet " | $AWK '{print $2}')
+        if [[ -z "${IP_ADDR_PLUMBED}" ]]; then
+            
+             abort_script "Interface is not plumbed properly! Exiting the script"
+        else
+         $ECHO -e "-->Successfully configured ${type_nic} VLAN ${bond_if}"
+        fi
+    else
+        $ECHO -e "-->Network ${type_nic} VLAN ${bond_if} bonding already created"
+    fi
+else
+    type_nic=$1
+    ip_addr=$2
+	pre_fix_len=$3
+	gatewat_addr=$4
+    nic_name=$5
+    
+    $ECHO -e "-->Configuring ${nic_name} VLAN interface with ${type_nic} ${ip_addr}/${pre_fix_len}"
+
+    [[ -d /etc/sysconfig/network-scripts/bkp-interfaces ]] || $MKDIR -p /etc/sysconfig/network-scripts/bkp-interfaces
+    # shellcheck disable=SC2016
+	IP_ADDR="$($IP addr show "${type_nic}"| $GREP "inet "|$AWK '{print $2}')"
+    if [ -n "${IP_ADDR}" ]; then
+     	$ECHO "-->${nic_name} IP Address exists already"
+#   	if [ "${ANS}" == "No" ]; then
+#			abort_script "Exiting ${nic_name} as interface ${type_nic} already exists"
+#	    fi
+    else
+        if [ -f /etc/sysconfig/network-scripts/ifcfg-"${type_nic}" ]; then
+            $CP /etc/sysconfig/network-scripts/ifcfg-"${type_nic}" /etc/sysconfig/network-scripts/bkp-interfaces/bkp_"${type_nic}"_"$($DATE "+%Y.%m.%d-%H.%M.%S")"
+            # shellcheck disable=SC2016
+            uuid_value=$($CAT /etc/sysconfig/network-scripts/ifcfg-"${type_nic}" | grep -w "UUID"|awk -F= '{print $2}')
+
+        fi  
+
+        if [ -z "${uuid_value}" ];
+        then
+            uuid_value=$(uuidgen "${type_nic}")
+            res_uuid=$?
+            if [ $res_uuid -eq 0 ];
+            then
+                return 0
+            else
+                abort_script "Unable get UUID Value for ${type_nic}"
+            fi
+        fi
+
+        path_interface="/etc/sysconfig/network-scripts/"
+        if [ -d "${path_interface}" ]; then
+        HWADDRESS=$($CAT /sys/class/net/"${type_nic}"/address)
+        
+        {
+            $ECHO "TYPE=Ethernet"
+            $ECHO "BOOTPROTO=static"
+            $ECHO "ONBOOT=yes"
+            $ECHO "DEFROUTE=no"
+            $ECHO "IPADDR=${ip_addr}"
+            $ECHO "PREFIX=${pre_fix_len}"
+            $ECHO "NAME=${type_nic}"
+            $ECHO "UUID=${uuid_value}"
+            $ECHO "DEVICE=${type_nic}"
+            $ECHO "GATEWAY=${gatewat_addr}"
+        } >"${path_interface}"/ifcfg-"${type_nic}"
+
+            if $GREP -Fqw "HWADDR" "${path_interface}"/ifcfg-"${type_nic}"
+            then
+                $ECHO "-->HWADDRESS present in the interface files"
+            else
+                $ECHO "HWADDR=${HWADDRESS}" >> "${path_interface}"/ifcfg-"${type_nic}"
+
+                if $GREP -Fqw "HWADDR" "${path_interface}"/ifcfg-"${type_nic}"
+                then
+                $ECHO "-->Successfully updated HWADDRESS in the interface files"
+                else
+                abort_script "-->Failed updating HWADDRESS in the interface files"
+                fi
+            fi
+        else
+            abort_script "${path_interface} doesnot exists on the server"
+         fi
+
+    fi
+
+    $SYSTEMCTL restart network
+    sleep 5
+    # shellcheck disable=SC2016
+	IP_ADDR_PLUMBED=$($IP addr show "${type_nic}"| $GREP "inet " | $AWK '{print $2}')
+    if [[ -z "${IP_ADDR_PLUMBED}" ]]; then
+       abort_script "Interface is not plumbed properly! Exiting the script"
+       
+    fi
+	$ECHO -e "-->Successfully configured ${nic_name} VLAN interface on ${type_nic}"
+    #$IP addr show ${IF_NIC}
+	
+fi
+
+return 0
+
+}
+
+configure_interfaces()
+{
+    
+    $ECHO -e "->Updating MAC Address entry in Network configuration Files."
+
+    update_hwaddress
+
+    $ECHO -e "-> Performing IP Configuration."
+
+    # shellcheck disable=SC2016
+	deployment_type=$(dmidecode -t system| $GREP -iw "Product Name"| $AWK -F: '{print $2}'| $CUT -d' ' -f4,5)
+    if [ "${deployment_type}" == "Gen10 Plus" ]; then
+
+		create_bond
+        # shellcheck disable=SC2016
+        for nictype in $($CAT "${PARAMSFILE}" |$GREP vlan|awk -F= '{$0=$1}1'|awk -F_ '{$0=$1}1')
+        do
+            get_param "${nictype}"_vlan
+            old_nic=${PARAM_NAME}
+            get_param "${nictype}"_IP
+            old_ip=${PARAM_NAME}
+            get_param "${nictype}"_GATEWAY
+            old_gateway=${PARAM_NAME}
+	    get_param "${nictype}"_IF_PREFIX_LEN
+            old_prefix_len=${PARAM_NAME}
+            get_param "${nictype}"_vl_id
+            old_vlan_id=${PARAM_NAME}
+
+			configure_nic_interface "${nictype}" "${old_nic}" "${old_ip}" "${old_prefix_len}" "${old_gateway}" "${old_vlan_id}"
+        done
+     else
+      	if [ -s "${PARAMSFILE}" ]; then
+            # shellcheck disable=SC2016
+			for nictype in $($CAT "${PARAMSFILE}" |grep -i nic|awk -F= '{$0=$1}1'|awk -F_ '{$0=$1}1')
+			do 
+				# get_param "${nictype}"_vlan_id
+				# old_nic=${PARAM_NAME}
+				get_param "${nictype}"_IP
+				old_ip=${PARAM_NAME}
+				get_param "${nictype}"_NETMASK
+				old_netmask=${PARAM_NAME}
+				get_param "${nictype}"_GATEWAY
+				old_gateway=${PARAM_NAME}
+				get_param "${nictype}"_NIC
+				old_nic_name=${PARAM_NAME}
+				get_param "${nictype}"_IF_PREFIX_LEN
+				old_prefix_len=${PARAM_NAME}
+                		    
+				configure_nic_interface "${old_nic_name}" "${old_ip}" "${old_prefix_len}" "${old_gateway}" "${nictype}"
+
+            done
+	fi
+fi
+    return 0
+}
+### Function: get_network_addr ###
+#
+# Get the network address of the client
+#
+# Arguments:
+#   $1: Client Netmask
+# Sets:
+#   IF_PREFIX_LEN
+get_network_prefix_from_netmask()
+{
+
+    local nm1 nm2 nm3 nm4
+    local nm1_bin nm2_bin nm3_bin nm4_bin
+
+    # split out the parts of the netmask
+    nm1=`$EXPR $1 : '\([0-9]*\)\..*'`
+    nm2=`$EXPR $1 : '[0-9]*\.\([0-9]*\)\..*'`
+    nm3=`$EXPR $1 : '[0-9]*\.[0-9]*\.\([0-9]*\)\..*'`
+    nm4=`$EXPR $1 : '[0-9]*\.[0-9]*\.[0-9]*\.\([0-9]*\)'`
+
+    # Convert to binary
+
+    nm1_bin=`echo "obase=2;$nm1" | bc`
+    nm2_bin=`echo "obase=2;$nm2" | bc`
+    nm3_bin=`echo "obase=2;$nm3" | bc`
+    nm4_bin=`echo "obase=2;$nm4" | bc`
+
+    prefix="$nm1_bin$nm2_bin$nm3_bin$nm4_bin"
+
+    # Count number of 1's, ($AWK -1)
+    # shellcheck disable=SC2016
+    num=$(echo "${prefix}" | $AWK 'BEGIN{FS="1"} {print NF-1}')
+
+    IF_PREFIX_LEN=${num}
+    update_params "$2"_IF_PREFIX_LEN "${num}"
+
+}
+
+### Function: update_hwaddress###
+#
+#
+#updates hwaddress in the interface files
+#Arguments: None
+################################
+update_hwaddress()
+{
+path_interface="/etc/sysconfig/network-scripts/"
+
+if [ -d ${path_interface} ]; then
+	cd "${path_interface}"
+	interface_size=$($FIND . -type f -size 0)
+	if [ ! -z "$interface_size" ] ; then
+    # shellcheck disable=SC2016
+		empty_interfaces=$($FIND . -type f -size 0 | $AWK -F'-' '{print $2}')
+		for i in ${empty_interfaces}
+		do
+			emp_inter=$i
+            {
+			$ECHO "TYPE=Ethernet"
+			$ECHO "BOOTPROTO=static"
+			$ECHO "ONBOOT=yes"
+			$ECHO "DEFROUTE=no"
+			$ECHO "DEVICE=${emp_inter}"
+			$ECHO "NAME=${emp_inter}"
+            } >"${path_interface}"/ifcfg-"${emp_inter}"
+		done
+	fi
+	existing_interfaces=$($LS /sys/class/net/ | $EGREP -v 'lo|bonding_masters')
+	for i in $($ECHO "${existing_interfaces}")
+	do
+		interface=$i
+        HWADDRESS=$($CAT /sys/class/net/"${interface}"/address)
+
+        if [ -n "${HWADDRESS}" ];
+        then
+            if [ -f /etc/sysconfig/network-scripts/ifcfg-"${interface}" ]; then
+            
+                $GREP -w HWADDR /etc/sysconfig/network-scripts/ifcfg-"${interface}" > /dev/null
+                mac_re=$?
+                if [ ${mac_re} -ne 0 ];
+                then
+                    $ECHO "HWADDR=${HWADDRESS}" >> /etc/sysconfig/network-scripts/ifcfg-"${interface}"
+                else
+                    $ECHO -e "--> MAC Address entry already present for ${interface}"
+                fi
+            fi
+        else
+           abort_script "Unable to update MAC Address for ${interface}"
+        fi
+
+		
+	done
+    $ECHO -e "-->Successfully updated MAC Address entry in Network configuration Files"
+
+fi
+}
+
+### Function: create_bond###
+#
+# Creates the network bond if the server is gen 10 +
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+
+create_bond()
+{
+if [ -s "${PARAMSFILE}" ]; then
+	path_interface="/etc/sysconfig/network-scripts"
+	if [ ! -f "${path_interface}"/ifcfg-bond0 ]; then
+		IF_BKP_DIR=/etc/sysconfig/network-scripts/bkp-interfaces
+        
+		[[ -d "${IF_BKP_DIR}" ]] || $MKDIR -p "${IF_BKP_DIR}"
+
+		$ECHO -e "-->Creating a bond connection"
+        # shellcheck disable=SC2016
+		active_interface=$($IP -o -f inet addr show | $AWK '/scope global/ {print $2}')
+        re=$?
+		if [ $re -eq 0 ]; then
+			get_param IF_SEC_NIC
+			passive_int=${PARAM_NAME}
+			#echo "$passive_int"
+			$CP /etc/sysconfig/network-scripts/ifcfg-"${active_interface}" /etc/sysconfig/network-scripts/bkp-interfaces/bkp-"${active_interface}"_"$($DATE "+%Y.%m.%d-%H.%M.%S")"
+			$MV /etc/sysconfig/network-scripts/ifcfg-"${passive_int}" /etc/sysconfig/network-scripts/bkp-interfaces/bkp-"${passive_int}"_"$($DATE "+%Y.%m.%d-%H.%M.%S")"
+			#Creating network bond
+			UUID=$(uuidgen bond0)
+			$MV "${path_interface}"/ifcfg-"${active_interface}" "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i 's/"//g' "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i 's/TYPE=Ethernet/TYPE=Bond/' "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i 's|\(DEVICE=.*\)|DEVICE=bond0|' "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i 's|\(NAME=.*\)|NAME=bond0|' "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i '2s/^/BONDING_MASTER=yes \n/' "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i "s|\(UUID=.*\)|UUID=${UUID}|" "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i "1s/^/BONDING_OPTS=\"miimon=100 mode=active-backup primary=${active_interface}\" \n/" "${path_interface}"/ifcfg-bond0
+			$CAT ${path_interface}/ifcfg-bond0 | sed -i "s/HWADDR=.*//g" "${path_interface}"/ifcfg-bond0
+			#Creating slave with active interface
+			slave1_UUID=$(uuidgen bond-slave-"${active_interface}")
+            {
+                $ECHO "TYPE=Ethernet"
+                $ECHO "NAME=bond-slave-${active_interface}"
+                $ECHO "DEVICE=${active_interface}"
+                $ECHO "ONBOOT=yes"
+                $ECHO "MASTER=bond0"
+                $ECHO "SLAVE=yes"
+                $ECHO "UUID=${slave1_UUID}"
+            } >>"${path_interface}"/ifcfg-bond0-slave-"${active_interface}"
+		
+			#Creating slave with passive interface
+			slave2_UUID=$(uuidgen bond-slave-"${passive_int}")
+            {
+                $ECHO "TYPE=Ethernet"
+                $ECHO "NAME=bond-slave-${passive_int}"
+                $ECHO "DEVICE=${passive_int}"
+                $ECHO "ONBOOT=yes"
+                $ECHO "MASTER=bond0"
+                $ECHO "UUID=${slave2_UUID}"
+            } >>"${path_interface}"/ifcfg-bond0-slave-"${passive_int}"
+
+			#$IFUP ${path_interface}/ifcfg-bond0
+			#sleep 2
+			$SYSTEMCTL restart network
+			$SLEEP 5
+            # shellcheck disable=SC2016
+			IP_ADDR_PLUMBED=$($IP addr show bond0 | $GREP "inet " | $AWK '{print $2}')
+			if [[ -z "$IP_ADDR_PLUMBED" ]]; then
+				abort_script "Interface is not plumbed properly! Exiting the script"
+			 fi
+			$ECHO -e "--> Successfully configured bond0"
+		else
+			abort_script "Could not fetch the active interface file"
+		fi
+	else
+		$ECHO -e "--> Network bonding already created"
+	fi
+
+else 
+	abort_script "${PARAMSFILE} File is not present or secondary nic value inforamtion is missing."
+fi
+
+return 0
+
+}
+### Function: install_packages###
+#
+# Installs/Uninstalls additional packages
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+#install_packages()
+#{
+#    local pkg_name uar_filename line words installed
+#    uar_filename="${OM_MEDIA_LOC}/omtools/mws_uar_pkg_list"
+#    while read line; do
+#        words=($line)
+#        pkg_name=${words[1]}
+#        $PKG info -q ${pkg_name}
+#        installed=$?
+#        if [ "${words[0]}" == "install" ]; then
+#            if [ $installed -ne 0 ]; then
+#                $ECHO -e "\n--> Installing ${pkg_name}"
+#                do_cmd $RPM -ivh ${pkg_name}
+#                do_cmd $RPM -q ${pkg_name}
+#            else
+#                $ECHO -e "\n--> ${pkg_name} already installed"
+#            fi
+#        elif [ "${words[0]}" == "uninstall" ]; then
+#            if [ $installed -ne 1 ]; then
+#                $ECHO -e "\n--> Uninstalling ${pkg_name}"
+#                do_cmd $RPM -e ${pkg_name}
+#                $RPM -q ${pkg_name}
+#                if [ $? -eq 0 ]; then
+#                    abort_script "Failed to uninstall ${pkg_name}"
+#                fi
+#            else
+#                $ECHO -e "\n--> ${pkg_name} already uninstalled"
+#            fi
+#        else
+#            abort_script "Invalid option ${words[0]} in ${uar_filename}"
+#        fi
+#    done < ${uar_filename}
+#    return 0
+#}
+
+### Function: update_packages ###
+#
+# Performs package update
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+update_packages()
+{
+    $YUM update > /dev/null
+    res=$?
+    if [ $res -eq 4 ]; then
+        $ECHO -e "\n-->No package update required"
+    else
+        $ECHO -e "\n-->Updating packages"
+        do_cmd $YUM update
+    fi
+
+    return 0
+}
+
+
+### Function: update_history ###
+#
+# Updates history file with MWS status
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+update_history()
+{
+
+if [ ! -f /ericsson/config/mws_status ] ; then
+
+        $CAT /var/tmp/om_status_file >/ericsson/config/mws_status
+        $CAT /var/tmp/patch_status_file >>/ericsson/config/mws_status
+        $ECHO "=====================================================================" >>/ericsson/config/mws_status
+        $ECHO "MWS Status file is updated with OM and Patch details" | $TEE -a "${LOGFILE}"
+        $RM -rf /var/tmp/om_status_file /var/tmp/patch_status_file
+
+else
+        # shellcheck disable=SC2016
+        patch_entry=$($GREP -Ei  'bundle_version' "$($CAT /var/cache_patch)" | $AWK -F'=' '{print $2}')
+
+        if [[ $($CAT /ericsson/config/mws_status | $GREP  "${patch_entry}") ]]; then
+                log -p " MWS Status file has the entry of Media provided. Update skipped in mws_status file"
+                $RM -rf /var/tmp/om_status_file /var/tmp/patch_status_file /var/cache_patch
+        else
+                {
+                  $CAT /var/tmp/om_status_file 
+                  $CAT /var/tmp/patch_status_file
+                  $ECHO "============================================================="
+                } >> /ericsson/config/mws_status
+                
+		
+                $ECHO "MWS status file is updated with OM and Patch details" | $TEE -a "${LOGFILE}"
+                $RM -rf /var/tmp/om_status_file /var/tmp/patch_status_file
+        fi
+
+fi
+}
+
+### Function: do_reboot ###
+#
+# Performs reboot, as might be required by package update
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+do_reboot()
+{
+
+     $ECHO -e "\n-->MWS Configuration completed successfully and MWS server going to reboot."
+     $ECHO -e "\n-->Post verification tasks will continue after mws server reboot ."
+     $SHUTDOWN -r +1
+     sd_res=$?
+     if [ $sd_res -eq 0 ]; then
+        done_step 27
+        sleep 180
+    fi
+    return 0
+}
+
+### Function: remove_dhcpd_conf ###
+#
+#To remove /etc/dhcp/dhcpd.conf file if exists only
+# Arguments: None
+# Uses: /etc/dhcp/dhcpd.conf
+# Return Values: none
+remove_dhcpd_conf() {
+
+dhcp_conf_file="/etc/dhcp/dhcpd.conf"
+        if [ -f ${dhcp_conf_file} ] ; then
+                $ECHO -e "-->Removing old dhcp conf file"
+                $RM -rf "${dhcp_conf_file}"
+        else
+  
+        $ECHO -e "Old dhcp conf file not existing "
+
+        fi
+}
+
+### Function: wait_service_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_service_state() {
+    local svc_name=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        $SVCS ${svc_name} | $GREP -w $svc_state > /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+read_domain()
+{
+# shellcheck disable=SC2016   
+domain_check=$($CAT /etc/resolv.conf | $GREP -Ew "search[ ]+[a-zA-Z.]+"|$AWK '{print $2}')
+$ECHO -e "\n-->Checking DNS Domain Name "
+if [[ -z $domain_check ]]; then
+
+    while :; do
+        $ECHO "Please enter Domain name: "
+        read -r domain_name
+        if [ -n "${domain_name}" ] ; then
+#          USER_DOMAIN_NAME="${domain_name}"
+            break
+        fi
+    done
+    update_params USER_DOMAIN_NAME "${domain_name}"
+else 
+   $ECHO -e "\nConfigured Domain name is ${domain_check}"
+   update_params USER_DOMAIN_NAME "${domain_check}"
+fi 
+
+}
+
+### Function: update_domain ###
+#
+# Updates search domain and name server entires in file /etc/resolv.conf
+#
+# Arguments: None
+# Uses:
+# Return Values: 0 or 1
+update_domain()
+{
+$ECHO -e "--> Configuring the DNS Domain and Name server(s)"
+# shellcheck disable=SC2016 
+DNSDOMAIN=$($GAWK '/search/{print $2}' /etc/resolv.conf | $TR '\n' ',' | sed 's/,$/\n/')
+if [ -n "${DNSDOMAIN}" ];
+then
+   $ECHO -e "DNS Domain ${DNSDOMAIN} is already configured"
+
+elif [ -s "${PARAMSFILE}" ]; then
+  get_param USER_DOMAIN_NAME
+  domain_name=${PARAM_NAME}
+
+    if [[ -n "${domain_name}" ]]; then
+
+		if [[ $($GREP -w "search" /etc/resolv.conf) ]] && [[ $($GREP -w "${domain_name}" /etc/resolv.conf) ]]; then
+
+            $ECHO "Search entry and domain name already updated successfully"
+
+		else
+				$ECHO "search ${domain_name}" >> /etc/resolv.conf
+                re_dmain=$?
+				if [ $re_dmain -eq 0 ]; then
+				
+						$ECHO  -e "search entry and domain name updated successfully"
+				else
+						abort_script "search entry and domain name update failed"
+				fi
+		fi
+	else
+	  abort_script "search entry and domain name update failed"
+	fi
+else
+   abort_script "Unable to get domain entry or domain name"
+fi 
+
+update_nameserver_ips
+nameserv_re=$?
+if [ ${nameserv_re} -eq 0  ] ; then
+     return 0
+else
+    abort_script "Failed to configure DNS Server IP(s) "
+    
+fi
+
+}
+
+### Function: update_loghost ###
+#
+# Updates loghost to point to IP address not localhost in /etc/hosts
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+update_loghost()
+{
+local hostip _hostname_
+# shellcheck disable=SC2016
+_hostname_=$(hostname | $GAWK -F. '{print $1}')
+
+    $ECHO -e "-->Ensuring loghost is on our IP address"
+    # shellcheck disable=SC2016
+    hostip=$($HOSTNAME -I | awk '{print $1}')
+    if [ -z "${hostip}" ] ; then
+       while :
+        do
+                $ECHO "Please provide ip address of the local host to update in /etc/hosts:"
+                read -r hostip
+                if [ -z "${hostip}" ] || [[ ! "${hostip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                        continue
+                fi
+                break
+        done
+
+     fi
+    $CAT /etc/hosts | $HEAD -1 > /host
+    $CAT /host | $SED 's/loghost//g' > /etc/hosts
+    $ECHO -e "${hostip}\t${_hostname_}\tloghost" >> /etc/hosts
+        if [ $? -eq 0 ]; then
+                $ECHO -e "--> host details updated successfully in /etc/hosts"
+        else
+                abort_script "host details update failed"
+        fi
+
+    $RM -rf /host
+    return 0
+}
+
+### Function: update_nsswitch ###
+#
+# Updates /etc/nsswitch.conf by editing invalid myhostname entry
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+update_nsswitch() {
+
+nsconf_file=`$CAT /etc/nsswitch.conf | $GREP -w myhostname`
+res=$?
+if [ ${res} -eq 0  ] ; then
+        $ECHO -e "--> Updating /etc/nsswitch.conf file"
+        $ECHO $nsconf_file | sed -i 's/hosts:      files dns myhostname/hosts:      files dns/' /etc/nsswitch.conf
+        if [ $? -ne 0 ] ; then
+                abort_script "Failed to update /etc/nsswitch.conf"
+        else
+                $ECHO "/etc/nsswitch.conf updated successfully"
+        fi
+else
+        $ECHO "No update required for /etc/nsswitch.conf"
+fi
+}
+
+
+### Function: do_disable_multipath ###
+#
+# Disables MPXIO
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+do_disable_mpath() {
+    $ECHO -e "--> Disabling Multi-pathing"
+    if [ "$SYSTEMCTL is-active multipathd.service" == "active" ]; then
+                echo "-->multipathd.service service is active"
+                $SYSTEMCTL stop multipathd.service > /dev/null
+                $SLEEP 2
+                $SYSTEMCTL disable multipathd.service  > /dev/null
+                res_sevice=$?
+                if [ $res_sevice -eq 0 ] ; then
+                        echo "--> multipathd.service is disabled"
+                else
+                        echo "--> Failed to disable multipathd.service"
+                        return 1
+                fi
+    else
+        echo "--> multipathd.service service already inactive"
+        return 0
+    fi
+
+}
+
+### Function: do_disable_firewalld ###
+#
+# Disables MPXIO
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+do_disable_firewalld() {
+    $ECHO -e "-->Disabling firewalld"
+    # shellcheck disable=SC2016
+    if [ "$($SYSTEMCTL status firewalld | $GREP -w Active | $AWK '{print $2}')" == "active" ]; then
+                echo "-->firewalld service is active"
+                $SYSTEMCTL stop firewalld > /dev/null
+                $SLEEP 2
+                $SYSTEMCTL disable firewalld > /dev/null
+                fw_res=$?
+                if [ $fw_res -eq 0 ] ; then
+                        echo "firewalld is disabled"
+                else
+                        echo "Failed to disable firewalld service"
+                        return 1
+                fi
+    else
+        echo "firewalld.service service already inactive"
+    fi
+
+}
+
+
+
+### Function: verify_bootmode###
+#
+# Verifies BIOS boot mode for UEFI and server model
+#
+# Arguments: None
+# Uses: commands 
+# Return Values: none
+verify_bootmode()
+{
+    $ECHO -e "\n-->Checking the boot mode"
+ #   boot_mode_status=`[ -d /sys/firmware/efi ] && echo UEFI || echo "Legacy BIOS"`
+    if [ -d /sys/firmware/efi ];
+    then
+       boot_mode_status="UEFI"
+    else
+       boot_mode_status="Legacy BIOS"
+    fi
+    server_model=`$DMIDECODE -t system|grep -iw "Product Name"|awk -F: '{print $2}'|cut -d' ' -f4,5`
+
+    if [[ "$boot_mode_status" == "UEFI" ]] && [[ "$server_model" == "Gen8" || "$server_model" == "Gen9" || "$server_model" == "Gen10" ]] ; then
+	    abort_script "MWS Configuration ABORTED. Boot Mode Validation Failed. Set Legacy BIOS Boot Mode which is supported in $server_model hardware"
+    elif [[ "$boot_mode_status" == "Legacy BIOS" ]] && [[ "$server_model" == "Gen10 Plus" ]] ; then
+        abort_script "MWS Configuration ABORTED. Boot Mode Validation Failed. Set UEFI BIOS Boot Mode which is supported in $server_model hardware"
+	else
+		echo -e "$server_model BIOS BOOT Mode is set to $boot_mode_status"
+	fi
+}
+
+
+
+### Function: verify_jump###
+#
+# Verifies and shares /JUMP filesystem
+#
+# Arguments: None
+# Uses:  JUMP_LOC
+# Return Values: none
+verify_jump()
+{
+    $ECHO -e "\n-->Checking /JUMP directory present or not."
+    JUMP_LOC="/JUMP"
+    df ${JUMP_LOC} >/dev/null
+
+    if [ $? -eq 0 ]; then
+        $ECHO -e  "${JUMP_LOC} is exists"
+        if [ -f /etc/fstab ]; then
+                if $GREP -Fqw "/JUMP" /etc/fstab
+                then
+                         echo "/JUMP is present in /etc/fstab"
+                else
+                        abort_script "An entry for /JUMP is not present /etc/fstab"
+                fi
+        else
+                abort_script "/etc/fstab doesn't exist"
+        fi
+
+     else
+        abort_script "/JUMP doesn't exist.Please create it manually!"
+     fi
+}
+
+
+### Function: check_media_iso###
+#
+# Checks ISO media under /JUMP/PATH 
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+
+check_media_iso()
+{
+ 
+if [[ -d ${ISOS_PATH} && -n "$($LS -A ${ISOS_PATH})" ]]; then 
+  
+  $ECHO -e "\n--> Checking ISO(s) under ${ISOS_PATH}"
+  ISO_FILE_COUNT=$($LS -lR ${ISOS_PATH}/ | grep --count \.iso$)
+  if [ "${ISO_FILE_COUNT}" -ge 3 ] ; then
+ 
+    ls ${ISOS_PATH}/ENIQ_Statistics*.iso >/dev/null 2>&1
+    eniq_res=$?
+    if [ $eniq_res -eq 0 ]; then
+
+        ENIQ_SW_MEDIA_ISO_LOC=$($LS ${ISOS_PATH}/ENIQ_Statistics*.iso)
+        ENIQ_SW_MEDIA_CNT=$($LS -lR ${ISOS_PATH}/ENIQ_Statistics* | grep --count \.iso$)
+    else
+        abort_script "ENIQ BASE SOFTWARE ISO file is not existing under ${ISOS_PATH}.Please ensure ISO file is present under ${ISOS_PATH} and re-run this script again."
+    fi
+
+    ls ${ISOS_PATH}/ENIQ_OS_Patch*.iso >/dev/null 2>&1
+    patch_res=$?
+
+    if [ $patch_res -eq 0 ]; then
+
+        INSTALL_PATCH_MEDIA_ISO_LOC=$($LS ${ISOS_PATH}/ENIQ_OS_Patch*.iso)
+        INSTALL_PATCH_MEDIA_CNT=$($LS -lR ${ISOS_PATH}/ENIQ_OS_Patch*.iso|grep --count \.iso$)
+    else
+        abort_script "Patch Media ISO file is not existing under ${ISOS_PATH}. Please ensure ISO file is present under ${ISOS_PATH} and re-run this script again."
+    fi
+
+    ls ${ISOS_PATH}/rhel-server*.iso >/dev/null 2>&1
+    rel_res=$?
+    if [ $rel_res -eq 0 ]; then
+
+        RHEL_MEDIA_ISO_LOC=$($LS ${ISOS_PATH}/rhel-server*.iso)
+        RHEL_MEDIA_CNT=$($LS -lR ${ISOS_PATH}/rhel-server*.iso| grep --count \.iso$)
+    else
+        abort_script "RHEL Media ISO file is not existing under ${ISOS_PATH}. Please ensure ISO file is present under ${ISOS_PATH} and re-run this script again."
+    fi
+
+    # RHEL_MEDIA_ISO_LOC=$(ls ${ISOS_PATH}/rhel-*.iso)
+
+     $LS "${ISOS_PATH}"/ |grep -i "^Consolidated" >/dev/null 2>&1
+     om_res=$?
+     if [ $om_res -eq 0 ]; then
+
+         OM_MEDIA_ISO_LOC=$($LS ${ISOS_PATH}/ |grep -i "Consolidated")
+     fi
+	
+    #RHEL_MEDIA_CNT=$(ls -lR ${ISOS_PATH}/rhel-*.iso| grep --count \.iso$)
+	if [[ "${ENIQ_SW_MEDIA_CNT}" -eq 1 && "${INSTALL_PATCH_MEDIA_CNT}" -eq 1 && "${RHEL_MEDIA_CNT}" -eq 1 ]];
+	then
+	  arr=( "${ISOS_PATH}/${OM_MEDIA_ISO_LOC}" "${RHEL_MEDIA_ISO_LOC}" "${INSTALL_PATCH_MEDIA_ISO_LOC}" "${ENIQ_SW_MEDIA_ISO_LOC}" )
+	  $ECHO "Following Media ISO(s) files are under ${ISOS_PATH} Directory "
+	  [ -e "/tmp/.iso_file_paths.txt" ] && rm /tmp/.iso_file_paths.txt
+	  printf '%s\n' "${arr[@]}" >> /tmp/.iso_file_paths.txt
+	  cat /tmp/.iso_file_paths.txt
+	  
+	else
+	  abort_script "Duplicte Media ISO's or few media ISO(s) file are missing under ${ISOS_PATH}. Please ensure ISO(s) file are present under ${ISOS_PATH} and re-run this script again."
+   	  #$ECHO " ${OM_MEDIA_ISO_LOC}, ${RHEL_MEDIA_ISO_LOC}, ${INSTALL_PATCH_MEDIA_ISO_LOC} ,${ENIQ_SW_MEDIA_ISO_LOC}"
+    fi
+  else
+      abort_script "Ensure all Media ISO(s) files are uploaded to under ${ISOS_PATH} Directory and re-run this script again."
+   fi
+else
+   abort_script "No ISO(s) are existing under ${ISOS_PATH} Directory. Please ensure ISO(s) file is present under ${ISOS_PATH} and re-run this script again."
+fi
+
+}
+
+validate_read_inputs()
+{
+
+ verify_jump
+
+ verify_bootmode
+ 
+ check_media_iso
+ 
+ get_time_server
+
+ get_dns_server
+
+ read_domain
+
+ read_interface_type
+
+ display_interface_values
+
+ vlan_confirm
+
+}
+
+
+### Function: do_disable_NetworkManager###
+#
+# Disables MPXIO
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+do_disable_NetworkManager() {
+    $ECHO -e "\n--> Disabling NetworkManager"
+    # shellcheck disable=SC2016
+    if [ "$($SYSTEMCTL status NetworkManager | $GREP -w  Active | $AWK '{print $2}')" == "active" ]; then
+                $ECHO "NetworkManager service is active"
+                $SYSTEMCTL stop NetworkManager
+                $SLEEP 2
+                $SYSTEMCTL disable NetworkManager
+                res_nmaganer_service=$?
+                if [ $res_nmaganer_service -eq 0 ] ; then
+                        $ECHO "NetworkManager is disabled"
+                else
+                        $ECHO "Failed to disable NetworkManager service"
+                        return 1
+                fi
+    else
+        $ECHO "--> NetworkManager service already inactive"
+        return 0
+    fi
+
+}
+
+#####################################################
+#                                                   #
+#  Exclude package function to remove the packages  #
+#      present in packages2exclude file             #
+#                                                   #
+#####################################################
+
+exclude_packages()
+{
+ $RM -rf /var/tmp/om_media > /dev/null 2>&1
+ $TOUCH /var/tmp/om_media > /dev/null 2>&1
+ $ECHO "${OM_MEDIA_LOC}" >> /var/tmp/om_media
+ $ECHO -e "-->Removing excluded packages"
+ #for i in $(cat "${OM_MEDIA_LOC}"/omtools/packages2exclude); do
+ while read -r pkg
+ do
+        pkg_name=$pkg
+        rpm -qi "${pkg_name}" >/dev/null 2>&1
+        installed=$?
+        if [ $installed -eq 0 ]; then
+                $ECHO -e "Removing package ${pkg_name}"
+                rpm -e --nodeps "${pkg_name}"
+                pkg_res=$?
+                if [ $pkg_res -eq 0 ]; then
+                      log -p "INFO" "${pkg_name} package removed successfully"
+                fi
+        fi
+ done < "${OM_MEDIA_LOC}"/omtools/packages2exclude
+}
+
+### Function: install_rpm_packages###
+#
+# Install the rpms after RHEL install
+#
+# Arguments: None
+# Return Values: none
+
+install_rpm_packages()
+{
+    local pkg_name line
+    _filename="${PACKAGES_INCLUDE}"
+    _reponame="/etc/yum.repos.d/ericRHEL.repo"
+    if [ -f ${_filename} ]; then
+            while read line; do
+                pkg_name=$line
+                $RPM -qi ${pkg_name} >/dev/null 2>&1
+                installed=$?
+                if [ $installed -ne 0 ]; then
+                        $ECHO -e "\n--> Installing ${pkg_name}"
+                        do_cmd $YUM -y install ${pkg_name}
+                        do_cmd $RPM -qi ${pkg_name} > /dev/null
+                else
+                    $ECHO -e "\n--> ${pkg_name} already installed"
+                fi
+            done < ${_filename}
+    else
+
+        abort_script "Failed to install ${pkg_name}"
+    fi
+    return 0
+}
+
+
+### Function: cache_rhel###
+#
+# Caches RHEL software
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Sets: MEDIA_LOC
+# Return Values: none
+
+cache_rhel()
+{
+    local rhel_msg cached_rs shipment
+    MEDIA_LOC=$($AWK -F= '/RHEL_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    $ECHO -e "\n--> Caching Kickstart media"
+    if [[ -z "${MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine Kickstart media cache path"
+    fi
+    rhel_msg=$(${KICKSTARTDIR}/manage_linux_kickstart.bsh -a add -k .linux_boot_media -N -p ${MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+        $ECHO -e "\n--> Successfully cached Kickstart media \n"
+    else
+        cached_rs='.*is already installed in[[:space:]]/JUMP/LIN_MEDIA/(.*)'
+
+        if [[ ${rhel_msg} =~ ${cached_rs} ]]; then
+           shipment=${BASH_REMATCH[1]}
+           $ECHO -e "Media already cached at /JUMP/LIN_MEDIA/${shipment}"
+        else
+            abort_script "Failed to cache media  ${rhel_msg}"
+        fi
+    fi
+    $UMOUNT -f ${MEDIA_LOC}
+    if [ $? -eq 0 ]; then
+      $ECHO -e "Successfully unmounted Kickstart media\n"
+    else
+      abort_script "Failed to unmount rhel kickstart iso media  ${rhel_msg}"
+    fi
+
+    return 0
+}
+
+### Function: cache_patch_rhel###
+#
+# Caches RHEL software
+#
+# Arguments: None
+# Uses: INSTALL_PATCH_RHEL_MEDIA_LOC
+# Sets: MEDIA_LOC
+# Return Values: none
+
+cache_patch_rhel()
+{
+    local rhel_msg cached_rs shipment
+    PATCH_MEDIA_LOC=$($AWK -F= '/RHEL_INSTALL_PATCH_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    $ECHO -e "-->Caching Patch media"
+    if [[ -z "${PATCH_MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine RHEL Patch media cache path"
+    fi
+    rhel_msg=$(${KICKSTARTDIR}/manage_install_patch_kickstart.bsh -a add -k .patch_boot_media -N -p ${PATCH_MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+        $ECHO -e "Successfully cached RHEL Patch media"
+    else
+        cached_rs='.*is already installed in[[:space:]]/JUMP/INSTALL_PATCH_MEDIA/(.*)'
+
+        if [[ ${rhel_msg} =~ ${cached_rs} ]]; then
+           shipment=${BASH_REMATCH[1]}
+           $ECHO -e "Media already cached at /JUMP/INSTALL_PATCH_MEDIA/${shipment}"
+        else
+            abort_script "Failed to cache patch media  ${rhel_msg}"
+        fi
+    fi
+    $UMOUNT -f "${PATCH_MEDIA_LOC}"
+    patch_res=$?
+    if [ $patch_res -eq 0 ]; then
+      $ECHO -e "-->Successfully unmounted rhel patch media\n"
+    else
+      abort_script "Failed to unmount rhel patch iso media  ${rhel_msg}"
+    fi
+    create_install_patch_repos
+
+  return 0
+}
+
+### Function: get_iso_mount###
+#
+# Mounts the RHEL ISO and creates a temporary  ericRHEL repo
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+get_iso_mount()
+{
+    local temp_mount_point="/tmp/temp_linux_mount.$$"
+    PATH_TO_ISO=$1
+    do_cmd $MKDIR -p ${temp_mount_point}
+    doo umount ${PATH_TO_ISO} >/dev/null 2>&1
+    do_cmd $MOUNT -o loop ${PATH_TO_ISO} ${temp_mount_point} >/dev/null 2>&1
+    # Build ericRHEL containing all repos for this  system, where it will be run
+      if [ -f /etc/yum.repos.d/ericRHEL.repo ]; then
+         $RM -rf /etc/yum.repos.d/ericRHEL.repo
+      fi
+       $ECHO "[ericRHEL]" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "name=Ericsson RHEL" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "baseurl=file://${temp_mount_point}" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "enabled=1" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericRHEL.repo
+
+      update_params RHEL_MEDIA_LOC ${temp_mount_point}
+
+
+}
+
+
+### Function: get_patch_iso_mount###
+#
+# Mounts the RHEL ISO and creates a temporary  ericRHEL repo
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+get_patch_iso_mount()
+{
+    local temp_patch_mount_point="/tmp/temp_patch_mount"
+    PATH_TO_PATCH_ISO=$1
+    do_cmd $MKDIR -p ${temp_patch_mount_point}
+    doo umount ${PATH_TO_PATCH_ISO} >/dev/null 2>&1
+    $ECHO -e "Mounting PATCH ISO File"
+    do_cmd $MOUNT -o loop ${PATH_TO_PATCH_ISO} ${temp_patch_mount_point} >/dev/null 2>&1
+        if [ $? -eq 0 ] ; then
+                $ECHO -e "Successfuly Mounted patch media"
+        else
+                abort_script "Mounting patch media failed... verify"
+        fi
+
+      update_params RHEL_INSTALL_PATCH_MEDIA_LOC ${temp_patch_mount_point}
+      cache_patch_rhel
+}
+
+### Function: get_eniq_sw_iso_mount###
+#
+# Mounts the ENIQ BASE SOFTWARE ISO
+#
+# Arguments: None
+# Uses: ENIQ_MEDIA_LOC
+# Return Values: none
+
+get_eniq_sw_iso_mount()
+{
+    local temp_eniqsw_mount_point="/tmp/temp_eniq_sw_mount"
+    PATH_TO_ENIQ_SW=$1
+    do_cmd $MKDIR -p "${temp_eniqsw_mount_point}"
+    doo umount "${PATH_TO_ENIQ_SW}" >/dev/null 2>&1
+    $ECHO -e "-->Mounting ENIQ BASE SOFTWARE ISO File"
+    do_cmd $MOUNT -o loop "${PATH_TO_ENIQ_SW}" "${temp_eniqsw_mount_point}" >/dev/null 2>&1
+    mnt_res=$?
+        if [ $mnt_res -eq 0 ] ; then
+                $ECHO -e "-->Successfuly Mounted ENIQ BASE SOFTWARE media"
+        else
+                abort_script "\n-->Mounting ENIQ BASE SOFTWARE media failed. Please ensure the ENIQ Base Software ISO present under /JUMP/MEDIA"
+        fi
+
+      update_params ENIQ_MEDIA_LOC "${temp_eniqsw_mount_point}"
+}
+
+### Function: create_install_patch_repos###
+#
+# Creates a ericRHEL repo after caching of RHEL kickstart Media
+#
+# Arguments: None
+# Uses: RHEL_INSTALL_PATCH_MEDIA_LOC
+# Return Values: none
+
+create_install_patch_repos()
+{
+
+   $RM -rf /var/cache/yum/
+   # Create REHL Repo
+   KSPATCHDIR=`$LS /JUMP/INSTALL_PATCH_MEDIA |$TAIL -1|$AWK '{print $NF}'`
+   if [[ ! -z "${KSPATCHDIR}" ]]; then
+      $ECHO -e "-->Creating RHEL INSTALL PATCH kickstart Repo"
+      $RM -rf /etc/yum.repos.d/ericINSTALLPATCH.repo
+      RHEL_PACK_PATH=$($LS /JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}/RHEL | $GREP -w "RHEL[^_]" 2> /dev/null )
+      $ECHO "[ericINSTALLPATCH.repo]" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "name=Ericsson INSTALLPATCH" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "baseurl=file:///JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}/RHEL/${RHEL_PACK_PATH}" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "enabled=1" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+
+      $ECHO -e "Sucessfully created INSTALL PATCH RHEL kickstart Repo"
+   else
+      abort_script "Failed to create INSTALL PATCH RHEL kickstart Repo ${rhel_msg}"
+   fi
+
+   install_patches
+   install_patch_status=$?
+   if [ ${install_patch_status} -eq 0 ] ; then
+        $ECHO -e "\nSucessfully INSTALLED RHEL PATCHES"
+        patch_status=$($GREP -Ei  'sprint_release|bundle_version' /JUMP/INSTALL_PATCH_MEDIA/"${KSPATCHDIR}"/.patch_boot_media | column)
+        echo "/JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}/.patch_boot_media" >/var/cache_patch
+        # shellcheck disable=SC2016
+        patch_om_details=$($CAT "${OM_MEDIA_LOC}"/.om_linux | $GREP -i "media_dir" | $AWK  -F'=' '{print $2}')
+        # shellcheck disable=SC2016
+        patch_om_sprint=$($CAT "${OM_MEDIA_LOC}"/.om_linux | $GREP -i "media_dir" | $AWK  -F'/' '{print $2}')
+        $RM -rf /var/tmp/patch_status_file
+cat > /var/tmp/patch_status_file <<EOF
+MWS_PATCH_UPDATE_MEDIA_STATUS   -       ${patch_status}
+OM_MEDIA_USED_FOR_PATCHUPDATE   -       ${patch_om_details}
+PATCH_OM_SPRINT                 -       ${patch_om_sprint}
+INST_DATE                               $(now)
+
+EOF
+   else
+        abort_script "Failed to perform RHEL PATCHES INSTALLATION"
+   fi
+
+   remove_dhcpd_conf
+}
+
+### Function: install_patches###
+#
+#Installation of RHEL patches
+#
+#
+#Arguments: None
+#Return Values: none
+
+install_patches()
+{
+$RM -rf /var/tmp/om_media > /dev/null 2>&1
+$TOUCH /var/tmp/om_media > /dev/null 2>&1
+$ECHO "${OM_MEDIA_LOC}" >> /var/tmp/om_media
+
+UPGRADE_RHEL_SCRIPT=${OM_MEDIA_LOC}/patch/bin/upgrade_patchrhel.bsh
+PATCH_LOG_PATH="/var/ericsson/log/patch"
+$ECHO "/JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}" > /etc/mountpath
+
+# Check that the patch update script exists
+if [ ! -f "${UPGRADE_RHEL_SCRIPT}" ]; then
+    abort_script "Failed to find patch update script ${UPGRADE_RHEL_SCRIPT}"
+fi
+#Execution of update patch script for updating RHEL patches
+        $ECHO "Installing Patches on MWS..."
+        ${UPGRADE_RHEL_SCRIPT} -a install
+        if [ $? -eq 0 ] ; then
+                $ECHO -e "\nSucessfully Completed patch installation script"
+        else
+               abort_script "RHEL patch update failed.... please refer $PATCH_LOG_PATH" | $TEE -a ${LOGFILE}
+        fi
+}
+
+### Function: create_repos###
+#
+# Creates a ericRHEL repo after caching of RHEL kickstart Media
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+create_repos()
+{
+   # Create REHL Repo
+   KSDIR=`$LS /JUMP/LIN_MEDIA |$TAIL -1|$AWK '{print $NF}'`
+   if [[ ! -z "${KSDIR}" ]]; then
+      $ECHO -e "-->Creating RHEL kickstart Repo"
+      $RM -rf /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "[ericRHEL]" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "name=Ericsson RHEL" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "baseurl=file:///JUMP/LIN_MEDIA/${KSDIR}" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "enabled=1" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericRHEL.repo
+
+      $ECHO -e "Sucessfully created  RHEL kickstart Repo"
+   else
+      abort_script "Failed to create RHEL kickstart Repo ${rhel_msg}"
+   fi
+
+}
+
+### Function: get_rhel_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+
+get_rhel_media()
+{
+    $ECHO -e "-->Mounting RHEL ISO media" 
+    if [ -f "/tmp/.iso_file_paths.txt" ] ; then
+        PATH_TO_RHEL_MEDIA=$(grep '[[:blank:]]*rhel-server-*' /tmp/.iso_file_paths.txt)
+      # PATH_TO_RHEL_MEDIA=$(grep rhel-* /tmp/.iso_file_paths.txt)
+       [ -f "${PATH_TO_RHEL_MEDIA}" ] || abort_script "ISO media location doesn't contain RHEL iso"
+          $ECHO -e  "RHEL ISO File found under ${ISOS_PATH}"
+          $ECHO -e "Mounting RHEL ISO media"
+          get_iso_mount "${PATH_TO_RHEL_MEDIA}"
+    else
+       $ECHO -e "\n-->RHEL ISO media File is Missing under ${ISOS_PATH}"
+    fi
+
+}
+
+### Function: get_install_patch_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+
+get_install_patch_media()
+{
+     
+    if [ -f "/tmp/.iso_file_paths.txt" ] ; then
+    
+       PATH_TO_PATCH_MEDIA=$(grep '[[:blank:]]*ENIQ_OS_Patch*' /tmp/.iso_file_paths.txt)
+       [ -f "${PATH_TO_PATCH_MEDIA}" ] || abort_script "ISO media location doesn't contain PATCH Media iso"
+          $ECHO -e  "-->PATCH ISO File found under ${ISOS_PATH}"
+          get_patch_iso_mount "${PATH_TO_PATCH_MEDIA}"
+    else
+       abort_script "PATCH ISO media File is Missing under ${ISOS_PATH}"
+    fi
+             
+}
+
+### Function: get_eniq_sw_media###
+#
+# Get the ENIQ Base Software Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+get_eniq_sw_media()
+{
+     
+    if [ -f /tmp/.iso_file_paths.txt ] ; then
+    
+       PATH_TO_ENIQ_SW_MEDIA=$(grep '[[:blank:]]*ENIQ_Statistics_*' /tmp/.iso_file_paths.txt)
+       [ -f "${PATH_TO_ENIQ_SW_MEDIA}" ] || abort_script "ISO media location doesn't contain Media iso"
+          $ECHO -e  "ENIQ BASE SOFTWARE ISO File found under ${ISOS_PATH}"
+          $ECHO -e "Mounting ENIQ BASE SOFTWARE media ISO"
+          get_eniq_sw_iso_mount "${PATH_TO_ENIQ_SW_MEDIA}"
+    else
+       $ECHO -e "-->ENIQ BASE SOFTWARE ISO media file is missing under ${ISOS_PATH}"
+    fi
+             
+}
+
+# Function: verify_patch_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+verify_patch_media()
+{
+
+#if [ ! -d /JUMP/OS_BACK_UP ] ; then
+#        $MKDIR -p /JUMP/OS_BACK_UP
+#else
+#        $ECHO "OS_BACK_UP directory already exists"
+#fi
+
+if [ -f /var/tmp/.reboot_check ] ; then
+
+        $ECHO "Patch update is completed as part of generic_finish"
+        $ECHO "Patch update is skipped"
+else
+        get_install_patch_media
+fi
+
+}
+
+## Function: cache_om###
+#
+# Caches OM software
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Sets: MEDIA_DIR
+# Return Values: none
+cache_om()
+{
+    local om_msg cached_re release shipment
+    $ECHO -e "\n-->Caching OM media"
+    if [[ -z "${OM_MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine OM media cache path"
+    fi
+    om_msg=$(${KICKSTARTDIR}/manage_nfs_media.bsh -a add -m om_linux -N -p ${OM_MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+      $ECHO -e "Successfully cached OAM media\n"
+    else
+        cached_re='.*is already installed in[[:space:]]/JUMP/OM_LINUX_MEDIA/(.*)/(.*)'
+
+        if [[ ${om_msg} =~ ${cached_re} ]]; then
+            release=${BASH_REMATCH[1]}
+            shipment=${BASH_REMATCH[2]}
+            $ECHO -e "Media already cached at ${release}/${shipment}"
+        else
+            abort_script "Failed to cache media  ${om_msg}"
+        fi
+    fi
+
+    return 0
+}
+
+# Caches ENIQ software
+#
+# Arguments: None
+# Uses: ENIQ_MEDIA_LOC
+# Sets: MEDIA_DIR
+# Return Values: none
+
+cache_eniq_sw()
+{
+    local eniq_msg cached_re shipment
+    # shellcheck disable=SC2016
+    ENIQ_SW_MEDIA_LOC=$($AWK -F= '/ENIQ_MEDIA_LOC/ {print $2}' "${PARAMSFILE}")
+    $ECHO -e "\n-->Caching ENIQ BASE SOFTWARE media"
+    if [[ -z "${ENIQ_SW_MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine ENIQ BASE SOFTWARE media cache path"
+    fi
+    
+    eniq_msg=$("${KICKSTARTDIR}"/manage_nfs_media.bsh -a add -m eniq_stats -N -p "${ENIQ_SW_MEDIA_LOC}")
+    cache_eniqres=$?
+    if [ $cache_eniqres -eq 0 ]; then
+        $ECHO -e "Successfully cached ENIQ BASE SOFTWARE media"
+    else
+        cached_re='.*is already installed in[[:space:]]/JUMP/ENIQ_STATS/(.*)'
+
+        if [[ ${eniq_msg} =~ ${cached_re} ]]; then
+           shipment=${BASH_REMATCH[1]}
+           $ECHO -e "Media already cached at /JUMP/ENIQ_STATS/${shipment}"
+        else
+            abort_script "Failed to cache patch media ${eniq_msg}"
+        fi
+    fi
+
+    $UMOUNT -f "${ENIQ_SW_MEDIA_LOC}"
+    umnt_res=$?
+    if [ $umnt_res -eq 0 ]; then
+      $ECHO -e "Successfully unmounted Eniq Base Software media"
+    else
+      abort_script "Failed to unmount Eniq Base Software iso media ${eniq_msg}"
+    fi
+
+
+  return 0
+}
+
+
+### Function: remove_ERICkickstart###
+#
+# Removes ERICjump if its installed, as we have a new product version number
+# so upgrade_om might not upgrade if an older package is installed
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+remove_ERICkickstart()
+{
+pkg_status=`$RPM -qa ERICkickstart`
+
+    if [ ! -z ${pkg_status} ]; then
+        $ECHO -e "\n-->Uninstalling ERICkickstart"
+        do_cmd $RPM -e ERICkickstart-* >/dev/null
+    else
+        $ECHO -e "\n-->No ERICkickstart to uninstall"
+    fi
+    return 0
+}
+
+### Function: upgrade_om###
+#
+# Installs additional software using upgrade_om
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+upgrade_om()
+{
+    $ECHO -e "\n-->Installing additional software"
+    $RM -rf /var/cache/yum
+    yum-config-manager --disable \* > /dev/null 2>&1
+    $RM -rf /var/cache/yum
+    yum-config-manager --enable ericEMC > /dev/null 2>&1
+    $RM -rf /var/cache/yum
+    do_cmd ${OM_MEDIA_LOC}/omtools/upgrade_om.bsh -p ${OM_MEDIA_LOC} -a mws
+    om_upg_status=$?
+    if [ ${om_upg_status} -eq 0 ] ; then
+        # shellcheck disable=SC2016
+        om_med_details=$($CAT "${OM_MEDIA_LOC}"/.om_linux | grep -i "media_dir" | awk -F'=' '{print $2}')
+        $RM -rf /var/tmp/om_status_file
+cat > /var/tmp/om_status_file <<EOF
+MWS_OM_MEDIA_STATUS - ${om_med_details}
+INST_DATE             $(now)
+EOF
+    fi
+	
+    return 0
+
+}
+
+### Function: kickstart###
+#
+# Installs ERICkickstart package
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+install_ERICkickstart()
+{
+    local kickstartmsg pkg_log
+    pkg_log=/var/tmp/.mws_configure_kickstart.log
+    $ECHO -e "\n-->Installing ERICkickstart package"
+    $RPM -ivh ${OM_MEDIA_LOC}/omtools/eric_kickstart/ERICkickstart* |  $TEE ${pkg_log}
+    if [ $? -ne 0 ]; then
+        # Check if says because no updates needed
+        kickstartmsg=$($CAT ${pkg_log})
+        $RM ${pkg_log}
+        if [[ ${kickstartmsg} == *"is already installed"* ]]; then
+            $ECHO "\n-->ERICkickstart pkg reported no updates required"
+        else
+            abort_script "Failed to install ERICkickstart\n${kickstartmsg}"
+        fi
+    else
+        $ECHO -e "\n-->Successfully installed ERICkickstart"
+        $RM ${pkg_log}
+    fi
+
+    return 0
+}
+
+### Function: enable_services ###
+#
+# Enables/Disables additional services
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+
+
+enable_services()
+{
+    local line service service_filename
+    service_filename="${OM_MEDIA_LOC}/omtools/mws_svc_list"
+
+        while read line; do
+        service=($line)
+        active_status=`systemctl status ${service} | sed -n '/Active:/p' | cut -d ':' -f 2 | cut -d ' ' -f 2`
+        enabled_status=`systemctl status ${service} | sed -n '/Loaded:/p' | cut -d ';' -f 2 | cut -d ' ' -f 2`
+
+        if [ "${active_status}" == "inactive" ] && [ "${enabled_status}" == "disabled" ]; then
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ "${active_status}" == "inactive" ] && [ "${enabled_status}" == "enabled" ]; then
+                do_cmd systemctl disable ${service}
+                sleep 2
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ "${active_status}" == "active" ] && [ "${enabled_status}" == "disabled" ]; then
+                do_cmd systemctl restart ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ "${active_status}" == "active" ] && [ "${enabled_status}" == "enabled" ]; then
+                do_cmd systemctl restart ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+        elif [ "${active_status}" == "inactive" ]; then
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+        else
+                if [ "${enabled_status}" == "indirect" ] && [ "${service}" == "tftp" ]; then
+                        if [ ${active_status} == "active" ]; then
+                                continue;
+                        else
+                                do_cmd systemctl restart ${service}
+                                wait_active_state ${service} "active"
+                                if [ $? -ne 0 ]; then
+                                        abort_script "${service} failed to get activated"
+                                fi
+
+                        fi
+
+                else
+                        echo "Unknown state for ${service} service."
+                fi
+        fi
+        done < ${service_filename}
+}
+
+get_ip_netmask()
+{
+    for ip_pre in $(ip -o -f inet addr show | gawk '/scope global/ {print $4}'); do
+            ip=$(echo $ip_pre | cut -d '/' -f1)
+        validate_ip $ip
+
+        prefix=$(echo $ip_pre | cut -d '/' -f2)
+        set -- $(( 5 - ($prefix / 8) )) 255 255 255 255 $(( (255 << (8 - ($prefix % 8))) & 255 )) 0 0 0
+        [ $1 -gt 1 ] && shift $1 || shift
+        # Print netmask to stdout
+        netmask=`echo ${1-0}.${2-0}.${3-0}.${4-0}`
+        NETWORK_NETMASK=${netmask}
+    done
+}
+get_network_ip()
+{
+    local ip=$1 netmask=$2
+    local saved_IFS=$IFS # Save global field separator
+    IFS=.
+    read -r i1 i2 i3 i4 <<< "$ip"
+    read -r m1 m2 m3 m4 <<< "$netmask"
+    IFS=$saved_IFS # Restore global field separator
+    printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$((i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
+
+}
+### Function: get_time_server ###
+#
+# geting time server IP deatils from the user
+#
+# Arguments:
+#    - user need to provide the input for time server 
+#     
+# Uses: None
+
+get_time_server()
+{
+
+    if [ -s "${PARAMSFILE}" ]; then
+         get_param TIME_SERVER_IP
+        TIMESERVER=${PARAM_NAME}
+     
+    else
+        while :; do
+            $ECHO -e "\nEnter the NTP time server IP for network: "
+            read -r REPLY
+            TIMESERVER=${REPLY}
+            [[ -z "${TIMESERVER}" ]] && continue
+    #        [[ "${TIMESERVER}" == "none" ]] && break
+            validate_ip "${TIMESERVER}"
+            ip_res=$?
+            if [ $ip_res -ne 0 ]; then
+                $ECHO -e "\nERROR: ${TIMESERVER} not valid IP address, please provide valid IP address"
+                TIMESERVER=""
+            else
+                #echo "${TIMESERVER}" > /tmp/.timeserver
+                update_params TIME_SERVER_IP "${TIMESERVER}"
+                break
+            fi
+        done
+    fi
+}
+
+
+calc_brdcast_address()
+{
+
+local _oct=$1
+local _msk=$2
+_orig_ifs_="$IFS"
+IFS='.'
+local oct=($_oct)
+local msk=($_msk)
+i=0
+
+while [ $i -lt "${#oct[@]}" ]
+do
+    ip[$i]="$((${oct[$i]}+(255-(${oct[$i]} | ${msk[$i]}))))"
+    ip[$i]="$((oct[$i]+(255-(oct[$i] | msk[$i]))))"
+    i=$((i+1))
+done
+
+BROADCAST_ADDRESS="${ip[*]}"
+IFS="${_orig_ifs_}"
+
+}
+
+### Function: get_dns_server ###
+#
+# geting DNS server IP deatils from the user
+#
+# Arguments:
+#    - user need to provide the input for DNS server 
+#     
+# Uses: None
+
+get_dns_server()
+{
+
+local ip
+local dns_servers
+declare -i valid
+rx='([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
+$ECHO -e "\n-->Checking DNS Server Details .."
+ # shellcheck disable=SC2016
+DNSSERVERS=$($GAWK '/nameserver/{print $2}' /etc/resolv.conf | $TR '\n' ',' | sed 's/,$/\n/')
+if [ -n "${DNSSERVERS}" ];
+then
+   $ECHO -e "Currently configured DNS Server IP(s): ${DNSSERVERS}"
+else
+         while :; do       
+                $ECHO -e "\nEnter space-separated list of DNS servers for network $NETWORK_IP_ADDR:"
+                read -r REPLY
+                REPLY=$(echo $REPLY)
+                DNSSERVERS=${REPLY}
+                [[ -z "$DNSSERVERS" ]] && continue
+                # Validate DNS servers and remove duplicates
+                valid=1
+                if (echo "$DNSSERVERS" |grep -q ' ');then
+
+                for ip in $DNSSERVERS; do
+                        if ! validate_ip "$ip"; then
+                                valid=0
+                                dns_servers=
+                                break
+                        fi
+                        ! $EGREP "\<$ip\>" <<< "$dns_servers" >/dev/null && dns_servers="$dns_servers $ip"
+                done
+
+                elif [[ "$DNSSERVERS" =~ ^$rx\.$rx\.$rx\.$rx$ ]]; then
+                    valid=0
+                    DNSSERVERS=$($ECHO "${DNSSERVERS}")
+                    break
+                else
+                    $ECHO -e "WARNING: Given IP(s) are doesn't have space-separated or invalid DNS Server IP provided.\n"
+                    dns_servers=
+                    continue
+                fi
+
+                [[ $valid -eq 0 ]] && continue
+                # remove leading whitespace
+                DNSSERVERS=$($ECHO $dns_servers)
+                break
+        done
+        update_params DNS_SERVER_IP "$DNSSERVERS"
+ fi
+
+return 0
+
+}
+update_nameserver_ips()
+{
+    # shellcheck disable=SC2016 
+    DNSSERVERS=$($GAWK '/nameserver/{print $2}' /etc/resolv.conf | $TR '\n' ',' | sed 's/,$/\n/')
+    if [ -n "${DNSSERVERS}" ];
+    then
+        $ECHO -e "DNS Server IP(s) ${DNSSERVERS} already configured"
+        return 0
+    
+    elif [ -s "${PARAMSFILE}" ]; then
+        get_param DNS_SERVER_IP
+        dns_server_ipddrs=${PARAM_NAME}
+        if [[ -n "${dns_server_ipddrs}" ]]; then
+
+           for ip in $dns_server_ipddrs
+            do           
+                if ! $GREP -q "$ip" /etc/resolv.conf
+                then
+                    $ECHO "nameserver $ip" >> /etc/resolv.conf
+                fi
+            done
+
+            $SED -i '/^$/d' /etc/resolv.conf > /dev/null
+            $ECHO "DNS Server IP(s) sucessfully configured"
+            return 0
+        else 
+              return 1
+       fi
+    else
+        return 1
+    fi
+    
+
+}
+
+add_network()
+{
+
+local DHCP_SERVICE_STATE
+
+${RM} -f ${TEM_DIR}/new_network
+${RM} -f ${TEM_DIR}/${TEM_DIR}/new_network
+if [ -s "${PARAMSFILE}" ]; then
+   get_param TIME_SERVER_IP
+   TIMESERVER=${PARAM_NAME}
+else
+  abort_script "Unable to get the Time server IP Address"
+fi
+
+#echo "$NETWORK_IP_ADDR,$NETWORK_NETMASK,$BROADCAST_ADDRESS,$DEFAULTROUTER,${DNSDOMAIN},$DNSSERVERS,${NEXT_SERVER}"
+   
+$GREP "${NETWORK_IP_ADDR}" "${DHCP_CONF_FILE}" >/dev/null 2>&1
+nt_addr=$?
+if [[ -n ${NETWORK_IP_ADDR} ]] && [[ ${nt_addr} -eq 0 ]];
+then
+     $ECHO "Default network ${NETWORK_IP_ADDR} already present" 
+else
+
+if [[ "${TIMESERVER}" == "none" ]]; then
+    $CAT > ${TEM_DIR}/new_network << EOF
+
+subnet $NETWORK_IP_ADDR netmask $NETWORK_NETMASK {
+  option broadcast-address $BROADCAST_ADDRESS;
+  option routers $DEFAULTROUTER;
+  deny unknown-clients;
+  option domain-name "${DNSDOMAIN}";
+  option domain-name-servers $DNSSERVERS;
+  next-server ${NEXT_SERVER};
+}
+EOF
+else
+    TIMESERVER=${TIMESERVER// /,}
+    $CAT > ${TEM_DIR}/new_network << EOF
+
+subnet $NETWORK_IP_ADDR netmask $NETWORK_NETMASK {
+  option broadcast-address $BROADCAST_ADDRESS;
+  option routers $DEFAULTROUTER;
+  deny unknown-clients;
+  option ntp-servers ${TIMESERVER};
+  option domain-name "${DNSDOMAIN}";
+  option domain-name-servers $DNSSERVERS;
+  next-server ${NEXT_SERVER};
+}
+EOF
+fi
+
+# Add network to $DHCP_CONF_FILE
+
+if [ ! -s "$DHCP_CONF_FILE" ]; then
+    # This is the first network to be added
+
+    $CAT > ${TEM_DIR}/new_dhcp_conf << EOF
+# dhcpd.conf
+#
+# Configuration file for ISC dhcpd
+
+default-lease-time 600;
+max-lease-time 7200;
+
+# If this DHCP server is the official DHCP server for the local
+# network, the authoritative directive should be uncommented.
+authoritative;
+Allow booting;
+Allow bootp;
+
+# arch option for PXEClient
+#option arch code 93 = unsigned integer 16;
+
+# Set logging facility (accompanies setting in syslog.conf)
+log-facility local7;
+EOF
+
+   $CAT ${TEM_DIR}/new_network >> ${TEM_DIR}/new_dhcp_conf
+   $CAT >> ${TEM_DIR}/new_dhcp_conf << EOF
+
+class "PXEBoot" {
+  match if (substring(option vendor-class-identifier, 0, 9) = "PXEClient");
+}
+
+EOF
+else
+    ${SED} "/log-facility/r ${TEM_DIR}/new_network" ${DHCP_CONF_FILE} >> ${TEM_DIR}/new_dhcp_conf || \
+    abort_script "[$ACTION]: $SED failed adding network [$NETWORK_IP_ADDR]"
+fi
+
+# Validate temp DHCP file
+if ! ${DHCPD} -t -cf ${TEM_DIR}/new_dhcp_conf > /dev/null 2>&1; then
+   # Display invalid file report
+    ${DHCPD} -t -cf ${TEM_DIR}/new_dhcp_conf 
+    abort_script "[$ACTION]: Temp DHCP config file [${TEM_DIR}/new_dhcp_conf] failed validation."
+fi
+
+$CP ${TEM_DIR}/new_dhcp_conf ${DHCP_CONF_FILE} || abort_script "[$ACTION]: [$CP ${TEM_DIR}/new_dhcp_conf ${DHCP_CONF_FILE}] failed."
+
+# Log network addition
+#$ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully added network [$NETWORK_IP_ADDR] with netmask [$NETWORK_NETMASK] to the DHCP configuration.\n" | $TEE -a $LOGFILE
+
+
+# Manage DHCP service
+DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP Active | $GAWK '{print $2}')
+if [[ ${DHCP_SERVICE_STATE} == "active" ]]; then
+    ${SYSTEMCTL} restart $DHCP_SERVICE_NAME >/dev/null 2>&1
+    DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP Active | $GAWK '{print $2}')
+    if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+        ${SYSTEMCTL} stop $DHCP_SERVICE_NAME
+        sleep 5
+        ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+        # Systemctl restart sets maintenance if restarted too quickly
+        ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+        $ECHO -e "-->DHCP Service Configured successfully"
+    else 
+       $ECHO -e "-->DHCP Service Configured successfully"
+    fi
+else
+        ${SYSTEMCTL} enable $DHCP_SERVICE_NAME >/dev/null 2>&1
+        ${SYSTEMCTL} start $DHCP_SERVICE_NAME >/dev/null 2>&1
+        DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP Active | $GAWK '{print $2}')
+        if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+            ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+            DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP Active | $GAWK '{print $2}')
+            if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+                ${SYSTEMCTL} stops $DHCP_SERVICE_NAME
+                sleep 5
+                ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+                # Systemctl restart sets maintenance if restarted too quickly
+                ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+                $ECHO -e "-->DHCP Service Configured successfully"
+            fi
+        else
+            $ECHO -e "-->DHCP Service Configured successfully"
+        fi
+fi
+
+fi
+
+}
+### Function: update_path_varibles ###S=
+#
+# Updating path varible for uemcli
+#
+# Arguments:
+#     
+#     
+# Uses: None
+update_path_varibles()
+{
+
+    $ECHO -e "-->Updating Path variables"
+    if [ -f "/opt/dellemc/uemcli/bin/setlevel.sh" ]; then
+
+        /opt/dellemc/uemcli/bin/setlevel.sh low > /dev/null 
+        setl_res=$?
+        if [ $setl_res -eq 0 ]; then
+        
+             if ! $GREP -q "PATH=\$PATH:/opt/Unisphere/bin:/opt/Navisphere/bin" /etc/profile
+             then
+                $ECHO "PATH=\$PATH:/opt/Unisphere/bin:/opt/Navisphere/bin" >> /etc/profile
+                $ECHO "Path varibles updated successfully and Security level for Unity verification set properly."
+             fi
+        else 
+            abort_script "Security level for Unity Verification not set properly"
+          
+        fi
+
+    else
+           abort_script "UnisphereCLI package not installed"
+    fi
+   
+}
+
+configure_dhcp()
+{
+    $ECHO -e "\n--> Configuring the DHCP Service"
+    DHCP_CONF_FILE=/etc/dhcp/dhcpd.conf
+    DHCP_SERVICE_NAME="dhcpd.service"
+
+    get_ip_netmask
+    NETWORK_IP_ADDR=$(get_network_ip $ip $netmask)
+    
+    validate_ip "$NETWORK_IP_ADDR"
+    res_ip=$?
+    if [ $res_ip -eq 0 ]; then
+       dns_server=$($GAWK '/nameserver/{print $2}' /etc/resolv.conf | $TR '\n' ',' | sed 's/,$/\n/')
+       DNSSERVERS=$dns_server
+    else
+      abort_script "Unable to get Name server IP(s)"
+    fi
+    DEFAULTROUTER=`$ROUTE -n | $GAWK 'NR==3 {print $2}'`
+    validate_ip "$DEFAULTROUTER"
+
+    DNSDOMAIN=$(egrep "^[[:space:]]*\<search\>" /etc/resolv.conf|gawk '{print $2}')
+
+#    get_time_server
+     #NEXT_SERVER=$($IP -o -f inet addr show | $GAWK '/scope global/ {print $4}' | $CUT -d '/' -f1)
+     NEXT_SERVER=$($HOSTNAME -I | $CUT -d' ' -f1)
+
+    calc_brdcast_address "${NETWORK_IP_ADDR}" "${NETWORK_NETMASK}"
+
+    add_network
+
+}
+
+### Function: create_post_verifcation_service ###
+#
+# Creating wrapper script and custom service to contiune the mws_configure.bsh after reboot
+#
+# Arguments:
+#     
+#     
+# Uses: None
+
+create_post_verifcation_service()
+{
+
+
+OM_LOC=$($LS -td /JUMP/OM_LINUX_MEDIA/*/*/|head -1)
+
+if [[ -d "${OM_LOC}" && -n $($LS -A "${OM_LOC}") ]]; then 
+
+$ECHO "-->Creating custom service for post verification tasks"
+
+#OM_LOC=`ls -td /JUMP/OM_LINUX_MEDIA/*/*/|head -1`
+cat > /var/tmp/postverification_wrapper.sh << EOF
+#!/bin/bash
+#********************************************************************
+#
+# Name    : /var/tmp/postverification_wrapper.sh
+# Purpose : This script will run mws_configure.bsh  on the MWS
+#
+# Usage   : See usage_msg()
+#
+# ********************************************************************
+
+$SLEEP 5
+
+
+OM_LOC=$($LS -td /JUMP/OM_LINUX_MEDIA/*/*/|head -1)
+
+if [[ -d "${OM_LOC}" && -n $($LS -A "${OM_LOC}") ]]; then 
+
+     if [[ -f "${OM_LOC}"/om_linux/omtools/mws_configure.bsh ]]; then
+	     
+	   "${OM_LOC}"/om_linux/omtools/mws_configure.bsh -p post > /dev/ttyS0 
+     else
+         $ECHO -e "-> ERROR: mws_configure.bsh not found"
+     fi
+fi
+
+EOF
+
+else
+
+ abort_script " OM MEDIA LOCATION unable to find"
+ 
+fi
+chmod +x /var/tmp/postverification_wrapper.sh
+
+if [ -s "/var/tmp/postverification_wrapper.sh" ]; then
+ 
+      if [ -f /etc/systemd/system/postverification.service ]; then
+               
+        $ECHO -e "\n--> Post verification service already created"           
+        ${SYSTEMCTL} mask serial-getty@ttyS0.service > /dev/null
+        ${SYSTEMCTL} daemon-reload > /dev/null
+        ${SYSTEMCTL} enable postverification.service > /dev/null
+
+      else
+        $ECHO -e "\n-->creating and enabling Postverification service"
+        {
+        $ECHO "[Unit]"
+        $ECHO "Description=Description for post verification script goes here"
+        $ECHO "After=basic.target network.target"
+        $ECHO "Requires=multi-user.target"
+        $ECHO " " 
+
+        $ECHO "[Service]"
+        $ECHO "Type=simple"
+        $ECHO "ExecStart=/bin/bash /var/tmp/postverification_wrapper.sh"
+        $ECHO " "
+
+        $ECHO "[Install]"
+        $ECHO "WantedBy=network.target"
+        } >/etc/systemd/system/postverification.service
+
+   
+        if [ -f /etc/systemd/system/postverification.service ] ; then
+                /usr/bin/chmod 664 /etc/systemd/system/postverification.service
+                ${SYSTEMCTL} mask serial-getty@ttyS0.service > /dev/null
+                ${SYSTEMCTL} daemon-reload > /dev/null
+                ${SYSTEMCTL} enable postverification.service > /dev/null
+        else
+                abort_script "postverification.service file not found"
+        fi
+    fi
+fi
+}
+### Function: path_varible_verification ###
+#
+#  Using this function verify path updated path variable values . 
+#
+# Arguments:
+#      
+# Uses: None
+path_varible_verification()
+{
+     
+            $ECHO -e "\n-->Checking updated PATH variable."     
+            
+            $GREP -q "PATH=\$PATH:/opt/Unisphere/bin:/opt/Navisphere/bin" /etc/profile
+            path_nav_res=$?
+            if [ $path_nav_res -eq 0 ]; then
+                
+                $ECHO -e "\nUnisphere and Navisphere PATH variable values has been set SUCCESSFULLY"
+            
+            else
+               
+               $ECHO -e "\nWARNING:Unisphere and Navisphere PATH variable values are not been set properly"
+            fi
+         return 0    
+
+}
+
+### Function: media_verification ###
+#
+#  Using this function verify Cached Media . 
+#
+# Arguments:
+#      
+# Uses: None
+
+media_verification()
+{
+  $ECHO -e "\n--> Checking cached media list. "
+  $LS /JUMP/OM_LINUX_MEDIA/*/*/om_linux/.om_linux_identity > /tmp/.om
+  if [ -s "/tmp/.om" ]; then
+    $ECHO -e "\nOM MEDIA LIST:"
+  while read -r oam
+  do
+  if [ -f "${oam}" ]; then
+   $GREP -E '^[[:blank:]]*media_location=|^[[:blank:]]*media_version=' "${oam}" > /tmp/.OM_Media
+   $CAT /tmp/.OM_Media
+   
+  fi
+  done < /tmp/.om
+  $RM -rf /tmp/.om > /dev/null
+  $RM -rf /tmp/.OM_Media > /dev/null
+  
+ fi
+
+ $LS /JUMP/ENIQ_STATS/*/*/eniq_base_sw/.eniq_stats_identity > /tmp/.enq
+ if [ -s "/tmp/.enq" ]; then
+  $ECHO -e "\nENIQ MEDIA LIST: "
+  while read -r eniqm
+  do
+    if [ -f "${eniqm}" ]; then
+      $GREP -E '^[[:blank:]]*media_location=|^[[:blank:]]*media_version=' "${eniqm}" > /tmp/.eniq_media
+      pr -m -t /tmp/.eniq_media
+     
+    fi
+  done < /tmp/.enq
+   $RM -rf /tmp/.eniq_media > /dev/null
+  $RM -rf /tmp/.enq > /dev/null
+fi
+
+$LS /JUMP/LIN_MEDIA/*/.linux_boot_media > /tmp/.rhel
+if [ -s "/tmp/.rhel" ]; then
+  $ECHO -e "\nREHL MEDIA LIST: "
+  while read -r rhelm 
+  do
+    if [ -f "${rhelm}" ]; then
+      $GREP -E '^[[:blank:]]*media_desc=|^[[:blank:]]*media_rev|^[[:blank:]]*media_location' "${rhelm}" > /tmp/.rhel_media
+      pr -m -t /tmp/.rhel_media
+    fi
+  done < /tmp/.rhel
+  $RM -rf /tmp/.rhel > /dev/null
+  $RM -rf /tmp/.rhel_media > /dev/null
+fi
+
+
+
+$LS /JUMP/INSTALL_PATCH_MEDIA/*/.patch_boot_media > /tmp/.patch_boot_media
+if [ -s "/tmp/.patch_boot_media" ]; then
+
+ $ECHO -e "\nPATCH MEDIA LIST: "
+ while read -r patchm 
+ do
+     if [ -f "${patchm}" ]; then
+        $GREP -E '^[[:blank:]]*media_desc=|^[[:blank:]]*bundle_version|^[[:blank:]]*media_location' "${patchm}" > /tmp/.patch_media
+        pr -m -t /tmp/.patch_media
+     fi
+
+ done < /tmp/.patch_boot_media
+
+ $RM -rf /tmp/.patch_boot_media > /dev/null
+ $RM -rf /tmp/.patch_media > /dev/null
+ fi
+  
+  return 0
+}
+
+### Function: post_verification_tasks ###
+#
+#  This function starts the post verification tasks. 
+#
+# Arguments:
+#      
+# Uses: None
+post_verification_tasks()
+{
+
+msg="\033[1;33m MWS Post Verification Tasks are started on $($HOSTNAME) Server \033[0m"
+
+$ECHO -e "\n $msg"
+$ECHO -e "\n--> Checking reachability of configured Gateway(s)."
+# shellcheck disable=SC2016
+service_route_addr=$(netstat -rn |awk '{if($1=="0.0.0.0") print $2}')
+check_ip_reachability "${service_route_addr}"
+res=$?
+if [ $res -eq 0 ]; then
+    $ECHO -e "\nSERVICES_GATEWAY: ${service_route_addr} is reachable"
+else
+    $ECHO -e "\nWARNING: ${service_route_addr} is not reachable"
+fi
+
+if [ -s "${PARAMSFILE}" ]; then
+   
+    # shellcheck disable=SC2016
+    for gw in $($CAT "${PARAMSFILE}" |$GREP GATEWAY|awk -F= '{$0=$1}1'|awk -F_ '{$0=$1}1')
+    do
+       get_param "${gw}"_GATEWAY
+       cfg_gateway=${PARAM_NAME}
+       gw_re=$?
+       if [ $gw_re -eq 0 ]; then
+            $ECHO -e "\n${gw}_GATEWAY: ${cfg_gateway} is reachable"
+       else
+            $ECHO -e "\nWARNING:${gw}_GATEWAY: ${cfg_gateway} is not reachable"
+       fi
+    done
+fi
+
+media_verification 
+
+path_varible_verification
+
+sleep 2
+
+}
+
+### Function: clean_up ###
+#
+#  Deleting the custom service and unmasking the ttyS0 service
+#
+# Arguments:
+#      
+# Uses: None
+
+clean_up()
+{
+    if [ -f /etc/systemd/system/postverification.service ] ; then
+     $ECHO -e "\n--> Running cleanup tasks"
+     $SYSTEMCTL unmask serial-getty@ttyS0.service &> /dev/null 
+     $SYSTEMCTL daemon-reload &> /dev/null 
+          
+    fi
+
+     $ECHO -e "\n-> MWS Post Verification Tasks are successfully completed\n"
+     sleep 2
+     $SYSTEMCTL start serial-getty@ttyS0.service &> /dev/null   
+     $SYSTEMCTL disable postverification.service &> /dev/null   
+     $RM -rf /etc/systemd/system/postverification.service &> /dev/null 
+     
+}
+
+### Function: wait_active_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_active_state() {
+    local service=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        systemctl status ${service} | sed -n '/Active:/p' | $GREP -w "active"> /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+
+### Function: wait_enabled_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_enabled_state() {
+    local service=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        systemctl status ${service} | sed -n '/Loaded:/p' | $GREP -w "enabled"> /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+
+### Function: time_zone ###
+#
+# creates the clock_file with timezone
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+#time_zone() {
+#        clock_file=/etc/sysconfig/clock
+#        if [ -f ${clock_file} ]; then
+#                $RM -rf ${clock_file}
+#                $TOUCH ${clock_file}
+#        else
+#                $TOUCH ${clock_file}
+#        fi
+#
+#        timezone=`$TIMEDATECTL | $GREP -w "Time" | $CUT -d ':' -f2 | $CUT -d ' ' -f2`
+#        $ECHO "ZONE=\"$timezone"\" >> ${clock_file}
+#        if [ $? -eq 0 ] ; then
+#                $ECHO -e "\n Sucessfully created clock_file"
+#        else
+#               abort_script "Could not append timezone to clock_file" | $TEE -a ${LOGFILE}
+#        fi
+#
+#}
+#
+# ********************************************************************
+#
+#       Procedures
+#
+# ********************************************************************
+
+### Function: configure_mws ###
+#
+# Configures the MWS
+#
+# Arguments: none
+# Uses: SHARE_LOCATION
+# Return Values: none
+configure_mws()
+{
+   
+   run_step 1 validate_read_inputs
+
+   run_step 2 do_disable_NetworkManager
+
+   run_step 3 get_rhel_media
+
+   run_step 4 install_rpm_packages
+
+   run_step 5 exclude_packages
+
+   run_step 6 remove_dhcpd_conf
+
+   run_step 7 remove_ERICkickstart
+
+   run_step 8 install_ERICkickstart
+
+   run_step 9 cache_rhel
+
+   run_step 10 cache_om
+   
+   run_step 11 upgrade_om
+
+   run_step 12 get_eniq_sw_media
+
+   run_step 13 cache_eniq_sw
+
+   run_step 14 update_nsswitch
+
+   run_step 15 update_domain
+
+   run_step 16 update_loghost
+
+   run_step 17 do_disable_mpath
+
+   run_step 18 do_disable_firewalld
+
+   run_step 19 create_repos
+
+   run_step 20 verify_patch_media
+
+   run_step 21 enable_services
+
+   run_step 22 configure_dhcp
+
+   run_step 23 configure_interfaces
+
+   run_step 24 update_history
+
+   run_step 25 update_path_varibles
+
+   run_step 26 create_post_verifcation_service
+
+   run_step 27 do_reboot
+
+ return 0
+
+}
+
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments: none
+# Sets: TEM_DIR, SHARE_LOCATION, REPO_SOURCE, PKG_SUBDIR, SOLARIS_REPO_DIR
+#       QUOTA_VAL, JUMP_LOC, MWS_IP
+# Return Values: none
+setup_env()
+{
+    # Loop until we get a unique directory name
+    TEM_DIR=/tmp/mws_configure.$$
+    while :; do
+        $LS ${TEM_DIR} >> /dev/null 2>&1
+        [ $? -ne 0 ] && break
+        TEM_DIR=${TEM_DIR}.$$
+    done
+    do_cmd $MKDIR -p ${TEM_DIR}
+
+    JUMP_LOC="/JUMP"
+
+
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments: none
+# Return Values: none
+usage_msg()
+{
+    local tmp_file=/tmp/mws_configure_usage.$$
+
+    $ECHO "
+Usage: $($BASENAME $0) [ -r <step> ]
+
+Options:
+    -r    Resume from step number
+    -p    post verification tasks
+" > ${tmp_file}
+    $PG -p "Press return key to continue" -e  ${tmp_file}
+
+    $RM -f ${tmp_file}
+    exit 1
+}
+
+
+### Function: get_param ###
+#
+# Gets parameter from param file
+#
+# Arguments:
+#     #1: Parameter to look for
+# Sets:
+#     PARAM_NAME - value found
+# Returns:
+#     None
+get_param()
+{
+    local name=$1
+    PARAM_NAME=`$AWK -F= "/${name}/{print \\$2}" ${PARAMSFILE}`
+    return 0
+}
+
+### Function: update_params ###
+#
+# Updates Params File
+#
+# Arguments:
+#       $1: Parameter to update
+#       $2: New values
+# Uses:
+#     PARAMSFILE
+# Return Values:
+#       none
+update_params() {
+    local param_name=$1 param_val=$2
+    [ -f ${PARAMSFILE} ] && $GREP -v ${param_name} ${PARAMSFILE} > ${PARAMSFILE}.tmp
+    $ECHO ${param_name}=${param_val} >> ${PARAMSFILE}.tmp
+    $MV ${PARAMSFILE}.tmp ${PARAMSFILE}
+    return 0
+}
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       none
+# Sets:
+#     OM_MEDIA_LOC, MEDIA_DIR
+# Uses:
+#     RESUME_STEP, PARAMSFILE
+# Return Values:
+#       none
+check_params()
+{
+    local old_loc="" last_step
+    if [ -f ${PARAMSFILE} ]; then
+        old_loc=$($AWK -F= '/OM_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    fi
+
+     if [[ -n "${POST_STEP}" ]]; then
+
+          post_verification_tasks
+          clean_up
+          exit 0
+    else
+
+    if [[ -n "${RESUME_STEP}" ]]; then
+        if [[ ! ${RESUME_STEP} =~ ^[0-9]+$ ]]; then
+            abort_script "Invalid value for resume step ${RESUME_STEP}"
+        fi
+        if [ -f ${STEPSFILE} ]; then
+            last_step=$($CAT ${STEPSFILE})
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, last successful step ran was ${last_step} (Yes/No)?"
+        else
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, there is no record of any step passing before (Yes/No)?"
+        fi
+        if [ "${ANS}" == "No" ]; then
+            abort_script "Aborting, as do not want to resume from step ${RESUME_STEP}"
+        fi
+        RESUME_STEP=$(expr ${RESUME_STEP} - 1)
+
+    [ -d "${OM_MEDIA_LOC}" ] || abort_script "OM Media location isn't valid directory"
+    [ -f "${OM_MEDIA_LOC}/omtools/upgrade_om.bsh" ] || abort_script "OM media location doesn't contain omtools/upgrade_om.bsh"
+   # update_params OM_MEDIA_LOC ${OM_MEDIA_LOC}
+    if [[ -n "${RESUME_STEP}" ]]; then
+        done_step ${RESUME_STEP}
+    fi
+    #MEDIA_DIR=$($AWK -F= '/media_dir/ {print $2}' ${OM_MEDIA_LOC}/.om_linux)
+    fi
+
+    fi
+
+    return 0
+}
+
+
+### Function: check_full_pathname ###
+#
+# Checks whether $1 contains a full pathname
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_full_pathname()
+{
+
+    local filename check
+    filename=$($ECHO $1 | $SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+    check=$($ECHO ${filename} | $EGREP '^[/]')
+    if [ ! "${check}" ]; then
+        return 1
+    fi
+    return 0
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_id()
+{
+    local checkid
+    checkid=$($ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}')
+    if [ "${checkid}" != "$1" ]; then
+        return 1
+    fi
+    return 0
+}
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+    do_cmd $MKDIR -p $($DIRNAME ${LOGFILE})
+    do_cmd $TOUCH -a ${LOGFILE}
+}
+
+
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+
+# ********************************************************************
+#   Initial Setup
+# ********************************************************************
+main()
+{
+SCRIPT_NAME=$($BASENAME "$0")
+LOGFILE="/var/tmp/mws_configure_debug_cmd.log"
+STEPSFILE="/var/tmp/.mws_configure_steps"
+PARAMSFILE="/var/tmp/.mws_configure_params"
+DEFAULT_USER="root"
+KICKSTARTDIR=/ericsson/kickstart/bin
+
+log Process $$: $SCRIPT_NAME $*
+
+# Check the id of the user
+check_id ${DEFAULT_USER} || abort_script "You must be ${DEFAULT_USER} to execute this script."
+
+# ********************************************************************
+#   Parse flags and options
+# ********************************************************************
+while getopts ":r:p:" arg; do
+    case $arg in
+        r)  RESUME_STEP=${OPTARG}
+            ;;
+        p)  POST_STEP=${OPTARG}
+           ;;
+        \?) usage_msg
+            ;;
+    esac
+done
+shift $(expr ${OPTIND} - 1)
+
+setup_env
+chk_create_logfile
+check_params
+console_check
+ret=$?
+[ $ret -ne 0 ] && abort_script "Please run this mws_configure.bsh script through ILO Console only"
+
+# Cleanup on interrupt
+trap "abort_script" 1 2 3 14 15
+# Func abort_script() will not have all env variables available after interrupt, so need update on that!
+
+$ECHO "MWS Configuration started on $($HOSTNAME) $(${DATE}). Please wait to complete..."
+configure_mws
+conf_res=$?
+[ $conf_res -ne 0 ] && abort_script "Failed to configure MWS"
+
+#cd ${SCRIPTHOME}
+$RM -rf ${TEM_DIR}
+exit 0
+}
+
+
+#cd "$( dirname "$0" )" || abort_script "Direcory path not found"
+SCRIPT_NAME=$(basename "$0")
+SCREEN_LOG=/var/tmp/mws_configure_log_"$(${DATE} +'%y%m%d-%H.%M.%S')".log
+touch "$SCREEN_LOG"
+main "$*" 2>&1 | tee -a "$SCREEN_LOG"

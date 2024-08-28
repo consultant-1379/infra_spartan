@@ -1,0 +1,10 @@
+media_label=ERIC_RHEL_7.6_UPGRADE_PATCH_MEDIA
+media_desc=Ericsson Redhat Linux 7.6 Upgrade Patch Media
+media_prefix=19089
+media_number=CXP9036634
+media_rev=F
+media_arch=x86_64
+media_distro=RHEL
+media_distro_rev=7.6
+sprint_release=19.4.4
+bundle_version=1.0.11

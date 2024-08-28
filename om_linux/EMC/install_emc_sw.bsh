@@ -1,0 +1,295 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# *******************************************************************
+#
+#
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : install_emc_sw.bsh
+# Date    : 31/07/2018
+# Revision: A
+# Purpose : Script will be used to install EMC software on the 
+#	    O&M media. It will determine the archicture and allow the 
+#	    user to install: all, a list or use a file to determine
+#	    which packages to install. 
+#
+# Usage   : install_emc_sw.bsh
+#
+# ********************************************************************
+#
+#       Command Section
+#
+# ********************************************************************
+
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+DIRNAME=/usr/bin/dirname
+ECHO=/usr/bin/echo
+ID=/usr/bin/id
+RM=/usr/bin/rm
+SED=/usr/bin/sed
+UNAME=/usr/bin/uname
+YUM=/usr/bin/yum
+
+#***********************************************************************
+#
+# Functions
+#
+#***********************************************************************
+
+### Function: abort_script ###
+#
+#   This function is called if the script is aborted through an 
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime.
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+_err_msg_=$1
+
+if [ ! "$_err_msg_" ]; then
+    _err_msg_="Script aborted...... Could not find any package to install.\n"
+fi
+
+$ECHO -e "$_err_msg_\n"
+cd $SCRIPTHOME
+cleanup
+
+exit 1
+}	
+
+### Function: check_arch ###
+#
+# Check arch type
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+check_arch()
+{
+ARCH_TYPE=`$UNAME -p`
+if [ $? -ne 0 ];then
+    _err_msg_= "Architecture could not be determined, exiting.."
+    abort_script "_err_msg_"
+fi
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct [root]
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+#check_id()
+#{
+#_check_id_=`$ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}'`
+#if [ "$_check_id_" != "$1" ]; then
+#    _err_msg_="You must be $1 to execute this script."
+#    abort_script "$_err_msg_" 
+#fi
+#}
+
+### Function: clean up /tmp directories created during script ###
+#
+# Creates an admin file used for EMC software pkgs during install
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+cleanup()
+{
+# cleanup
+$RM -rf ${TEM_PKG_DIR}
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+if [ -z ${SCRIPTHOME} ];then
+    _err_msg_="Could not determine location of script"
+    abort_script "$_err_msg_"
+fi
+}
+
+
+### install_packages ###
+#
+# Install EMC Software packages
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+install_packages()
+{
+naviscli_pkg=/var/tmp/naviscli_pkg
+host_pkg=/var/tmp/host_pkg
+EMCrepo=/etc/yum.repos.d/ericEMC.repo
+if [ -f $EMCrepo ] ; then
+        if [[ "$PKG_LIST" == "UnisphereCLI" ]] ; then
+                $ECHO $PKG_LIST > /var/tmp/unisphere_pkg
+                $SED -i 's/UnisphereCLI/UnisphereCLI-Linux-64-x86-en_US.x86_64/' /var/tmp/unisphere_pkg
+                unisphere_pkg=`cat /var/tmp/unisphere_pkg`
+                $YUM install -y $unisphere_pkg
+                     if [ $? -eq 0 ] ; then
+                            $ECHO -e "Sucessfully installed $unisphere_pkg\n"
+                     else
+                            $ECHO -e "Could not install $unisphere_pkg\n"
+                     fi
+
+        else
+                $ECHO $PKG_LIST > /var/tmp/pkg_list
+                cat /var/tmp/pkg_list | awk -F',' '{print $1}' > $naviscli_pkg
+                cat /var/tmp/pkg_list | awk -F',' '{print $2}' > $host_pkg
+
+                if [ -s "$naviscli_pkg" ] ; then
+                        if [[ "`cat $naviscli_pkg`" == "NAVISCLI" ]] ; then
+                                $SED -i 's/NAVISCLI/NaviCLI-Linux-64-x86-en_US.x86_64/' $naviscli_pkg
+                                naviscli=`cat $naviscli_pkg`
+                                $YUM install -y $naviscli
+                                       if [ $? -eq 0 ] ; then
+                                                $ECHO -e "Sucessfully installed $naviscli\n"
+                                       else
+                                                $ECHO -e "Could not install $naviscli\n"
+                                       fi
+                        else
+                                $ECHO "Could not find $naviscli"
+                        fi
+                fi
+
+                if [ -s "$host_pkg" ] ; then
+                        if [[ "`cat $host_pkg`" == "HOSTAGENT" ]] ; then
+                                $SED -i 's/HOSTAGENT/HostAgent-Linux-64-x86-en_US.x86_64/' $host_pkg
+                                hostagent=`cat $host_pkg`
+                                $YUM install -y $hostagent
+                                      if [ $? -eq 0 ] ; then
+                                             $ECHO -e "Sucessfully installed $hostagent\n"
+                                      else
+                                             $ECHO -e "Could not install $hostagent\n"
+                                      fi
+                        else
+                                $ECHO "Could not find $hostagent"
+                        fi
+                fi
+        fi
+else
+        $ECHO -e "Could not find $EMCrepo...Create EMC repo and proceed\n"
+        exit 1
+fi
+
+}
+
+
+
+### Function: usage_msg ###
+#
+# usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$ECHO "
+
+Usage: 
+./`$BASENAME $0`  { -l { ALL | <pkg_name>,...<pkg_name> } | -f <pkg_list_file> } [ -F ]
+
+
+options:
+    -f : Full path to the file containing a list of packages to be installed
+
+    -F : Optional parameter to force removal and reinstall of packages
+
+    -l : ALL or package(s) name. If more than one package specified a comma
+	 must be used to seperate the package names i.e
+         install_emc_sw.bsh -l HOSTAGENT,INITTOOL 
+
+"
+}
+#
+#
+#
+# ********************************************************************
+#   Main body of program
+#
+# ********************************************************************
+# get absolute path to the script
+#
+get_absolute_path
+
+# Check that the effective id of the user is root
+#check_id root
+
+# unset variables
+unset PKG_LIST_FILE PKG_LIST FORCE_REINSTALL COMMON_PKGS
+FORCE_REINSTALL="NO"
+
+while getopts ":f:Fl:" arg; do
+    case $arg in
+        f) PKG_LIST_FILE="$OPTARG"
+            ;;
+        F) FORCE_REINSTALL="YES"
+            ;;
+        l) PKG_LIST="$OPTARG"
+            ;;
+        \?) usage_msg
+            abort_script "$_err_msg_"
+            ;;
+    esac
+done
+shift `expr $OPTIND - 1`
+
+
+# error checking - re:input arguments
+if [ ! "${PKG_LIST}" ]; then
+    usage_msg
+    abort_script "$_err_msg_"
+fi
+
+if [ "${PKG_LIST_FILE}" -a "${PKG_LIST}" ]; then
+    usage_msg
+    abort_script "$_err_msg_"
+fi
+#
+# check if SPARC or i386
+check_arch
+
+# call function install_packages
+install_packages  
+
+# cleanup
+cleanup
+
+exit 0

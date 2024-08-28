@@ -1,0 +1,435 @@
+#Red Hat Linux Patching Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : pre_upgrade_patchrhel.bsh
+# Date    : 1/1/2019
+# Revision: A
+# Purpose : This script to check whether the update required or not for system.
+#
+#
+# Version Information:
+#       Version Who       		      Date            Comment
+#       0.1     xanjgop & xkumvig         02/01/2019      Initial draft
+#
+# ********************************************************************
+ARGS="${@}"
+MOUNT_PATH=$1
+OM_LINUX_PATH=${2}
+setVars() {
+#####################################
+# Function to set up global Variables
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0 or exits
+#####################################
+
+# Commands
+AT=/usr/bin/at
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/bin/chmod
+CKSUM=/usr/bin/cksum
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+CRONTAB=/usr/bin/crontab
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+YUMDATE=$($DATE "+%Y-%m-%d %H:%M")
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+ETHTOOL=/usr/sbin/ethtool
+FGREP=/usr/bin/fgrep
+FIND=/usr/bin/find
+GAWK=/usr/bin/gawk
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+IFCONFIG=/usr/sbin/ifconfig
+LSHAL=/usr/bin/lshal
+DMIDECODE=/usr/sbin/dmidecode
+MKDIR=/usr/bin/mkdir
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PRINTF=/usr/bin/printf
+RM=/usr/bin/rm
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SERVICE=/usr/sbin/service
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+TAIL=/usr/bin/tail
+TAR=/usr/bin/tar
+TEE=/usr/bin/tee
+TELINIT=/usr/sbin/telinit
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+WC=/usr/bin/wc
+YUM=/usr/bin/yum
+# Flags
+DEBUG=n
+CONSOLE_PROMPT=TRUE
+# paths 1
+ROOT_CRONTAB_LINUX=/var/spool/cron/root
+### goc uncomment following when RPM is ready and comment the line after
+SCRIPT_NAME=$( $BASENAME $0 )
+SCRIPT_DIR=$( cd $( dirname $0 ); pwd )
+LIB_DIR=$( cd $( dirname $0 ); pwd -P )
+LIB_DIR="$LIB_DIR/../lib/"
+LOG_DIR=/var/ericsson/log/patch/
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+PKGLOG=${LOG_DIR}/${SCRIPT_NAME}_PACKAGES_${DATETIME}.log
+YUMLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_${DATETIME}.log
+LIB_COMM=common_functions.lib
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+UG_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=temp_rhel_update.repo"
+REPONAME=temp_rhel_update.repo
+REPOFILE=/etc/yum.repos.d/${REPONAME}
+REPODIRECTORY=/var/tmp/rhel_bundle
+RHEL_VERSION_FILE=`cat /etc/redhat-release | awk -F" " '{print $7}'`
+REDHAT_RELEASE=/etc/redhat-release
+MWS=/ericsson/config
+ENIQ=/eniq/installation/config
+INSTALL_LOG=/var/tmp/install_log
+PACKAGE_PATH=`ls $MOUNT_PATH/RHEL/ 2> /dev/null | grep -w "RHEL[^_]"`
+MOUNT_PACKAGE_PATH=$MOUNT_PATH/RHEL/$PACKAGE_PATH
+repo_mount="$MOUNT_PATH/Packages"
+$($TOUCH  /etc/.ks_serv_ip)
+$($TOUCH  /etc/patch_bundle_ver)
+$CAT $MOUNT_PATH/.upgrade_patch_boot_media | $GREP -w "bundle_version" > /etc/patch_bundle_ver
+PATCH_BUNDLE_VER=`$CAT /etc/patch_bundle_ver | $CUT -d "=" -f 2`
+
+COMPLIANCE_script="/ericsson/security/compliance/NH_Compliance.py"
+COMPLIANCE_REPORT="Compliance_Report" 
+COMPLIANCE_LOG="/ericsson/security/compliance/Reports/${COMPLIANCE_REPORT}.txt"
+######################
+# Load common library
+######################
+[[ -f ${LIB_DIR}/${LIB_COMM} ]] && . ${LIB_DIR}/${LIB_COMM}
+[[ -f ${SCRIPT_DIR}/${LIB_COMM} ]] && . ${SCRIPT_DIR}/${LIB_COMM}
+[[ ! -f ${LIB_DIR}/${LIB_COMM} && ! -f ${SCRIPT_DIR}/${LIB_COMM} ]] && {
+	        $ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+       		 exit 2 
+        }
+return 0
+
+}
+#########################################################
+#                                                       #
+#       Check mount path is available for patch ISO     #
+#                                                       #
+#########################################################
+
+function mount_iso()
+{
+if [ -d $MOUNT_PATH ]; then
+        logOut "INFO"  "cached path ($MOUNT_PATH) is available"
+	logOut "INFO"  "patch bundle version is $PATCH_BUNDLE_VER"
+        if [ ! -d $MOUNT_PATH/RHEL ] && [ ! -d $repo_mount ]; then
+                 exitOut 2  "cached patch path directory is empty"
+        fi
+else
+        exitOut 2   " Mount path is not avaiable,  Cache  patch Media  and continue"
+fi
+}
+
+
+##############################################################
+#                                                            #
+#       Check the RHELVERSION of bundle is correct or not    #
+#                                                            #
+##############################################################
+
+function checkInternalversion()
+{
+        if [ -d $repo_mount ]; then
+                RHELVERSION=$($CAT $repo_mount/../media.repo | grep name= |  awk -F" " '{print $5}')
+                MOUNT_PACKAGE_PATH="$MOUNT_PATH"
+        elif [ -d $MOUNT_PATH ]; then
+                RHELVERSION=$(grep -w  "media_distro_rev" $MOUNT_PATH/.upgrade_patch_boot_media 2> /dev/null | cut -d "=" -f 2)
+                ((count = 3))
+                while [[ $count -ne 0 ]]
+                do
+                        RHELVERSION=$(grep -w "media_distro_rev" $MOUNT_PATH/.upgrade_patch_boot_media 2> /dev/null | cut -d "=" -f 2)
+                        result=$?
+                        if [[ $result -eq 0 ]]; then
+                                ((count = 1))
+                        else
+                                sleep 20
+                        fi
+                        ((count = count - 1))
+                done
+        else
+                exitOut 2   "Mount path is not available, verify the NFS path"
+        fi
+
+        res=`awk -v n1="$RHEL_VERSION_FILE" -v n2="$RHELVERSION" 'BEGIN {printf  (n1<=n2?"0":"1") "\n" }'`
+        if [ $res == 0 ]; then
+                 logOut "INFO"  "RHEL_BUNDLE contains $RHELVERSION version"
+        else
+                exitOut 2  "RHEL version is lower in the  media so installation aborted"
+        fi
+        return 0
+}
+##############################################################
+#                                                            #
+#       Make repository file ---- temp_rhel_update.repo      #
+#                                                            #
+##############################################################
+
+function makeRepoFile()  {
+        logOut "INFO"   "Making repository file temp_rhel_update.repo"
+$CAT << EOF >$REPOFILE
+[temp_rhel_update.repo]
+name=Temporary Red Hat Enterprise Linux Update Repository
+baseurl=file://$MOUNT_PACKAGE_PATH
+enabled=1
+gpgcheck=0
+EOF
+}
+
+
+###############################################################
+#                                                             #
+#   function to check whether patch update is required or not #
+#                                                             #
+###############################################################
+
+function alreadyInstalled()
+{
+        logOut "INFO"  "Checking if the media  is already installed or not"
+	rm -rf /var/cache/yum
+        $YUM clean all >/dev/null 2>&1 
+        [ $? == 0 ] ||  logOut "INFO" "YUM clean all is not success"
+	$YUM $UG_ONLY_TEMP_REPO check-update 2>&1 >  $YUMLOG
+        update_required=$?
+        if [ $update_required == 0 ]; then
+                logOut "INFO"  "No packages to update"
+		cleanUp ${REPONAME}
+		exitOut 1   "Exiting the script"
+        elif [ $update_required == 1 ]; then
+                logOut "ERROR"  "ERROR in repo "
+		cleanUp ${REPONAME}
+		exitOut 2  "Exiting the script"
+        elif [ $update_required == 100 ]; then
+		$RM -rf /tmp/patch_log >/dev/null 2>&1
+		$TOUCH /tmp/patch_log >/dev/null 2>&1
+		$CAT $YUMLOG >> /tmp/patch_log
+		check_compliance
+		logOut "INFO" "Yum log $YUMLOG"
+	        logOut "INFO" "Execute upgrade_patchrhel.bsh script to proceed with patch update. "
+		eniq_media_history
+		$(echo $MOUNT_PATH > /etc/mountpath)
+		exitOut 0  "Pre_upgrade completed successfully. "
+	else
+		logOut "INFO" "Yum log $YUMLOG"
+        	exitOut 2  "Issue in YUM check-update" 
+			
+        fi
+}
+
+################################################################
+#                                                              #
+#   function to create temp media update history file for ENIQ #
+#                                                              #
+################################################################
+
+
+eniq_media_history()
+{
+
+if [ -d ${ENIQ} ]; then
+
+        patch_status=$($GREP -Ei  'sprint_release|bundle_version' "$MOUNT_PATH"/.upgrade_patch_boot_media | column)
+        # shellcheck disable=SC2016
+        patch_om_details=$($CAT "${OM_LINUX_PATH}"/.om_linux | $GREP -i "media_dir" | $AWK  -F'=' '{print $2}')
+        om_sprint=$($CAT "${OM_LINUX_PATH}"/.om_linux | $GREP -i "media_dir" | $AWK  -F'/' '{print $2}')
+        $RM -rf /var/tmp/patch_status_file
+cat > /var/tmp/patch_status_file <<EOF
+ENIQ_PATCH_UPDATE_MEDIA_STATUS   -       ${patch_status}
+OM_MEDIA_USED_FOR_PATCHUPDATE   -       ${patch_om_details}
+PATCH_OM_SPRINT                 -       ${om_sprint}
+INST_DATE                               ${DATETIME}
+
+EOF
+        logOut "INFO" "ENIQ patch temp status file created and updated with patch media details"  
+elif [ -d /JUMP ]; then
+    echo ""
+else
+        logOut "INFO" "${ENIQ} doesnot exist, Cannot create temp patch media file for ENIQ" 
+fi
+}
+
+
+check_compliance_script_()
+{
+        flag=$1
+        while : ; do
+                  echo -ne "#"
+                  sleep 1
+                  if [ $flag == 1 ]; then
+                          $(${COMPLIANCE_script}  >  $COMPLIANCE_LOG 2> /dev/null )&
+                          child_pid=$!
+                  fi
+                  flag=0
+                  $(kill -0 $child_pid 2> /dev/null)
+                  if [ ! $? == 0 ]; then
+                          wait $child_pid
+                          if [ ! $? == 0 ]; then
+                                  echo
+                                  logOut  "ERROR" "Issue in NODE HARDENING COMPLIANCE_script and please check the log [$COMPLIANCE_LOG]."
+                                  return 1
+                          fi
+                          break
+                  fi
+        done
+}
+
+check_compliance()
+{
+        if [ -d "/ericsson/security/compliance/" ]; then
+                if [ ! -f ${COMPLIANCE_script} ]; then
+			exitOut 2 "NODE HARDENING $COMPLIANCE_script doesnot exist."
+                fi
+		logOut "INFO" "Taking Node hardening compliance report please wait"
+                check_compliance_script_ 1 || return 1
+                $(${CHMOD} -w $COMPLIANCE_LOG)
+		echo	
+                logOut "INFO" "Compliance report generated and report path is $COMPLIANCE_LOG"
+                return 0
+        fi
+	logOut  "WARN" "Node hardening is not applied."
+}              
+
+usage()
+{
+#####################################
+# Function to output usage help
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+$CAT << EOF
+
+Usage:  ${SCRIPT_NAME} <CACHED PATH> <OMLINUX PATH>
+
+	Info:
+        <CACHED PATH>      Cached path of Patch meadia
+	<OMLINUX PATH>	   O&M media path
+
+        Example:
+                ${SCRIPT_NAME}  /net/10.45.198.174/JUMP/UPGRADE_PATCH_MEDIA/1/ /net/10.45.198.174//JUMP/OM_LINUX_MEDIA/OM_LINUX_020_2/20.2.2/om_linux/
+
+EOF
+return 0
+
+}
+
+function trap_ctrlc ()
+{
+#    this function is called when Ctrl-C is sent
+    # perform cleanup here
+    echo "Ctrl-C caught...performing clean up"
+    logOut "INFO" "Doing cleanup please wait"
+    cleanUp "$UG_REPOFILE"
+    $(> /etc/mountpath)
+    exitOut 2 "Exiting the Script after clean up due  to Ctrl-C caught"
+}
+check_dvd_kick()
+{
+               logOut "INFO" "This server  installed with DVD method"
+               read -p "Please enter the NFS shared Server IP address :" nfs_ip
+	       if [[ ! "$nfs_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+			exitOut 2  "Provided IP formate is wrong -> $nfs_ip"
+	       fi
+               $($ECHO $nfs_ip > /etc/.ks_serv_ip_patch)
+               logOut "INFO" "OS Backup will be kept in the server $nfs_ip"
+               return
+}
+check_ks_ser_ip()
+{
+        local res=$($ECHO $MOUNT_PATH  | cut -d '/' -f3 |  grep ^[0-9][0-9]*\.*)
+        if [ -z $res ]; then
+                logOut "INFO" "Cached path is from Local server"
+                check_dvd_kick
+                return
+        fi
+        $($ECHO $res > /etc/.ks_serv_ip_patch)
+        logOut "INFO" "OS Backup will be kept in the server $res"
+}
+
+#################################################
+##                                               #
+##  cleanup function to remove the patch repo    #
+##  and to unmount lin media                     #
+##################################################
+
+
+cleanUp()       {
+    REPOFILE=$1
+    logOut "INFO" "$FUNCNAME: Cleaning up..."
+    $(> /etc/mountpath)
+    logOut "DEBUG" "$FUNCNAME: About to cleanup repository files & packages."
+    $( yum-config-manager --enable \* > /dev/null 2>&1 )
+    $(yum-config-manager --disable  /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1)
+    $RM -f /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1
+    $RM -f /etc/yum.repos.d/$II_REPOFILE > /dev/null 2>&1
+    $RM -f /etc/yum.repos.d/$UG_REPOFILE > /dev/null 2>&1
+    umount /LIN_MEDIA 2> /dev/null
+    logOut "INFO" "Unmounting Linux media"
+    logOut "INFO" "Removed [/etc/yum.repos.d/$REPOFILE]"
+    return 0
+}
+
+
+#############
+#
+#       MAIN
+#
+#############
+###################
+#preupgrade
+##################
+setVars
+$MKDIR -p "$LOG_DIR" || exitOut "2" "Unable to create $LOG_DIR"
+trap trap_ctrlc  2
+
+header "MAIN" "Host: $($HOSTNAME)" "$(datestamp 2)" "Command: \"${SCRIPT_NAME} $ARGS\""
+[[ -z "$ARGS" ]] && {
+	usage
+        exitOut 2  "No command line options supplied!"
+}
+[[ -z "${OM_LINUX_PATH}" ]] && {
+        usage
+        exitOut 2  "Second command line argument is missing"
+}
+
+$RM -rf /var/tmp/om_media > /dev/null 2>&1
+$TOUCH /var/tmp/om_media > /dev/null 2>&1
+$ECHO "${OM_LINUX_PATH}" >> /var/tmp/om_media
+
+check_ks_ser_ip
+mount_iso
+checkInternalversion
+makeRepoFile
+alreadyInstalled

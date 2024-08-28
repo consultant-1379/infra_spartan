@@ -1,0 +1,998 @@
+#!/bin/bash
+# ----------------------------------------------------------------------
+#
+# NAME system_checks.bsh
+#
+# COPYRIGHT Ericsson Radio Systems AB, Sweden, 2018
+# All rights reserved.
+#
+# The Copyright to the computer program(s) herein is the property of Ericsson
+# Radio Systems AB, Sweden. The program(s) may be used and/or copied only with
+# the written permission from Ericsson Radio Systems AB or in accordance with
+# the terms and conditions stipulated in the agreement/contract under which the
+# program(s) have been supplied.
+#
+# Revision History:
+#  Date        Who       Comments
+#  19-01-2010  EDAVGLY   Base Script for 11.2.11 sparc/x86
+#
+#
+#
+#
+#
+# Command
+LS=/usr/bin/ls
+GREP=/usr/bin/grep
+SED=/usr/bin/sed
+MKDIR=/usr/bin/mkdir
+AWK=/usr/bin/awk
+TOUCH=/usr/bin/touch
+RPM=/usr/bin/rpm
+RM=/usr/bin/rm
+CAT=/usr/bin/cat
+ECHO=/usr/bin/echo
+DATE=/usr/bin/date
+DATETIME=$($DATE +%d-%m-%Y_%H-%M-%S)
+DMIDECODE=/usr/sbin/dmidecode
+YUM=/usr/bin/yum
+CUT=/usr/bin/cut
+#$(touch /etc/.ks_serv_type) 
+#kickstart_server_type=`$CAT /etc/.ks_serv_type`
+ENIQ="/eniq/installation/config/"
+eniq="/eniq/installation/"
+#///////////////////////
+# Globals
+#///////////////////////
+SINGLE_PACKAGE_NAME="" # used with -x argument
+
+
+#/////////////////////////////////////////////
+# Print Header
+#
+#
+#
+#/////////////////////////////////////////////
+header_print()
+{
+        $ECHO "$1" | awk '{n1=length($0);n2=36-n1/2-n1%2;n3=34-n1/2;printf("\n\n");for(n=1;n<n2;n++)printf("=");printf("=< %s >=",$0);for(n=1;n<n3;n++)printf("=");printf("\n\n")}'
+}
+#/////////////////////////////////////////////
+# Print Header
+#
+#
+#
+#/////////////////////////////////////////////
+setup() {
+
+        LOGDIR="/var/ericsson/log/OM_UPGRADE"
+	LOG_EXIST=0
+        TEMP_LOCATION=/tmp/.tmp_location.$$
+
+	if ! $MKDIR -p ${LOGDIR}; then       
+            $ECHO -e "\nFailed to make ${LOGDIR}\n"
+            exit 1
+        fi
+	
+	if ! $MKDIR -p ${TEMP_LOCATION};then
+                $ECHO -e "\nFailed to make ${TEMP_LOCATION}\n"
+                exit 1
+        fi
+
+
+        if [[ -z ${SOFTWARE_LOCATION} ]]; then
+                $ECHO -e "\n\nUnable to read software location supplied\n"
+                usage
+                exit 1
+        fi
+
+        if [[ ! -f ${SOFTWARE_LOCATION}/.om_linux ]]; then
+                $ECHO -e "\n\nInvalid OM Software Location\n\n"
+                exit 1
+        fi
+
+        SOFTWARE_LIST="${SOFTWARE_LOCATION}/omtools/om_software"
+
+        if [[ ! -s "${SOFTWARE_LIST}" ]]; then
+                $ECHO -e "\n${SOFTWARE_LIST} does not exist or is empty\n"
+                exit 1
+        fi
+
+        return 0
+
+}
+getout() {
+
+        $ECHO -e "   --- FATAL ERROR"
+
+        $RM -rf "${TEMP_LOCATION}"
+
+        exit 1
+
+}
+#/////////////////////////////////////////////
+# start_log
+# This is to be called at the start of each user function within this script
+# It requires one parameter, which is the name of the file.
+# It creates log file of the user run using fancy pipes
+#
+#/////////////////////////////////////////////
+start_log() {
+
+        LOG_STAGE=$1
+
+	 if [ ${LOG_EXIST} == 1 ]; then
+                $ECHO -e "   --- Logfile already created, data will append "
+         else
+                LOGFILE=${LOGDIR}/${LOG_STAGE}_$( date +%y%m%d-%H_%M_%S ).log
+
+		if ! $TOUCH "${LOGFILE}"; then
+                        $ECHO -e "   --- Failed to create log file ${LOGFILE}"
+                        exit 1
+                else
+                        LOG_EXIST=1
+                        $ECHO -e "   --- Logfile is successfully created ${LOGFILE}"
+
+                fi
+        fi
+}
+
+#/////////////////////////////////////////////
+# Upgrade Packages
+#
+#
+#
+#/////////////////////////////////////////////
+upgrade_packages() {
+        local _result_=0
+        local _current_server_=$1
+        local _emc_str_=""
+        local _package_list_=""
+	local _system_inst_type="/eniq/installation/config/inst_type"	
+        header_print "Upgrading OM Packages $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+        if [[ -z ${SINGLE_PACKAGE_NAME} ]]; then
+                $ECHO "Processing packages to install from ${SOFTWARE_LIST}"
+                _package_list_=$($CAT "${SOFTWARE_LIST}")
+        else
+                $ECHO "Installing single package: ${SINGLE_PACKAGE_NAME}"
+                _package_list_=$($GREP -w "${SINGLE_PACKAGE_NAME}" "${SOFTWARE_LIST}")
+        fi
+
+        if [[ -z ${_package_list_} ]]; then
+                if [[ -z ${SINGLE_PACKAGE_NAME} ]]; then
+                        $ECHO "No Packages found  in ${SOFTWARE_LIST}"
+                else
+                        $ECHO "No ${SINGLE_PACKAGE_NAME} Package found  in ${SOFTWARE_LIST}"
+                fi
+                getout
+        fi
+        for i in ${_package_list_}
+        do
+                local  _pkg_location_file_ _pkg_type _pkg_location_om_ _server_type_
+		# shellcheck disable=SC2016
+		_pkg_location_file_=$($ECHO "$i" | $AWK -F: '{print $1}')
+		# shellcheck disable=SC2016
+                _pkg_type=$($ECHO "$i" | $AWK -F: '{print $1}' | $CUT -d '/' -f1)
+		# shellcheck disable=SC2016
+                _pkg_location_om_=$($ECHO "${SOFTWARE_LOCATION}"/"${_pkg_location_file_}")
+		# shellcheck disable=SC2016
+                _server_type_=$($ECHO "$i" | $AWK -F: '{print $2}')
+
+                if [[ -z ${_pkg_location_file_} ]]; then
+                        $ECHO -e "Could not read package location from ${SOFTWARE_LIST}"
+                        getout
+                fi
+
+                if [[ -z ${_server_type_} ]]; then
+                        $ECHO -e "Could not read server install type from ${SOFTWARE_LIST}"
+                        getout
+                fi
+		if [[ -f ${_system_inst_type} ]];then
+		   if [[ ${_current_server_} == "all" ]]; then
+			if [[ ${_server_type_} == "${_current_server_}" ]]; then
+	                    	 install_function "${_pkg_type}" | /usr/bin/tee -a "${LOGFILE}"
+                       		 if [ "${PIPESTATUS[0]}" == 1 ]; then
+                               	        $ECHO "ERROR: Failed to Install packages"
+	                                getout
+       		                 fi
+		        else
+				continue
+			fi
+		   fi
+		else
+                        if [[ ${_current_server_} == "mws" ]]; then
+                        	if [[ ${_server_type_} == "${_current_server_}" ]]; then
+                               		  install_function "${_pkg_type}" | /usr/bin/tee -a "${LOGFILE}"
+	                                  if [ "${PIPESTATUS[0]}" == 1 ]; then
+        	                                $ECHO "ERROR: Failed to Install packages"
+               		                         getout
+                       		          fi
+	                        else
+       		                         continue
+
+               		         fi
+			fi
+		fi
+		
+        done
+        $ECHO -e "   --- Log location: ${LOGFILE}"
+        header_print "Finished OM Software Upgrade $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+
+
+
+        return 0
+}
+
+#/////////////////////////////////////////////
+#Function performs check for RSTATE
+#Arguments: package name
+#/////////////////////////////////////////////
+check_rstate() {
+	local pkg_name_installed=$1
+        local pkg_name_om=$2
+        local rstate
+        rstate=$($ECHO "$pkg_name_om" | $CUT -d'-' -f2 | $CUT -d'.' -f1)
+        res=$($RPM -qi "$pkg_name_installed" | $GREP -w Version; $RPM -qi "$pkg_name_installed" | $GREP -w Release;)
+        for i in  $res
+        do
+                if [ "$i" == "Version" ] || [ "$i" == "Release" ]; then
+                        flag=1
+                        continue
+                fi
+                if [ $flag == 1 ]; then
+                        if [  "$i" !=  ":" ]; then
+                                flag=0
+                                RSTATE=$RSTATE"$i"
+                        fi
+                fi
+        done
+        if [[ -z $RSTATE ]] || [[ -z $rstate ]] ; then
+                $ECHO -e "  RSTATE details are not available for package $pkg_name_om\n"
+                $ECHO -e "  INSTALLED version : $RSTATE and OM Media Version : $rstate \n"
+                 exit 1
+	fi
+
+        RSTATE=$($ECHO "$RSTATE" | cut -b 2-)
+        length_R=${#RSTATE}
+        length_R=$((length_R+1))
+        i=1
+        first_num=0
+        while [[ $i < $length_R ]];
+        do
+        x=$($ECHO "$RSTATE" | cut -b $i)
+        if [[ $x =~ ^[0-9]$ ]] ; then
+                if [[ $first_num == 1 ]] ; then
+                        version=$version$x
+                else
+                        release=$release$x
+                fi
+        fi
+
+        if [[ $x =~ ^[A-Z]$ ]] ; then
+                alphabet=$alphabet$x
+                first_num=1
+        fi
+        i=$((i+1))
+        done
+        rstate=$($ECHO "$rstate" | cut -b 2-)
+        length_R1=${#rstate}
+        length_R1=$((length_R1+1))
+        i=1
+        first_num=0
+        while [[ $i < $length_R1 ]];
+        do
+        y=$($ECHO "$rstate" | cut -b $i)
+        if [[ $y =~ ^[0-9]$ ]] ; then
+                if [[ $first_num == 1 ]] ; then
+                        version1=$version1$y
+                else
+                        release1=$release1$y
+                fi
+        fi
+
+        if [[ $y =~ ^[A-Z]$ ]] ; then
+                alphabet1=$alphabet1$y
+                first_num=1
+        fi
+        i=$((i+1))
+        done
+        length_alpha=${#alphabet}
+        length_alpha1=${#alphabet1}
+
+        if [[ $release -gt $release1 ]] ; then
+                status='Higher'
+        elif [[ $release -lt $release1 ]] ; then
+                status='Lower'
+        elif [[ $length_alpha > $length_alpha1 ]] ; then
+                status='Higher'
+        elif [[ $length_alpha < $length_alpha1 ]] ; then
+                status='Lower'
+        elif [[ $alphabet > $alphabet1 ]] ; then
+                status='Higher'
+        elif [[ $alphabet < $alphabet1 ]] ; then
+                status='Lower'
+        elif [[ $version -gt $version1 ]] ; then
+                status='Higher'
+        elif [[ $version -lt $version1 ]] ; then
+                status='Lower'
+        else
+                status='Same'
+        fi
+
+}
+
+
+#/////////////////////////////////////////////
+# Function performs installation/removal of packages
+#
+#
+# Arguments: $1-package $2-location
+#/////////////////////////////////////////////
+verify_repo(){
+ddc_repo=/etc/yum.repos.d/ericDDC.repo
+EMC_repo=/etc/yum.repos.d/ericEMC.repo
+
+if [[ -e $ddc_repo ]] || [[ -e $EMC_repo ]] ; then
+	$RM -rf $ddc_repo $EMC_repo
+	repo_res=$?
+	if [ $repo_res -eq 0 ] ; then
+                $ECHO " Successfuly removed old repos"
+        else
+                $ECHO "Could not remove old repos"
+                getout
+        fi
+
+fi
+
+$RM -rf /var/cache/yum
+$YUM clean all > /dev/null 2>&1
+
+for i in $ddc_repo $EMC_repo
+do
+     	if ! ls -lrt $i > /dev/null 2>&1 ; then 
+		create_yum_repo  
+		res=$?
+	         if [ "${res}" -eq 0 ] ; then
+       		     $ECHO -e "Creating Repo files for DDC and EMC \n"
+               	 else
+                     $ECHO -e "Creating Repo file for DDC and EMC failed\n"
+	             exit 1
+       		 fi
+
+        fi
+done
+
+}
+
+
+#/////////////////////////////////////////////
+# Function performs installation/removal of packages
+#
+#
+# Arguments:None
+#/////////////////////////////////////////////
+
+install_function()
+{
+
+_pkg_type=$1
+
+ddc=${SOFTWARE_LOCATION}/ddc/packages.inc
+EMC=${SOFTWARE_LOCATION}/EMC/packages.inc
+if [ "$1" == "ddc" ]; then
+        if [[  -f "$ddc" ]] ; then
+                    for i in $($CAT "${SOFTWARE_LOCATION}"/ddc/packages.inc)
+                    do
+                        PKG=$i
+                        $ECHO -e "======================================================================================== \n"
+                        $ECHO -e "   --- Package: ${PKG}"
+                        $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/ddc/${PKG}\n"
+                        $ECHO -e "\n--> Installing/Upgrading ${PKG}\n"
+			if ! $YUM install -y "$PKG" ; then
+                                $ECHO -e "Could not install/Upgrade $PKG\n"
+                                return 1
+                        fi
+#Added the below logic to display the packages currently installed
+                        if [[ ${PKG} == "ERICddc*" ]] ; then
+                                rpms=$($RPM -qa | $GREP -i ERICddc)
+                                $ECHO -e " ${rpms} are currently installed "
+                        elif [[ ${PKG} == "perl-JSON-*" ]] ; then
+                                rpms=$($RPM -qa | $GREP -i perl-JSON)
+                                $ECHO -e " ${rpms} are currently installed "
+                        else
+                                rpms=$($RPM -qa | $GREP -i "${PKG}")
+                                $ECHO -e " ${rpms} is currently installed "
+                        fi
+
+                    done
+        else
+                $ECHO -e "ERROR: Could not find ${SOFTWARE_LOCATION}/ddc/packages.inc, Failed to install/upgrade DDC packages\n"
+                $ECHO -e "Create ${SOFTWARE_LOCATION}/ddc/packages.inc file, then continue\n"
+                exit 1
+        fi
+fi
+
+if [ "$1" == "EMC" ] ; then
+        if [[  -f "$EMC" ]] ; then
+                eniq_server=/eniq/installation/config/SunOS.ini
+                mws_server=/JUMP
+		# shellcheck disable=SC2016
+                deployment_type=$($DMIDECODE -t system|$GREP -iw "Product Name"|$AWK -F: '{print $2}'|$CUT -d' ' -f4,5)
+		# shellcheck disable=SC2016
+                server_model=$($DMIDECODE -t chassis | $GREP -w "Type" | $AWK '{print $2}')
+                if [ -f "${eniq_server}" ]; then
+                        if [[ "${server_model}" == "Blade" ]] || [[ "${deployment_type}" == "Gen10 Plus" ]]; then
+				# shellcheck disable=SC2016
+                                san_type=$($CAT $eniq_server | $GREP -w "SAN_DEVICE" | $AWK -F"=" '{print $2}')
+                                if [[ "$san_type" == "unity" || "$san_type" == "unityXT" || "$san_type" == "vnx" ]]; then
+                                    if [[ "$san_type" == "unity" || "$san_type" == "unityXT" ]]; then
+                                        PKG=$($CAT "${SOFTWARE_LOCATION}"/EMC/packages.inc | $GREP -i Unisphere)
+                                        $ECHO -e "======================================================================================== \n"
+                                        $ECHO -e "   --- Package: ${PKG}"
+                                        $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/EMC/${PKG}\n"
+                                                installed_rpm=$($RPM -qa | $GREP -w "UnisphereCLI")
+                                                res=$?
+                                                if [ "$res" -eq 0 ]; then
+                                                        $RPM -e "$installed_rpm" >/dev/null 2>&1
+                                                fi
+                                                $ECHO -e "\n--> Installing ${PKG}\n"
+                                                if ! $YUM install -y "$PKG" --skip-broken ; then
+                                                        $ECHO -e "Could not install/upgrade $PKG\n"
+                                                        return 1
+                                                fi
+                                     else
+                                        rpms=$($CAT "${SOFTWARE_LOCATION}"/EMC/packages.inc | $GREP -vi Unisphere)
+                                        for i in ${rpms}
+                                        do
+                                                PKG=$i
+                                                $ECHO -e "======================================================================================== \n"
+                                                $ECHO -e "   --- Package: ${PKG}"
+                                                $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/EMC/${PKG}\n"
+                                                        $ECHO -e "\n--> Installing ${PKG}\n"
+                                                       if ! $YUM install -y "$PKG" --skip-broken; then
+                                                                $ECHO -e "Could not install/upgrade $PKG\n"
+                                                                return 1
+                                                        fi
+                                         done
+                                     fi
+                                else
+                                    $ECHO "EMC package installation is not required"
+                                fi
+                        else
+                                $ECHO "EMC package installation is not required"
+                        fi
+           elif [ -d ${mws_server} ]; then
+                        installed_rpm=$($RPM -qa | $GREP -w "UnisphereCLI")
+                        res=$?
+                        if [ "$res" -eq 0 ]; then
+                            $RPM -e "$installed_rpm" >/dev/null 2>&1
+                        fi
+                        for i in $($CAT "${SOFTWARE_LOCATION}"/EMC/packages.inc)
+                        do
+                          PKG=$i
+                          $ECHO -e "======================================================================================== \n"
+                          $ECHO -e "   --- Package: ${PKG}"
+                          $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/EMC/${PKG}\n"
+                                $ECHO -e "\n--> Installing ${PKG}\n"
+                                if ! $YUM install -y "$PKG" --skip-broken ; then
+                                      $ECHO -e "Could not install $PKG\n"
+                                      return 1
+                                fi
+                        done
+			if ! $GREP -q "PATH=\$PATH:/opt/Unisphere/bin:/opt/Navisphere/bin" /etc/profile
+                        then
+                                $ECHO "PATH=\$PATH:/opt/Unisphere/bin:/opt/Navisphere/bin" >> /etc/profile
+                        fi
+                         
+                        /opt/dellemc/uemcli/bin/setlevel.sh low
+          else
+                $ECHO -e "Server is not configured with ENIQ or MWS"
+                exit 1
+          fi
+        else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/EMC/packages.inc, Failed to install EMC packages\n"
+                $ECHO -e "Create ${SOFTWARE_LOCATION}/EMC/packages.inc,then continue\n"
+                exit 1
+
+        fi
+fi
+
+if [ "$1" == "HWcomm" ] ; then
+        HWcomm_pkg=$($LS "${SOFTWARE_LOCATION}"/HWcomm/ | $GREP ERIChwcomm)
+	pkg_res=$?
+        if [ $pkg_res -eq 0 ] ; then
+		$ECHO -e "======================================================================================== \n"
+        	$ECHO -e "   --- Package: ${HWcomm_pkg}"
+        	$ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/HWcomm/${HWcomm_pkg}\n"
+	        verify_pkg_function "${SOFTWARE_LOCATION}"/HWcomm/"${HWcomm_pkg}"
+        else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/HWcomm/${HWcomm_pkg}\n"
+                exit 1
+        fi
+fi
+
+if [ "$1" == "nasupdate" ] ; then
+        ERICnasupdate_pkg=$($LS "${SOFTWARE_LOCATION}"/vaupgrade/ | $GREP ERICnasupdate)
+        pkg_res=$?
+        if [ $pkg_res -eq 0 ] ; then
+		$ECHO -e "======================================================================================== \n"
+                $ECHO -e "   --- Package: ${ERICnasupdate_pkg}"
+                $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/vaupgrade/${ERICnasupdate_pkg}\n"
+                verify_pkg_function "${SOFTWARE_LOCATION}"/vaupgrade/"${ERICnasupdate_pkg}"
+        else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/vaupgrade/${ERICnasupdate_pkg}\n"
+                exit 1
+        fi
+fi
+
+
+if [ "$1" == "mwshealthcheck" ] ; then
+	ERICmwshealthcheck_pkg_name="ERICmwshealthcheck"
+	ERICmwshealthcheck_pkg_path="mwshealthcheck"
+	ERICmwshealthcheck_pkg=$($LS "${SOFTWARE_LOCATION}"/"${ERICmwshealthcheck_pkg_path}" | $GREP "${ERICmwshealthcheck_pkg_name}")
+	pkg_res=$?
+	if [ $pkg_res -eq 0 ] ; then
+		$ECHO -e "======================================================================================== \n"
+		$ECHO -e "   --- Package: ${ERICmwshealthcheck_pkg}"
+                $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/${ERICmwshealthcheck_pkg_path}/${ERICmwshealthcheck_pkg}\n"
+		common_pkg_install "$ERICmwshealthcheck_pkg_name" "$ERICmwshealthcheck_pkg" "$ERICmwshealthcheck_pkg_path"
+	else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/${ERICmwshealthcheck_pkg_path}/${ERICmwshealthcheck_pkg_name} package\n"
+                exit 1
+        fi
+fi	
+
+
+if [[ "$1" == "ERICkickstart" ]] || [[ "$1" == "omtools" ]]; then
+	ERICkickstart_pkg_name="ERICkickstart"
+        ERICkickstart_pkg_path="omtools/eric_kickstart"
+        ERICkickstart_pkg=$($LS "${SOFTWARE_LOCATION}"/"${ERICkickstart_pkg_path}" | $GREP "${ERICkickstart_pkg_name}")
+        pkg_res=$?
+        if [ $pkg_res -eq 0 ] ; then
+		$ECHO -e "======================================================================================== \n"
+                $ECHO -e "   --- Package: ${ERICkickstart_pkg}"
+                $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/${ERICkickstart_pkg_path}/${ERICkickstart_pkg}\n"
+                common_pkg_install "$ERICkickstart_pkg_name" "$ERICkickstart_pkg" "$ERICkickstart_pkg_path"
+        else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/${ERICkickstart_pkg_path}/${ERICkickstart_pkg_name} package\n"
+                exit 1
+        fi
+fi
+
+
+if [ "$1" == "storconfig" ] ; then
+        ERICstorconfig_pkg_name="ERICstorconfig"
+        ERICstorconfig_pkg_path="sanconfig"
+        ERICstorconfig_pkg=$($LS "${SOFTWARE_LOCATION}"/"${ERICstorconfig_pkg_path}" | $GREP "${ERICstorconfig_pkg_name}")
+        pkg_res=$?
+        if [ $pkg_res -eq 0 ] ; then
+		$ECHO -e "======================================================================================== \n"
+                $ECHO -e "   --- Package: ${ERICstorconfig_pkg}"
+                $ECHO -e "   --- Location: ${SOFTWARE_LOCATION}/${ERICstorconfig_pkg_path}/${ERICstorconfig_pkg}\n"
+                common_pkg_install "$ERICstorconfig_pkg_name" "$ERICstorconfig_pkg" "$ERICstorconfig_pkg_path"
+        else
+                $ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/${ERICstorconfig_pkg_path}/${ERICstorconfig_pkg_name} package\n"
+                exit 1
+        fi
+fi
+
+
+}
+
+
+#/////////////////////////////////////////////
+# Function performs HWcomm package install and upgrade
+# Validation
+#
+# Arguments:OM_SW Location
+#/////////////////////////////////////////////
+verify_pkg_function()
+{
+custom_pkg=$1
+tmp_custom_pkg_info="/${TEMP_LOCATION}/.custom_pkg_info"
+$RM -rf ${tmp_custom_pkg_info} >/dev/null 2>&1
+$RPM -qpi "$custom_pkg" > "${tmp_custom_pkg_info}" 2>&1
+pkg_name=$($CAT "${tmp_custom_pkg_info}" | $GREP -i name | $SED 's/.*: \(.*\)/\1/g')
+$ECHO -e "\n--> Checking the Package $pkg_name before install/upgrade\n"
+new_pkg_version=$($CAT "${tmp_custom_pkg_info}" | $GREP -iw Version | $SED 's/.*: \(.*\)/\1/g' |$SED 's/\.//g')
+$RPM -qa | $GREP -iw "${pkg_name}"  >/dev/null 2>&1
+installed=$?
+if [ $installed -ne 0 ]; then
+        $ECHO -e "\n--> Installing ${pkg_name}\n"
+      if $YUM install -y "${custom_pkg}" ; then
+                $ECHO -e "Sucessfully installed ${pkg_name}\n"
+        else
+                $ECHO -e "Could not install ${pkg_name}\n"
+                return 1
+        fi
+else
+        current_rpm_ver=$($RPM -qi "${pkg_name}" | $GREP -iw version | $SED 's/.*: \(.*\)/\1/g' |$SED 's/\.//g')
+        if [[ ${current_rpm_ver} -ge ${new_pkg_version} ]]; then
+                 $ECHO -e  "Latest ${pkg_name} package is already installed on the server"
+        else
+                 $ECHO -e "\n--> Installing/Upgrading ${pkg_name}"
+                 if $YUM install -y "${custom_pkg}" ; then
+                 	$ECHO -e "Sucessfully Upgraded ${pkg_name} \n"
+                 else
+                        $ECHO -e "Could not Upgrade ${pkg_name}\n"
+                        return 1
+                 fi
+        fi
+fi
+
+}
+
+#////////////////////////////////////////////////////////////////////////////////////
+# Function performs the installation and upgrade of the below packages owned by Infra
+# ERICmwshealthcheck ERICkickstart ERICstorconfig
+#
+# Arguments:Package name, FUll pacakge name & Existing folder
+#////////////////////////////////////////////////////////////////////////////////////
+common_pkg_install()
+{
+
+common_pkg_name=$1
+common_pkg=$2
+common_path=$3
+$RPM -qi "${common_pkg_name}" > /dev/null 2>&1
+installed=$?
+if [ $installed -ne 0 ]; then
+	$ECHO -e "\n--> Installing ${common_pkg_name}"
+	$YUM install -y "${SOFTWARE_LOCATION}/${common_path}/${common_pkg}"
+	install_status=$?
+	if [ $install_status -eq 0 ] ; then
+		$ECHO -e "Sucessfully installed ${common_pkg}"
+	else
+		$ECHO -e "Could not install ${common_pkg_name}"
+		return 1
+	fi
+else
+	check_rstate "$common_pkg_name" "$common_pkg"
+	if [[ $status == "Higher" ]] || [[ $status == "Same" ]] ; then
+		$ECHO -e "\n--> ${common_pkg_name} already installed with latest version\n"
+	else
+		rpm -Uvh "${SOFTWARE_LOCATION}/${common_path}/${common_pkg}"
+		upgrade_status=$?
+		if [ $upgrade_status -eq 0 ] ; then
+			$ECHO -e "Sucessfully updated ${common_pkg_name} to latest version"
+		else
+			$ECHO -e "Could not install ${common_pkg}"
+			return 1
+		fi
+	fi
+fi
+
+}
+
+
+create_yum_repo()
+{
+
+if [ -d  ${eniq} ]; then
+$CAT >/etc/yum.repos.d/ericDDC.repo <<EOL
+[ericDDC]
+name=Ericsson DDC
+baseurl=file://${SOFTWARE_LOCATION}/ddc
+gpgcheck=0
+enabled=1
+EOL
+fi
+
+$CAT >/etc/yum.repos.d/ericEMC.repo <<EOL
+[ericEMC]
+name=Ericsson EMC
+baseurl=file://${SOFTWARE_LOCATION}/EMC
+gpgcheck=0
+enabled=1
+EOL
+}
+
+
+############################################
+# using ISO does not create /ericsson/config
+#
+# Applicable only for MWS and OMBS
+#
+#
+#/////////////////////////////////////////////
+uar_update_config()
+{
+        local eric_conf="/ericsson/ombss"
+        local conf_dir="/ericsson/config"
+        if [ ! -d $conf_dir ]; then
+               if ! $MKDIR -p $conf_dir ; then
+                        $ECHO -e "Failed to make $conf_dir"
+                        getout
+                fi
+        fi
+        if [ ! -d $eric_conf ]; then
+                if [ ! -f $conf_dir/ericsson_use_config ]; then
+                        $CAT > $conf_dir/ericsson_use_config <<EOF
+config=mws
+EOF
+                        $ECHO "$conf_dir/ericsson_use_config is updated"
+	        fi
+                if [ ! -f $conf_dir/inst_type ]; then
+                        $CAT > $conf_dir/inst_type <<EOF
+rhelonly
+EOF
+                        $ECHO "$conf_dir/inst_type is updated"
+                fi
+        else
+              #This is OMBS server
+                #create /ericsson/config/inst_type if file not exist and write "ombs" to it
+                if [ ! -f $conf_dir/inst_type ]; then
+                        $CAT > $conf_dir/inst_type <<EOF
+ombs
+EOF
+                        $ECHO "$conf_dir/inst_type is updated "
+                fi
+        fi
+}
+
+
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+usage()
+{
+        ${ECHO} "
+        Usage: ${SCRIPTNAME} { -p < OM SOFTWARE LOCATION > } { -a <all |mws > } [ -x Package Name ]
+        options:
+
+        -p  : Location of OM Software
+        -a  : Used to install/upgrade OM packages, must pass either mws or all
+        -x  : Used to specify a single package to be upgraded. Only valid when server type is mws
+  "
+        return 0
+}
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+main_wrapper() {
+
+AOPT=""
+SINGLE_PACKAGE_NAME=""
+SOFTWARE_LOCATION=""
+
+while getopts a:p:x:hH DOWHAT; do
+        case ${DOWHAT} in
+
+            H|h) usage  #What can I do you for?!
+                ;;
+
+            a) AOPT=$OPTARG
+                ;;
+
+            x) SINGLE_PACKAGE_NAME=$OPTARG
+                ;;
+
+            p)    SOFTWARE_LOCATION=${OPTARG}
+                ;;
+
+            *) RESULT=1
+                usage            #invalid parameter
+                ;;
+        esac
+    done
+
+# Check the mandatory parameters (I have assumed that -p is mandatory)
+if [[ -z ${AOPT} ]]; then
+  $ECHO Mandatory -a parameter missing
+  usage
+  exit 1
+fi
+if [[ -z ${SOFTWARE_LOCATION} ]]; then
+  $ECHO Mandatory -p parameter missing
+  usage
+  exit 1
+fi
+
+# Only support -x if -a is "mws"
+if [[ -n "$SINGLE_PACKAGE_NAME" ]] && [[ "$AOPT" != "mws" ]]; then
+  $ECHO "Can only specify -x if -a is mws"
+  usage
+  exit 1
+fi
+
+#Checking for -x option parameter 
+if [[ $* =~ '-x' && -z $SINGLE_PACKAGE_NAME ]]; then
+         $ECHO Mandatory parameter missing for -x option
+        exit 1
+fi
+
+case ${AOPT} in
+    mws)
+        # Do whatever it is you want with $SINGLE_PACKAGE_NAME here
+		if [[ -n ${SINGLE_PACKAGE_NAME} ]]; then
+			if [ ! -d $ENIQ ]; then
+	                        $ECHO "Using $SINGLE_PACKAGE_NAME here in upgrade package"
+	                        setup
+				start_log "upgrade_om_packages"
+	                        header_print "Upgrading OM Packages $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+	                        install_function "${SINGLE_PACKAGE_NAME}" | /usr/bin/tee -a "${LOGFILE}"
+	                        $ECHO -e "   --- Log location: ${LOGFILE}"
+	                        header_print "Finished OM Software Upgrade $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+	                        exit 0
+			else
+				setup
+				start_log "upgrade_om_packages"
+                                header_print "Upgrading OM Packages $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+                                $ECHO "ERICkickstart package is supported only on MWS server" | /usr/bin/tee -a "${LOGFILE}"
+                                $ECHO -e "   --- Log location: ${LOGFILE}"
+                                header_print "Finished OM Software Upgrade $(${DATE} '+%Y-%m-%d-%H-%M-%S')"
+                                exit 0
+			fi
+                fi        
+	setup
+	start_log "upgrade_om_packages"
+	uar_update_config | /usr/bin/tee -a "$LOGFILE"
+        verify_repo | /usr/bin/tee -a "$LOGFILE"
+        $RM -rf /var/cache/yum
+        $RPM --rebuilddb > /dev/null 2>&1
+	timezone_check | /usr/bin/tee -a "${LOGFILE}"
+	remove_jump_osbackup | /usr/bin/tee -a "${LOGFILE}"
+	header_print "Upgrading OM Packages $(${DATE} '+%Y-%m-%d-%H-%M-%S')" | /usr/bin/tee -a "${LOGFILE}"
+        $ECHO -e "   --- Log location: ${LOGFILE}"
+
+	upgrade_packages mws
+	res=$?
+        (( "$res" != 0 )) && RESULT=1
+        $ECHO "${RESULT}" > /dev/null 2>&1
+        ;;
+    all)
+        setup
+	start_log "upgrade_om_packages"
+        verify_repo | /usr/bin/tee -a "${LOGFILE}"
+        $RM -rf /var/cache/yum
+        $RPM --rebuilddb > /dev/null 2>&1
+        upgrade_packages all
+	upg_res=$?
+        (( "$upg_res" != 0 )) && RESULT=1
+  	$ECHO "$RESULT" > /dev/null 2>&1
+	eniq_media_history | /usr/bin/tee -a "${LOGFILE}"
+         ;;
+
+    *)  usage
+        exit 1
+        ;;
+esac
+}
+
+
+
+
+##############################################
+#
+# Applicable for only MWS
+# Deletes the timezone/clock file
+# if already present
+#
+##############################################
+timezone_check()
+{
+        clock_file=/etc/sysconfig/clock
+        $ECHO -e "======================================================================================== \n"
+        if [ -f ${clock_file} ]; then
+               if $RM -rf ${clock_file}; then
+                        $ECHO -e "\n Sucessfully deleted clock_file"
+                else
+                        $ECHO -e "\nCould not delete clock_file"
+                fi
+        else
+                $ECHO -e "\nClock file not available. No need to delete"
+        fi
+        $ECHO -e "\n======================================================================================== \n"
+}
+
+##############################################
+#
+# Applicable for only MWS
+# Deletes OS_BACK_UP directory under /JUMP only if present
+#
+##############################################
+remove_jump_osbackup()
+{
+        if [ -d /JUMP/OS_BACK_UP ] ; then
+                $RM -rf /JUMP/OS_BACK_UP/
+                $ECHO "/JUMP/OS_BACK_UP is removed"
+        else
+                $ECHO "/JUMP/OS_BACK_UP not available. No need to remove"
+        fi
+
+}
+
+
+################################################################
+#                                                              #
+#   function to create temp media update history file for ENIQ #
+#                                                              #
+################################################################
+
+eniq_media_history()
+{
+
+ om_med_details=$($CAT "${SOFTWARE_LOCATION}"/.om_linux | grep -i "media_dir" | awk -F'=' '{print $2}')
+ sprint_value=$($CAT "${SOFTWARE_LOCATION}"/.om_linux | grep -i "media_dir" | awk -F'/' '{print $2}')
+
+if [ -d ${ENIQ} ]; then
+       if [ ! -f ${ENIQ}/eniq_om_history ] ; then
+               rm -rf ${ENIQ}/eniq_om_status
+cat > ${ENIQ}/eniq_om_history <<EOF
+ENIQ_OM_MEDIA_STATUS - ${om_med_details}
+SPRINT               - ${sprint_value}
+INST_DATE             ${DATETIME}
+================================================
+EOF
+               $CAT ${ENIQ}/eniq_om_history >${ENIQ}/eniq_om_status
+               echo "ENIQ history file created and updated with OM media details"
+
+       else
+               if [[ $($CAT ${ENIQ}/eniq_om_history | $GREP  "${om_med_details}") ]]; then
+                       echo " ENIQ history file has the entry of OM Media provided. Update skipped"
+               else
+                       rm -rf ${ENIQ}/eniq_om_status
+                     {		
+                       echo "ENIQ_OM_MEDIA_STATUS - ${om_med_details}" 
+                       echo "SPRINT               - ${sprint_value}" 
+                       echo "INST_DATE              ${DATETIME}" 
+		     } >>${ENIQ}/eniq_om_status
+                       echo
+                       echo "=====================================================================" >>${ENIQ}/eniq_om_status
+                         $CAT ${ENIQ}/eniq_om_status >>${ENIQ}/eniq_om_history
+                       echo "ENIQ history file successfully updated with OM media details"
+               fi
+       fi
+else
+       echo "${ENIQ} path doesnot exist, Cannot update ENIQ history file with OM media details"
+
+fi
+}
+
+
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+exit_script()
+{
+        $ECHO -e "\n FATAL ERROR \n"
+        exit 1
+
+}
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+
+#===========================================
+
+
+# Must be run as user root
+#if ! ( ${ID} | ${GREP} '(root)' 1>/dev/null 2>&1 ); then
+#        $ECHO "You must be 'root' to run this script!"
+#        exit_script 1
+#fi
+
+#if [ $? -ne 0 ]; then
+#        $ECHO -e "Arch could not be determined, exiting" && exit_script
+#fi
+
+trap getout TERM INT HUP
+
+main_wrapper "$@"
+exit 0

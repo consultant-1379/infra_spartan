@@ -1,0 +1,1067 @@
+#!/usr/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : continue_om_installation.bsh
+# Date    : 07/31/2018
+# Revision: A.1
+# Purpose : It is responsible for continuing the extraction/configuration
+#           during Ericsson OM phase.
+#
+# Usage   : continue_om_installation.bsh
+#
+# ********************************************************************
+#
+#       Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BOOTADM=/usr/sbin/bootadm
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+DMIDECODE=/usr/sbin/dmidecode
+DTCONFIG=/usr/dt/bin/dtconfig
+ECHO=/usr/bin/echo
+EGREP=/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GETTEXT=/usr/bin/gettext
+GREP=/bin/grep
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PKG=/usr/bin/pkg
+PWD=/usr/bin/pwd
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TTY=/usr/bin/tty
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+WC=/usr/bin/wc
+RPM=/usr/bin/rpm
+YUM=/usr/bin/yum
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+OM_INSTALL_STAGES=( check_install_ddc_phase
+#check_install_hyperic_phase
+load_core_inst_phase
+end_script )
+
+
+# ********************************************************************
+#
+#       Pre-execution Operations
+#
+# ********************************************************************
+L_ARCH=`$UNAME -p`
+
+# ********************************************************************
+#
+#       functions
+#
+# ********************************************************************
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+if [ "$1" ]; then
+    _err_msg_=$1
+else
+    _err_msg_="Script aborted.......\n"
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO "$_err_msg_"|$TEE -a ${LOGFILE}
+else
+    $ECHO "$_err_msg_"
+fi
+cd $SCRIPTHOME
+
+if [ "$2" ]; then
+    ${2} >> /dev/null 2>&1
+    exit 1
+else
+    exit 1
+fi
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+#check_id()
+#{
+#_check_id_=`$ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}'`
+#if [ "$_check_id_" != "$1" ]; then
+#    _err_msg_="You must be $1 to execute this script."
+#    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+#fi
+#}
+
+### Function: multipath_configure ###
+#
+# Update multipath configure file
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+
+multipath_configure()
+{
+DGC_variable=`$CAT /etc/multipath.conf | $GREP -w "DGC"`
+if [ $? -eq 1 ] ; then
+	$ECHO "devices {" >> /etc/multipath.conf
+	$ECHO "        device {" >> /etc/multipath.conf
+	$ECHO "                vendor \"DGC\"" >> /etc/multipath.conf
+	$ECHO "                product \".*\"" >> /etc/multipath.conf
+	$ECHO "                product_blacklist \"LUNZ\"" >> /etc/multipath.conf
+	$ECHO "                path_grouping_policy \"group_by_prio\"" >> /etc/multipath.conf
+	$ECHO "                path_checker \"emc_clariion\"" >> /etc/multipath.conf
+	$ECHO "                features \"1 queue_if_no_path\"" >> /etc/multipath.conf
+	$ECHO "                hardware_handler \"1 alua\"" >> /etc/multipath.conf
+	$ECHO "                prio \"alua\"" >> /etc/multipath.conf
+	$ECHO "                prio_args \"exclusive_pref_bit\"" >> /etc/multipath.conf
+	$ECHO "                failback immediate" >> /etc/multipath.conf
+	$ECHO "                rr_weight \"uniform\"" >> /etc/multipath.conf
+	$ECHO "                no_path_retry 60" >> /etc/multipath.conf
+	$ECHO "                retain_attached_hw_handler yes" >> /etc/multipath.conf
+	$ECHO "                detect_prio yes"  >> /etc/multipath.conf
+	$ECHO "                detect_path_checker no" >> /etc/multipath.conf
+	$ECHO "        }" >> /etc/multipath.conf
+	$ECHO "}" >> /etc/multipath.conf	
+	systemctl restart multipathd
+else
+	$ECHO "Mutipath file is already updated"
+fi
+}
+### Function: check_install_ddc_phase ###
+#
+# Check whether to install DDC on the server during OM phase
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+
+check_install_ddc_phase()
+{
+insert_header_footer head "Entering OM Config Stage ${NEXT_STAGE}" ${LOGFILE}
+
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $2}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read install paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+# Do I need to install DDC
+
+if [ "${INSTALL_DDC}" == "NO" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+if [ -f ${_cache_dir_}/ddc/packages.inc ] ; then
+        while read -r PKG
+          do
+                $YUM list $PKG
+                        if [ $? -eq 0 ] ; then
+                            $ECHO "-> $PKG found ..."
+                              $YUM install -y $PKG
+                                if [ $? -eq 0 ] ; then
+                                        $ECHO "Sucessfully installed $PKG"
+                                else
+                                         _err_msg_="Could not install $PKG"
+                                         abort_script "$_err_msg_"
+                                fi
+                        else
+                            _err_msg_="$PKG not found or empty"
+                            abort_script "$_err_msg_"
+                        fi
+          done < "${_cache_dir_}/ddc/packages.inc"
+else
+        _err_msg_="${_cache_dir_}/ddc/packages.inc not found"
+        abort_script "${_err_msg_}"
+fi
+
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+}
+
+### Function: check_install_java_phase ###
+#
+# Check whether to install java on the server during OM phase
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_install_java_phase()
+{
+insert_header_footer head "Entering OM Config Stage ${NEXT_STAGE}" ${LOGFILE}
+
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $2}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read install paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+# Do I need to install JAVA ?
+
+if [ "${INSTALL_JAVA}" == "NO" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+JAVA_PKG="java-1.8.0-openjdk.x86_64"
+$YUM install -y $JAVA_PKG
+   if [ $? -eq 0 ] ; then
+          $ECHO "Sucessfully installed $JAVA_PKG"
+   else
+          _err_msg_="Could not install $JAVA_PKG"
+          abort_script "$_err_msg_"
+   fi
+
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+
+}
+
+### Function: check_install_iptool_phase ###
+#
+# Check whether to install iptool on the server during OM phase
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_install_iptool_phase()
+{
+insert_header_footer head "Entering OM Config Stage ${NEXT_STAGE}" ${LOGFILE}
+
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $1}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read install paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+# Do I need to install IPTOOL ?
+
+if [ "${INSTALL_IPTOOL}" == "NO" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+_iptool_pkg_=`find ${_cache_dir_}/iptool/ -name ERICiptool.pkg`
+      #  if [ $? -eq 0 ] ; then
+      #         echo "iptool package installed"
+#       else
+#               _err_msg_="No package found"
+#               abort_script "$_err_msg_"
+ #       fi
+
+
+if [ ! -f ${_iptool_pkg_} ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+else
+        ${RPM} -G -n -d ${_iptool_pkg_} -a ${OM_BOOTSTRAP_DIR}/etc/admin.txt all >/dev/null | tee -a $LOGFILE
+        if [ $? -eq 0 ] ; then
+        echo "iptool package installed"
+        fi
+
+fi
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+
+}
+
+
+### Function: check_install_hyperic_phase ###
+#
+# Check whether to install hyperic on the server during OM phase
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_install_hyperic_phase()
+{
+insert_header_footer head "Entering OM Config Stage ${NEXT_STAGE}" ${LOGFILE}
+
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $2}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read install paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+# Do I need to install Self Mon ?
+
+if [ "${INSTALL_HYPERIC_CLIENT}" == "NO" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+#if [[ `$CAT /etc/.ks_serv_type` == "SunOS" ]] ; then
+#  if [ -f ${_cache_dir_}/hyperic/packages.inc ] ; then
+#        while read -r PKG
+#          do
+#                $YUM list $PKG
+#                        if [ $? -eq 0 ] ; then
+#                            $ECHO "-> $PKG found ..."
+#                              $YUM install -y $PKG
+#                                if [ $? -eq 0 ] ; then
+#                                        $ECHO "Sucessfully installed $PKG"
+#                                else
+#                                         _err_msg_="Could not install $PKG"
+#                                         abort_script "$_err_msg_"
+#                                fi
+#                        else
+#                            _err_msg_="$PKG not found or empty"
+#                            abort_script "$_err_msg_"
+#                        fi
+#          done < "${_cache_dir_}/hyperic/packages.inc"
+#  else
+#        _err_msg_="${_cache_dir_}/hyperic/packages.inc not found"
+#        abort_script "${_err_msg_}"
+#  fi
+#fi
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+
+}
+
+
+
+
+
+### Function: check_install_freeware_phase ###
+#
+# Check whether to install freeware packages during OM phase
+#
+# Arguments:
+#       none
+# Return values:
+#       none
+check_install_freeware_phase()
+{
+
+insert_header_footer head "Entering OM Config Stage ${NEXT_STAGE}" ${LOGFILE}
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $1}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read install paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+# Do I need to install freeware
+
+if [ "${INSTALL_FREEWARE}" == "NO" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+# Install freeware
+local _install_script_=${_cache_dir_}/freeware/install_freeware.bsh
+local ret
+
+if [ ! -x ${_install_script_} ]; then
+    _err_msg_="Unable to find ${_install_script_}, exiting!"
+    abort_script "$_err_msg_"
+fi
+
+${_install_script_} -l ALL
+ret=$?
+if [ ${ret} -ne 0 ]; then
+    _err_msg_="Error [${ret}] running ${_install_script_}, exiting!"
+    abort_script "$_err_msg_"
+fi
+
+local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+set_next_stage ${_next_stage_}
+
+return 0
+
+}
+
+### Function: end_script ###
+#
+# Final stage. Clean up
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+end_script()
+{
+        $ECHO "completed:"
+        return 0
+
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+}
+
+### Function: get_array_element ###
+#
+# Get the current array element number
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_array_element()
+{
+_array_length_=${#OM_INSTALL_STAGES[*]}
+_array_length_=`${EXPR} ${_array_length_} - 1`
+
+for (( _elem_=0; _elem_<=${_array_length_}; _elem_++ )); do
+    $ECHO ${OM_INSTALL_STAGES[${_elem_}]} | $GREP -w ${NEXT_STAGE} >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        ARRAY_ELEM=${_elem_}
+        break
+    fi
+done
+}
+
+### Function: get_next_stage ###
+#
+# Get the stage to be run
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+get_next_stage()
+{
+ARRAY_ELEM=0
+
+if [ -s ${STAGEFILE} ]; then
+    NEXT_STAGE=`$CAT ${STAGEFILE}|$EGREP -v '^[         ]*#' | $SED -e 's| ||g'`
+    if [ ! "$NEXT_STAGE" ]; then
+        _err_msg_="ERROR: Failed to read stage from ${STAGEFILE}, exiting."
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+    if [ "$NEXT_STAGE" == "cleanup" ]; then
+        return 0
+    fi
+    # Get the element number so we can move along the array
+    get_array_element
+else
+    $MKDIR -p `$DIRNAME ${STAGEFILE}`
+    if [ $? -ne 0 ]; then
+        _err_msg_="Failed to create directory `$DIRNAME ${STAGEFILE}`, exiting."
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+    NEXT_STAGE=${OM_INSTALL_STAGES[${ARRAY_ELEM}]}
+fi
+}
+
+
+### Function: insert_header_footer ###
+#
+#   Insert a stage header/footer message
+#
+# Arguments:
+#       $1 : head/foot
+#       $2 : Message
+#       $3 : Logfile
+# Return Values:
+#       none
+insert_header_footer()
+{
+if [ $# -ne 3 ]; then
+    _err_msg_="3 Parameters must be passed to header/footer function"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+if [ "$1" != "head" -a "$1" != "foot" ]; then
+    _err_msg_="Only Param of head/foot is allowed...exiting!"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+_type_=$1
+
+_msg_=$2
+
+_logfile_=$3
+$MKDIR -p `$DIRNAME ${_logfile_}`
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${_logfile_}`"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+$TOUCH -a ${_logfile_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${_logfile_}"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+if [ "$_type_" == "head" ]; then
+    $ECHO "=====================================================" >> ${_logfile_}
+    $ECHO -e "=====================================================" >> ${_logfile_}
+fi
+$ECHO "$_time_ : $_msg_"|$TEE -a ${_logfile_}
+if [ "$_type_" == "foot" ]; then
+    $ECHO "=====================================================" >> ${_logfile_}
+    $ECHO -e "=====================================================" >> ${_logfile_}
+fi
+}
+
+### Function: load_core_inst_phase ###
+#
+# Runs stage load_core_inst_phase.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+load_core_inst_phase()
+{
+insert_header_footer head "Entering Boot Install Stage ${NEXT_STAGE}" ${LOGFILE}
+
+if [ ! -s ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir ]; then
+    _err_msg_="${ERIC_BOOTSTRAP_DIR}/etc/cache_dir not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+
+#if [ ${INST_TYPE_ID} == "eniq" ]; then
+#       $ECHO -e "\n===================================================================="
+#       $ECHO -e "\n===================================================================="
+#       _err_msg_="ENIQ Core Installation continues once media is ready!!!"
+#       $ECHO -e "\n===================================================================="
+#        $ECHO -e "\n===================================================================="
+#fi
+
+_cache_dir_=`$CAT ${ERIC_BOOTSTRAP_DIR}/etc/cache_dir`
+OM_BOOTSTRAP_DIR="${_cache_dir_}/bootstrap"
+
+if [ ! -s ${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt ]; then
+    _err_msg_="${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Read the config type parameter (if any) set in install command
+if [ -s ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config ]; then
+    _config_type_=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/ericsson_use_config|$AWK -F\= '{print $2}'`
+fi
+
+if [ "${_config_type_}" ]; then
+    _boot_client_id_="${INST_TYPE_ID}_${_config_type_}"
+else
+    _boot_client_id_="${INST_TYPE_ID}"
+fi
+
+# Read CONFIG paramameters.
+load_inst_bootstrap_params "${OM_BOOTSTRAP_DIR}/etc/bootstrap_install_data_params.txt" "${_boot_client_id_}"
+
+# If CONT_INST_SCRIPT = NONE then just set next phase and return
+if [ "${CONT_INST_SCRIPT}" == "NONE" ]; then
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+    return 0
+fi
+
+# Is there a kickstart Path
+if [ "${ERIC_SW_PATH_FILE}" ]; then
+   insert_media -l ${DVD_LABEL}  -f "${DVD_FILE},${DVD_FILE}_${L_ARCH}" -s ${ERIC_SW_PATH_FILE} -n 5 "${DVD_DESC}"
+else
+   insert_media -l ${DVD_LABEL}  -f "${DVD_FILE},${DVD_FILE}_${L_ARCH}" -n 50 "${DVD_DESC}"
+fi
+
+if [ ! "${SW_DIR}" ]; then
+    _err_msg_="SW_DIR variable not set within insert_media function"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+_eric_core_inst_script_=${SW_DIR}/${CONT_INST_SCRIPT}
+if [ ! -x ${_eric_core_inst_script_} ]; then
+    _err_msg_="Script ${_eric_core_inst_script_}missing or not executable"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+if [ -x ${SW_DIR}/${CONT_INST_SCRIPT} ]; then
+    _eric_core_inst_script_=${SW_DIR}/${CONT_INST_SCRIPT}
+else
+    _err_msg_="Script ${_eric_core_inst_script_}missing or not executable"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+$TTY |$GREP -w console >> /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "Using console based installation environment..."
+    ${_eric_core_inst_script_} -b ${ERIC_BOOTSTRAP_DIR} -S ${SW_DIR} >/dev/console </dev/console 2>&1
+else
+    echo "Using non-console based installation environment..."
+    ${_eric_core_inst_script_} -b ${ERIC_BOOTSTRAP_DIR} -S ${SW_DIR}
+fi
+
+if [ $? -ne 0 ]; then
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+else
+    local _next_stage_=`$EXPR ${ARRAY_ELEM} + 1`
+    set_next_stage ${_next_stage_}
+fi
+}
+
+### Function: load_inst_bootstrap_params ###
+#
+# Loads/reads installation bootstrap paramameters.
+#
+# Arguments:
+#       ${1} : File conaining Installation params/data
+#       ${2} : Param to indicate which data to load
+# Return Values:
+#       none
+load_inst_bootstrap_params()
+{
+_inst_data_file_=${1}
+_data_load_type_=${2}
+
+if [ ! -s ${_inst_data_file_} ]; then
+    _err_msg_="${_inst_data_file_} not found or empty"
+    abort_script "$_err_msg_"
+fi
+
+# Get the continuation script name
+CONT_INST_SCRIPT=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "CONT_INST_SCRIPT_${L_ARCH}"`
+if [ ! "${CONT_INST_SCRIPT}" ]; then
+    CONT_INST_SCRIPT=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "CONT_INST_SCRIPT"`
+    if [ ! "${CONT_INST_SCRIPT}" ]; then
+        _err_msg_="Could not read parameter CONT_INST_SCRIPT from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Description of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DEL_CACHE_DIR=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DEL_CACHE_DIRC_${L_ARCH}"`
+if [ ! "${DEL_CACHE_DIR}" ]; then
+    DEL_CACHE_DIR=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DEL_CACHE_DIR"`
+    if [ ! "${DEL_CACHE_DIR}" ]; then
+        _err_msg_="Could not read parameter DEL_CACHE_DIR from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Description of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_DESC=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_DESC_${L_ARCH}"`
+if [ ! "${DVD_DESC}" ]; then
+    DVD_DESC=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_DESC"`
+    if [ ! "${DVD_DESC}" ]; then
+        _err_msg_="Could not read parameter DVD_DESC from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the ID File Name of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_FILE_${L_ARCH}"`
+if [ ! "${DVD_FILE}" ]; then
+    DVD_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_FILE"`
+    if [ ! "${DVD_FILE}" ]; then
+        _err_msg_="Could not read parameter DVD_FILE from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the Label of the SW DVD. Try to get architecture specif one first. If not
+# found get the generic on
+DVD_LABEL=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_LABEL_${L_ARCH}"`
+if [ ! "${DVD_LABEL}" ]; then
+    DVD_LABEL=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "DVD_LABEL"`
+    if [ ! "${DVD_LABEL}" ]; then
+        _err_msg_="Could not read parameter DVD_LABEL from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Get the name of the file that may contain the kickstart path
+ERIC_SW_PATH_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "ERIC_SW_PATH_FILE_${L_ARCH}"`
+if [ ! "${ERIC_SW_PATH_FILE}" ]; then
+    ERIC_SW_PATH_FILE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "ERIC_SW_PATH_FILE"`
+    if [ ! "${ERIC_SW_PATH_FILE}" ]; then
+        _err_msg_="Could not read parameter ERIC_SW_PATH_FILE from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+if [ -s "${ERIC_BOOTSTRAP_CONF_DIR}/${ERIC_SW_PATH_FILE}" ]; then
+    ERIC_SW_PATH_FILE="${ERIC_BOOTSTRAP_CONF_DIR}/${ERIC_SW_PATH_FILE}"
+else
+    unset ERIC_SW_PATH_FILE
+fi
+
+# Read Variable as to whether update the server with JAVA6 during OM phase
+INSTALL_JAVA=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_JAVA_${L_ARCH}"`
+if [ ! "${INSTALL_JAVA}" ]; then
+    INSTALL_JAVA=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_JAVA"`
+    if [ ! "${INSTALL_JAVA}" ]; then
+        _err_msg_="Could not read parameter INSTALL_JAVA from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+fi
+
+# Read Variable as to whether to install DDC on the server during OM phase
+INSTALL_DDC=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_DDC"`
+    if [ ! "${INSTALL_DDC}" ]; then
+        _err_msg_="Could not read parameter INSTALL_DDC from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+# Read Variable as to whether to install DDC on the server during OM phase
+INSTALL_IPTOOL=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_IPTOOL"`
+    if [ ! "${INSTALL_IPTOOL}" ]; then
+        _err_msg_="Could not read parameter INSTALL_IPTOOL from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+# Read Variable as to whether to install DDC on the server during OM phase
+INSTALL_HYPERIC_CLIENT=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_HYPERIC_CLIENT"`
+    if [ ! "${INSTALL_HYPERIC_CLIENT}" ]; then
+        _err_msg_="Could not read parameter INSTALL_HYPERIC_CLIENT from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+# Read Variable as to whether to install FREEWARE on the server during OM phase
+INSTALL_FREEWARE=`iniget ERIC_INST_TYPE_${_data_load_type_} -f ${_inst_data_file_} -v "INSTALL_FREEWARE"`
+    if [ ! "${INSTALL_FREEWARE}" ]; then
+        _err_msg_="Could not read parameter INSTALL_FREEWARE from file ${_inst_data_file_}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+}
+
+### Function: log ###
+#
+# Basically outputs to the screen and the logfile
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+log()
+{
+if [ "${LOGFILE}" ]; then
+    $ECHO -e "$*" |$TEE -a ${LOGFILE}
+else
+    $ECHO -e "$*"
+fi
+}
+
+### Function: set_next_stage ###
+#
+# Set up the stage to be run
+#
+# Arguments:
+#       $1 : Stage to be set to.
+# Return Values:
+#       none
+set_next_stage()
+{
+_stage_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+$ECHO "# Setting new stage at $_stage_time_" > ${STAGEFILE} | $TEE -a ${LOGFILE}
+$ECHO "${OM_INSTALL_STAGES[$1]} " >> ${STAGEFILE} | $TEE -a ${LOGFILE}
+}
+
+### Function: usage_msg ###
+#
+#   Print out the usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$CLEAR
+$ECHO "
+Usage: `$BASENAME $0` -b <full path to bootstrap dir>
+
+options:
+
+-b  : Parameter specifying the full path to where the installation
+      bootstrap directory
+
+NOTE: This script is not designed to be run outside of the installation
+      framework without due care being taken.
+"
+}
+
+# ********************************************************************
+#
+#       Main body of program
+#
+# ********************************************************************
+#
+# Determine absolute path to software
+get_absolute_path
+
+
+# Check that the effective id of the user is root
+#check_id root
+
+if [ -d /eniq/installation/config ]; then
+        if [ `$DMIDECODE -t chassis | $GREP -w "Type" | $AWK '{print $2}'` == "Blade" ] ; then
+                multipath_configure
+        fi
+fi
+
+while getopts ":b:" arg; do
+  case $arg in
+    b) ERIC_BOOTSTRAP_DIR="$OPTARG"
+       ;;
+    s) USER_STAGE="$OPTARG"
+       ;;
+   \?) usage_msg
+       abort_script "$_err_msg_"
+       ;;
+  esac
+done
+shift `expr $OPTIND - 1`
+
+if [ ! "${ERIC_BOOTSTRAP_DIR}" ]; then
+    usage_msg
+    exit 1
+fi
+
+# Log file
+RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+$MKDIR -p ${ERIC_BOOTSTRAP_DIR}/log
+LOGFILE="${ERIC_BOOTSTRAP_DIR}/log/`${HOSTNAME}`_eric_om_config_log_${RUN_TIME}"
+
+# ERIC Config Directory
+ERIC_BOOTSTRAP_CONF_DIR="${ERIC_BOOTSTRAP_DIR}/config"
+if [ ! -s ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type ]; then
+    _err_msg_="Mandatory installation file not detected\n${ERIC_BOOTSTRAP_CONF_DIR}/inst_type"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+PORT_PING=${ERIC_BOOTSTRAP_DIR}/lib/port_ping.pl
+
+if [ ! -x ${PORT_PING} ]; then
+    _err_msg_="${PORT_PING} not found or not executable"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+# Set up Variable to hold installation type
+INST_TYPE_ID=`$CAT ${ERIC_BOOTSTRAP_CONF_DIR}/inst_type`
+
+# Source the common function
+if [ -s ${ERIC_BOOTSTRAP_DIR}/lib/common_bootstrap_functions ]; then
+    . ${ERIC_BOOTSTRAP_DIR}/lib/common_bootstrap_functions
+else
+    _err_msg_="File ${ERIC_BOOTSTRAP_DIR}/lib/common_bootstrap_functions not found"
+    abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+fi
+
+# File to hold stage information
+$MKDIR -p ${ERIC_BOOTSTRAP_DIR}/etc
+STAGEFILE=${ERIC_BOOTSTRAP_DIR}/etc/continue_om_stage
+
+get_next_stage
+
+while :; do
+    _nxt_stage_="${NEXT_STAGE}"
+    $_nxt_stage_
+    if [ $? -ne 0 ]; then
+        _err_msg_="Error in Stage ${NEXT_STAGE}"
+        abort_script "$_err_msg_" "${EXEC_SHELL_CMD}"
+    fi
+
+    # Exit if the user specified to run a specific stage only
+    if [ "$USER_STAGE" ]; then
+        break
+    fi
+
+    # If we read done from the stagefile
+    if [ "$NEXT_STAGE" == "end_script" ]; then
+        break
+    fi
+
+    get_next_stage
+done
+exit 0
+

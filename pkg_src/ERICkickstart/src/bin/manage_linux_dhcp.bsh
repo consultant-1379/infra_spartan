@@ -1,0 +1,2264 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2016 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : manage_dhcp.bsh
+# Purpose : This script will set up and configure DHCP
+#
+# Usage   : See usage_msg()
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+GAWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BC=/usr/bin/bc
+BOOTADM=/usr/sbin/bootadm
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CMP=/usr/bin/cmp
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DHCPCONFIG=/usr/sbin/dhcpconfig
+DHTADM=/usr/sbin/dhtadm
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+DTCONFIG=/usr/dt/bin/dtconfig
+DUMPADM=/usr/sbin/dumpadm
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+FORMAT=/usr/sbin/format
+FUSER=/usr/sbin/fuser
+#EGREP=/usr/sfw/bin/gegrep
+EGREP=/usr/bin/egrep
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+INIT=/usr/sbin/init
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MV=/usr/bin/mv
+NETSTAT=/usr/bin/netstat
+#GPG=/usr/bin/gpg
+PR=/usr/bin/pr
+PG=/usr/bin/pg
+LESS=/usr/bin/less
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PNTADM=/usr/sbin/pntadm
+PRINTF=/usr/bin/printf
+PRTCONF=/usr/sbin/prtconf
+PSRINFO=/usr/sbin/psrinfo
+PWD=/usr/bin/pwd
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+ROUTE=/usr/sbin/route
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SHAREALL=/usr/sbin/shareall
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+#SYSTEMCTL=/usr/sbin/svcadm
+#SVCCFG=/usr/sbin/svccfg
+SVCPROP=/usr/bin/svcprop
+#SYSTEMCTL=/usr/bin/svcs
+SYSTEMCTL=/usr/bin/systemctl
+SWAP=/usr/sbin/swap
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TR=/usr/bin/tr
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+USERADD=/usr/sbin/useradd
+VOLD=/usr/sbin/vold
+WC=/usr/bin/wc
+XARGS=/usr/bin/xargs
+XPG4SED=/usr/xpg4/bin/sed
+XPG4GAWK=/usr/xpg4/bin/awk
+ZFS=/usr/sbin/zfs
+ZPOOL=/usr/sbin/zpool
+
+# SOLARIS 11
+
+DHCPD=/usr/sbin/dhcpd
+#INSTALLADM=/usr/sbin/installadm
+#IPADM=/usr/sbin/ipadm
+IP=/usr/sbin/ip
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+DEFAULT_USER="root"
+DHCP_TIMEOUT=30
+
+# Main ISC DHCP configuration file and repository for managed networks and clients
+DHCP_CONF_FILE=/etc/dhcp/dhcpd.conf
+
+# DHCP server service FMRI
+#DHCP_SERVICE_SYSTEMCTL="systemctl status dhcpd.service"
+DHCP_SERVICE_NAME="dhcpd.service"
+DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+
+
+# String that defines DHCP Network grandparent tag in ini file
+DHCP_NETWORKS="DHCP_NETWORKS"
+
+
+# DNS client service FMRI
+DNS_SERVICE_NAME="named.service "
+DNS_SERVICE_STATUS=$($SYSTEMCTL status $DNS_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+
+# List of local subnets with prefixes managed by DHCP e.g. "10.45.224.0/21" 
+# A local subnet has an interface with IP on this host
+MANAGED_LOCAL_SUBNETS=
+
+# Default prompts for interactive add network
+DEF_PROMPT_NETWORK_IP_ADDR=
+DEF_PROMPT_NETWORK_NETMASK=
+DEF_PROMPT_DEFAULTROUTER=
+DEF_PROMPT_DNSSERVERS=
+DEF_PROMPT_DNSDOMAIN=
+DEF_PROMPT_TIMESERVER=
+
+# Network Time Protocol config file
+#NTP_CONF_FILE=/etc/inet/ntp.conf
+
+# Gathers time&date
+NOW=$($DATE +"%Y-%m-%d-%T")
+
+# Establishes script name used for error mging
+SCRIPT_NAME=$(${BASENAME} $0)
+
+
+# ********************************************************************
+#
+#       Functions
+#
+# ********************************************************************
+#### Function: abort_script ####
+#
+#   This will is called if the script is aborted thru an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+#       $2 - exit code (optional)
+# Return Values:
+#       none
+abort_script()
+{
+    if [ "$1" ]; then
+	_err_msg_=$1
+    else
+	_err_msg_="ERROR: Script aborted...\n"
+    fi
+    if [ "${LOGFILE}" ]; then
+	$ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR:  Script aborted...$_err_msg_\n" | $TEE -a ${LOGFILE}
+    else
+	$ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: $_err_msg_\n"
+    fi
+    if [ "${LOGFILE_v6}" ]; then
+	$ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR:  Script aborted...$_err_msg_\n" | $TEE -a "${LOGFILE_v6}"
+    else
+	$ECHO -e "\n$NOW -- $SCRIPT_NAME \nERROR: $_err_msg_\n"
+    fi
+
+    cd $SCRIPTHOME
+    #$RM -rf ${TEM_DIR}
+
+    if [ "$2" ]; then
+	exit ${2}
+    else
+	exit 1
+    fi
+}
+
+### Function: no_intr_allowed ###
+#
+# Function just to return to a trap when interrupts are not allowed
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+no_intr_allowed()
+{
+:
+}
+
+### Function: add_network ###
+#
+# Add network to the DHCP server
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+add_network()
+{
+
+local DHCP_SERVICE_STATE
+
+# No interrupts allowed from now
+trap "no_intr_allowed" 1 2 3 14 15
+
+${RM} -f ${TEM_DIR}/new_network
+${RM} -f ${TEM_DIR}/${TEM_DIR}/new_network
+
+DNSSERVERS=${DNSSERVERS// /,}
+
+TIMESERVER=${TIMESERVER// /,}
+$CAT > ${TEM_DIR}/new_network << EOF
+
+subnet $NETWORK_IP_ADDR netmask $NETWORK_NETMASK {
+  option broadcast-address $BROADCAST_ADDRESS;
+  option routers $DEFAULTROUTER;
+  deny unknown-clients;
+  option ntp-servers ${TIMESERVER};
+  option domain-name "${DNSDOMAIN}";
+  option domain-name-servers $DNSSERVERS;
+  next-server ${NEXT_SERVER};
+}
+EOF
+
+# Add network to $DHCP_CONF_FILE
+
+if [ ! -s $DHCP_CONF_FILE ]; then
+    # This is the first network to be added
+
+    $CAT > ${TEM_DIR}/new_dhcp_conf << EOF
+# dhcpd.conf
+#
+# Configuration file for ISC dhcpd
+# (created by ERICautoinstall)
+
+default-lease-time 600;
+max-lease-time 7200;
+
+# If this DHCP server is the official DHCP server for the local
+# network, the authoritative directive should be uncommented.
+authoritative;
+Allow booting;
+Allow bootp;
+
+# arch option for PXEClient
+#option arch code 93 = unsigned integer 16;
+
+# Set logging facility (accompanies setting in syslog.conf)
+log-facility local7;
+EOF
+
+   $CAT ${TEM_DIR}/new_network >> ${TEM_DIR}/new_dhcp_conf
+   $CAT >> ${TEM_DIR}/new_dhcp_conf << EOF
+
+class "PXEBoot" {
+  match if (substring(option vendor-class-identifier, 0, 9) = "PXEClient");
+}
+    
+EOF
+
+else 
+    ${SED} "/log-facility/r ${TEM_DIR}/new_network" ${DHCP_CONF_FILE} >> ${TEM_DIR}/new_dhcp_conf || \
+    abort_script "[$ACTION]: $SED failed adding network [$NETWORK_IP_ADDR]"
+fi
+
+# Validate temp DHCP file
+if ! ${DHCPD} -t -cf ${TEM_DIR}/new_dhcp_conf > /dev/null 2>&1; then
+    # Display invalid file report
+    ${DHCPD} -t -cf ${TEM_DIR}/new_dhcp_conf
+    abort_script "[$ACTION]: Temp DHCP config file [${TEM_DIR}/new_dhcp_conf] failed validation."
+fi
+
+$CP ${TEM_DIR}/new_dhcp_conf ${DHCP_CONF_FILE} || abort_script "[$ACTION]: [$CP ${TEM_DIR}/new_dhcp_conf ${DHCP_CONF_FILE}] failed."
+
+# Confirm addition
+is_managed_subnet $NETWORK_IP_ADDR $NETWORK_NETMASK || abort_script "Failed to add network [$NETWORK_IP_ADDR] to the DHCP configuration."
+
+# Log network addition
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully added network [$NETWORK_IP_ADDR] with netmask [$NETWORK_NETMASK] to the DHCP configuration.\n" | $TEE -a $LOGFILE
+
+# Refresh list of managed local subnets
+get_managed_local_subnets
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \n[$ACTION]: Managed subnets: [$MANAGED_LOCAL_SUBNETS]" >> $LOGFILE
+
+# Manage DHCP service
+DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+if [[ ${DHCP_SERVICE_STATE} == "active" ]]; then
+    ${SYSTEMCTL} restart $DHCP_SERVICE_NAME >/dev/null 2>&1
+    DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+    if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+        ${SYSTEMCTL} stop $DHCP_SERVICE_NAME
+        sleep 5
+        ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+        # Systemctl restart sets maintenance if restarted too quickly
+        ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+    fi
+else
+    # Enable DHCP service only if local subnets are declared
+    #EQEV-66186 # enabling DHCP service  # 19.4.7
+    if [[ -n "$MANAGED_LOCAL_SUBNETS" ]]; then
+        ${SYSTEMCTL} enable $DHCP_SERVICE_NAME >/dev/null 2>&1
+        ${SYSTEMCTL} start $DHCP_SERVICE_NAME >/dev/null 2>&1
+        DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+        if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+            ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+            DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+            if [[ $DHCP_SERVICE_STATE != "active" ]]; then
+                ${SYSTEMCTL} stops $DHCP_SERVICE_NAME
+                sleep 5
+                ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+                # Systemctl restart sets maintenance if restarted too quickly
+                ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+            fi
+        fi
+   fi
+fi
+
+# Sync install service network list
+#sync_install_service_netlist
+
+
+if [[ -z "$MANAGED_LOCAL_SUBNETS" ]]; then
+    $ECHO -e "\nWARNING! DHCP service [$DHCP_SERVICE_STATE] is inactive!" | $TEE -a $LOGFILE
+    $ECHO -e "         The service will remain disabled until at least one local subnet is added." | $TEE -a $LOGFILE
+    $ECHO -e "         A local subnet is a subnet with a plumbed interface and IP address on this host.\n" | $TEE -a $LOGFILE
+fi
+
+# Remove traps on interrupts
+trap 1 2 3 14 15
+
+}
+
+### Function: calc_brdcast_address ###
+#
+# Calculate broadcast address from
+# Subnet IP and Netmask
+#
+# Arguments:
+#   $1 : Network address
+#   $2 : Netmask
+# Return Values:
+#   none
+calc_brdcast_address()
+{
+
+local _oct=$1
+local _msk=$2
+_orig_ifs_="$IFS"
+IFS='.'
+local oct=($_oct)
+local msk=($_msk)
+i=0
+
+while [ $i -lt "${#oct[@]}" ]
+do
+    ip[$i]="$((${oct[$i]}+(255-(${oct[$i]} | ${msk[$i]}))))"
+    ip[$i]="$((oct[$i]+(255-(oct[$i] | msk[$i]))))"
+    i=$((i+1))
+done
+
+BROADCAST_ADDRESS="${ip[*]}"
+IFS="${_orig_ifs_}"
+
+}
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+${MKDIR} -p "$("$DIRNAME" "${LOGFILE}")"
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory `$DIRNAME ${LOGFILE}`"
+    abort_script "$_err_msg_"
+fi
+
+$TOUCH -a ${LOGFILE}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE}"
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: chk_create_v6logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_v6logfile()
+{
+"${MKDIR}" -p "$($DIRNAME "${LOGFILE_v6}")"
+dir_v6_crt=$?
+if [ ${dir_v6_crt} -ne 0 ]; then
+    _err_msg_="Could not create directory $("$DIRNAME" "${LOGFILE_v6}")"
+    abort_script "$_err_msg_"
+fi
+
+$TOUCH -a "${LOGFILE_v6}"
+log_v6_crt=$?
+if [ ${log_v6_crt} -ne 0 ]; then
+    _err_msg_="Could not write to file ${LOGFILE_v6}"
+    abort_script "$_err_msg_"
+fi
+}
+
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_params()
+{
+if [ ! "${ACTION}" -o ! "${SECTION}" ]; then
+    usage_msg
+    exit 1
+fi
+
+case "${ACTION}" in
+    add) ;;
+    list) ;;
+    remove) ;;
+    *) usage_msg
+       exit 1
+       ;;
+esac
+
+case "${SECTION}" in
+    network) ;;
+    networkv6) ;;
+    *) usage_msg
+       exit 1
+       ;;
+esac
+
+
+if [ "${USER_NETWORK}" ]; then
+    validate_ip_netmask ${USER_NETWORK}
+    if [ $? -ne 0 ]; then
+	_err_msg_="Invalid format for user specified Network IP address."
+	abort_script "$_err_msg_"
+    fi
+
+fi
+
+# Was parameter file specified
+if [ ! "${USER_PARAM_FILE}" ]; then
+    return 0
+fi
+
+# Does file exist
+if [ ! -s ${USER_PARAM_FILE} ]; then
+    _err_msg_="Parameter file not found or empty\n${USER_PARAM_FILE}"
+    abort_script "$_err_msg_"
+fi
+
+# Verify all params
+local _err_=0
+
+# Mandatory Parameter
+NETWORK_IP_ADDR=`$EGREP  "^[[:blank:]]*NETWORK_IP_ADDR@" ${USER_PARAM_FILE}|$GGAWK -F"@" '{print $2}'`
+if [ ! "${NETWORK_IP_ADDR}" ]; then
+    $ECHO "Failed to read parameter NETWORK_IP_ADDR"
+    _err_=1
+fi
+
+# Mandatory Parameter
+NETWORK_NETMASK=`$EGREP  "^[[:blank:]]*NETWORK_NETMASK@" ${USER_PARAM_FILE}|$GAWK -F"@" '{print $2}'`
+if [ ! "${NETWORK_NETMASK}" ]; then
+    $ECHO "Failed to read parameter NETWORK_NETMASK"
+    _err_=1
+fi
+
+# Mandatory Parameter
+DEFAULTROUTER=`$EGREP  "^[[:blank:]]*DEFAULTROUTER@" ${USER_PARAM_FILE}|$GAWK -F"@" '{print $2}'`
+if [ ! "${DEFAULTROUTER}" ]; then
+    $ECHO "Failed to read parameter DEFAULTROUTER"
+    _err_=1
+fi
+
+# Mandatory Parameter
+DNSDOMAIN=`$EGREP  "^[[:blank:]]*DNSDOMAIN@" ${USER_PARAM_FILE}|$GAWK -F"@" '{print $2}'`
+if [ ! "${DNSDOMAIN}" ]; then
+    $ECHO "Failed to read parameter DNSDOMAIN"
+    _err_=1
+fi
+
+# Mandatory Parameter
+DNSSERVERS=`$EGREP  "^[[:blank:]]*DNSSERVERS@" ${USER_PARAM_FILE}|$GAWK -F"@" '{print $2}'`
+if [ ! "${DNSSERVERS}" ]; then
+    $ECHO "Failed to read parameter DNSSERVERS"
+    _err_=1
+fi
+
+# Mandatory Parameter
+TIMESERVER=`$EGREP  "^[[:blank:]]*TIMESERVER@" ${USER_PARAM_FILE}|$GAWK -F"@" '{print $2}'`
+if [ ! "${TIMESERVER}" ]; then
+    $ECHO "Failed to read parameter TIMESERVER"
+    _err_=1
+fi
+
+if [ ${_err_} -eq 1 ]; then
+    $ECHO "from ${USER_PARAM_FILE}"
+    _err_msg_=""
+    abort_script "$_err_msg_"
+fi
+}
+
+### Function: get_absolute_path ###
+#
+# Determine absolute path to software
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_absolute_path()
+{
+_dir_=`$DIRNAME $0`
+SCRIPTHOME=`cd $_dir_ 2>/dev/null && pwd || $ECHO $_dir_`
+PARENT_DIR=`$DIRNAME $SCRIPTHOME`
+}
+
+### Function: get_default_router ###
+#
+# Get the default router for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_default_router()
+{
+while :; do
+    read -p "Enter default router IP address for network $NETWORK_IP_ADDR [$DEF_PROMPT_DEFAULTROUTER]: "
+    REPLY=$(echo $REPLY)
+    DEFAULTROUTER=${REPLY:-$DEF_PROMPT_DEFAULTROUTER}
+    [[ -z "$DEFAULTROUTER" ]] && continue
+    validate_ip_netmask "$DEFAULTROUTER" || continue
+    break
+done
+return 0
+
+}
+
+### Function: get_dns_domain ###
+#
+# Get the dns domain for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_dns_domain()
+{
+local _dom_regex_="[[:blank:]]*[a-zA-Z0-9\.-]"
+
+while :; do
+    read -p "Enter DNS domain for network $NETWORK_IP_ADDR [$DEF_PROMPT_DNSDOMAIN]: "
+    REPLY=$(echo $REPLY)
+    DNSDOMAIN=${REPLY:-$DEF_PROMPT_DNSDOMAIN}
+    [[ -z "$DNSDOMAIN" ]] && continue
+    validate_dns_domain_name "$DNSDOMAIN" || continue
+    break
+done
+
+return 0
+
+}
+
+### Function: get_dnsv6_domain ###
+#
+# Get the dns v6 domain for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_dnsv6_domain()
+{
+
+if [ "${DNSv6DOMAIN}" ]; then
+    validate_dns_domain_name "${DNSv6DOMAIN}"
+    val_dns=$?
+    if [ ${val_dns} -ne 0 ]; then
+        _err_msg_="Invalid format for user specified DNS IPV6 Domain"
+        abort_script "$_err_msg_"
+    fi
+else
+
+    while :; do
+
+        $ECHO -e "\nEnter DNS v6 domain for Networkv6" 
+        read -r _dns_ipv6_domain_
+
+        if [ ! "${_dns_ipv6_domain_}" ]; then
+                continue
+        fi
+
+        validate_dns_domain_name "${_dns_ipv6_domain_}"
+	val_dnsv6=$?
+        if [ ${val_dnsv6} -ne 0 ]; then
+                continue
+        fi
+
+        break
+    done
+    DNSv6DOMAIN="${_dns_ipv6_domain_}"
+fi
+return 0
+
+}
+
+
+
+### Function: get_dns_server ###
+#
+# Get the dns server for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_dns_server()
+{
+
+local ip
+local dns_servers
+declare -i valid
+
+while :; do
+    read -p "Enter space-separated list of DNS servers for network $NETWORK_IP_ADDR [$DEF_PROMPT_DNSSERVERS]: "
+    REPLY=$(echo $REPLY)
+    DNSSERVERS=${REPLY:-$DEF_PROMPT_DNSSERVERS}
+    [[ -z "$DNSSERVERS" ]] && continue
+    # Validate DNS servers and remove duplicates
+    valid=1
+    for ip in $DNSSERVERS; do
+        if ! validate_ip_netmask $ip; then
+            valid=0
+            dns_servers=
+            break
+        fi
+        ! $EGREP "\<$ip\>" <<< "$dns_servers" >/dev/null && dns_servers="$dns_servers $ip"
+    done
+    [[ $valid -eq 0 ]] && continue
+    # remove leading whitespace
+    DNSSERVERS=$($ECHO $dns_servers)
+    break
+done
+return 0
+
+}
+### Function: get_dns_server_v6 ###
+#
+# Get client DNS V6 IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_dns_server_v6()
+{
+if [ "${DNSSERVERS_V6}" ]; then
+    validate_ipv6_address "${DNSSERVERS_V6}"
+    valdns_v6_serv=$?
+    if [ ${valdns_v6_serv} -ne 0 ]; then
+        _err_msg_="Invalid format for user specified DNSSERVERS IPV6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+
+        $ECHO -e "\nEnter the DNSSERVERS IPV6 address , example: 2001:1b70:82a1:000a:0000:4000:0034:0001 "
+        read -r _dns_ipv6_
+
+        if [ ! "${_dns_ipv6_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address "${_dns_ipv6_}"
+	valdns_v6_servs=$?
+        if [ ${valdns_v6_servs} -ne 0 ]; then
+                continue
+        fi
+
+        break
+    done
+    DNSSERVERS_V6="${_dns_ipv6_}"
+fi
+return 0
+
+}
+
+add_managed_network_from_file()
+{
+
+local ip
+local ntp_servers=
+local dns_servers=
+local err_msg
+
+# Validate network address 
+validate_ip_netmask ${NETWORK_IP_ADDR} || abort_script "[$ACTION]: Invalid network address [$NETWORK_IP_ADDR] in file [$USER_PARAM_FILE]"
+
+# Validate network netmask 
+validate_ip_netmask ${NETWORK_NETMASK} || abort_script "[$ACTION]: Invalid network netmask [$NETWORK_NETMASK] in file [$USER_PARAM_FILE]"
+
+# Check if already a DHCP managed network
+if is_managed_subnet $NETWORK_IP_ADDR $NETWORK_NETMASK ; then
+    err_msg="\nNetwork IP [$NETWORK_IP_ADDR] with netmask [$NETWORK_NETMASK] is already a DHCP managed network.\n"
+    abort_script "$err_msg"
+fi
+
+# In user file mode, the first network to be added must be a local network with interface plumbed and IP on this host
+if  ! is_managed_subnet; then
+    if ! is_plumbed_subnet $NETWORK_IP_ADDR; then
+       err_msg="Network [$NETWORK_IP_ADDR] with netmask [$NETWORK_NETMASK] in user file [$USER_PARAM_FILE]\n \
+       does not have an interface plumbed with IP on this host.\n \
+       The first network to be added from a user file must be a locally plumbed network or the DHCP service can not online."
+       abort_script "$err_msg"
+    fi
+fi
+
+# Get broadcast address for the network
+calc_brdcast_address "${NETWORK_IP_ADDR}" "${NETWORK_NETMASK}"
+validate_ip_netmask ${BROADCAST_ADDRESS} || abort_script "[$ACTION]: Invalid network broadcast address [$BROADCAST_ADDRESS] in file [$USER_PARAM_FILE]"
+
+# Calculate "next_server" DHCP option for the network. This is the TFTP server IP.
+# The install client must be able to route to the calculated IP to access the boot file.
+# For networks that do not have a plumbed interface with IP on this host, 
+# next-server defaults to the IP assigned to the host name of this machine.
+# The calculated IP is stored in $NEXT_SERVER
+get_next_server "${NETWORK_IP_ADDR}" 
+
+# Validate default router
+validate_ip_netmask ${DEFAULTROUTER} || abort_script "[$ACTION]: Invalid default gateway [$DEFAULTROUTER] in file [$USER_PARAM_FILE]"
+
+# Validate DNS servers
+for ip in $DNSSERVERS; do
+    validate_ip_netmask $ip || abort_script "[$ACTION]: Invalid DNS server IP [$ip] in file [$USER_PARAM_FILE]"
+    ! $EGREP "\<$ip\>" <<< "$dns_servers" >/dev/null && dns_servers="$dns_servers $ip" 
+done
+# remove leading whitespace
+DNSSERVERS=$($ECHO $dns_servers)
+
+# Validate DNS domain
+if ! validate_dns_domain_name $DNSDOMAIN; then
+    err_msg="Invalid DNS domain name.\n \
+       Special characters not permitted. Only use letter, digit, hyphen(-) or dot(.)\n \
+       FQDN length must not exceed 253 characters. Each label must not exceed 63 characters."
+    abort_script "$err_msg"
+fi
+
+# Validate NTP servers and remove duplicate IPs
+if [[ "$TIMESERVER" != "none" ]]; then
+    for ip in $TIMESERVER; do
+        validate_ip_netmask $ip || abort_script "[$ACTION]: Invalid NTP server IP [$ip] in file [$USER_PARAM_FILE]"
+        ! $EGREP "\<$ip\>" <<< "$ntp_servers" >/dev/null && ntp_servers="$ntp_servers $ip" 
+    done
+    # remove leading whitespace
+    TIMESERVER=$($ECHO $ntp_servers)
+fi
+
+$RM -rf $TEM_DIR/network_details
+$ECHO -e "\nDHCP details for ${NETWORK_IP_ADDR} network" >> $TEM_DIR/network_details
+$ECHO "======================================" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "IP Address :" "${NETWORK_IP_ADDR}" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "Netmask :" "${NETWORK_NETMASK}" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "Default Router" "${DEFAULTROUTER}" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "DNS Server IP(s)" "${DNSSERVERS}" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "DNS Domain Name" "${DNSDOMAIN}" >> $TEM_DIR/network_details
+printf "%-18s%s\n" "NTP Timeserver" "${TIMESERVER}" >> $TEM_DIR/network_details
+
+$PRINTF "\033c"
+user_confirm "Are the details above correct? (Yes|No)" $TEM_DIR/network_details
+
+if [ "$ANS" == "Yes" ]; then
+    # Update the netmask file
+    #update_netmasks_file
+
+    # Add the network to DHCP
+    add_network
+fi
+
+}
+
+validate_dns_domain_name() 
+{
+
+local dom=$1
+local fqdn
+local re="[[:blank:]]*[a-zA-Z0-9\.-]"
+
+# Validation. Can be improved.
+fqdn=$($ECHO ${dom} | $EGREP -o "${re}(${re})*" | $GAWK -F"." 'length($0)<254 && length($1)<64 && length($2)<64 && length($3)<64 && length($4)<64' )
+if [[ "$fqdn" != "$dom" ]]; then 
+    $ECHO -e "\nSpecial characters not permitted. Only use letter, digit, hyphen(-) or dot(.)"
+    $ECHO -e "FQDN length must not exceed 253 characters. Each label must not exceed 63 characters.\n"
+    return 1
+fi
+return 0
+
+}
+
+get_next_server()
+{
+local subnet=$1
+
+# If called with a subnet that has a plumbed interface with an IP on this host then set NEXT_SERVER to that IP
+# Otherwise set NEXT_SERVER to the IP of this host name
+
+NEXT_SERVER=
+if is_plumbed_subnet $subnet; then 
+    NEXT_SERVER=$(get_ip_from_plumbed_subnet $subnet)
+else
+    NEXT_SERVER=$(get_pub_ip)
+fi
+
+validate_ip_netmask $NEXT_SERVER || abort_script "[$ACTION]: Failed calculating DHCP next-server option for network [$subnet]."
+return 0
+
+}
+
+### Function: add_managed_network ###
+#
+# Add a DHCP network
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+add_managed_network()
+{
+
+if [[ -n "$USER_PARAM_FILE" ]]; then
+    add_managed_network_from_file
+    return 0
+fi
+
+# If no managed local subnet exists, offer the local subnet with IP resolved to this host name as default
+[[ -z "$MANAGED_LOCAL_SUBNETS" ]] && set_subnet_default_prompts
+
+while :; do
+    $RM -rf $TEM_DIR/network_details
+    $RM -rf "$TEM_DIR"/networkv6_details
+    $ECHO -e "\nDHCP details for ${NETWORK_IP_ADDR} network" >> $TEM_DIR/network_details
+    $ECHO -e "======================================" >> $TEM_DIR/network_details
+
+    $PRINTF "\033c"	
+    if [[ -z "$MANAGED_LOCAL_SUBNETS" ]]; then
+        $ECHO -e "\nWARNING! DHCP service [$DHCP_SERVICE_SYSTEMCTL] is disabled!"
+        $ECHO -e "         The service will remain disabled until at least one local subnet is added."
+        $ECHO -e "         A local subnet is a subnet with a plumbed interface and IP address on this host.\n"
+    fi
+
+    if [ "$SECTION" == "network" ] ; then
+
+    		# Get network address and netmask
+	 	get_network_ip_addr_and_netmask
+
+    		[[ "$NETWORK_IP_ADDR" == "q" ]] && return 0
+
+    		printf "%-18s%s\n" "IP Address :" "${NETWORK_IP_ADDR}" >> $TEM_DIR/network_details
+    		printf "%-18s%s\n" "Netmask :" "${NETWORK_NETMASK}" >> $TEM_DIR/network_details
+
+    		# Calculate broadcast address for the network
+    		calc_brdcast_address "${NETWORK_IP_ADDR}" "${NETWORK_NETMASK}"
+
+    		# Calculate "next_server" DHCP option for the network. This is the TFTP server IP.
+    		# The install client must be able to route to the calculated IP to access the boot file.
+    		# For networks that do not have a plumbed interface with IP on this host, 
+    		# next-server defaults to the IP assigned to the host name of this machine.
+    		# The calculated IP is stored in $NEXT_SERVER
+    		get_next_server "${NETWORK_IP_ADDR}" 
+
+    		# Get default router for this network
+    		get_default_router
+    		printf "%-18s%s\n" "Default Router" "${DEFAULTROUTER}" >> $TEM_DIR/network_details
+
+    		# Get DNS server IP for this network
+    		get_dns_server
+    		printf "%-18s%s\n" "DNS Server IP(s)" "${DNSSERVERS}" >> $TEM_DIR/network_details
+
+    		# Get DNS domain
+    		get_dns_domain
+    		printf "%-18s%s\n" "DNS Domain Name" "${DNSDOMAIN}" >> $TEM_DIR/network_details
+
+    		# Get Timeserver IP for this network
+    		get_time_server
+    		printf "%-18s%s\n" "NTP Timeserver" "${TIMESERVER}" >> $TEM_DIR/network_details
+
+    elif  [ "$SECTION" == "networkv6" ] ; then
+	        get_ipv6_network_details
+                
+		user_confirm "Are the details above correct? (Yes|No)" "$TEM_DIR"/networkv6_details
+		if [ "$ANS" == "Yes" ]; then
+			touch /var/tmp/"${ROUTER_IP_ADDR_V6}"_details
+			$CAT "$TEM_DIR"/networkv6_details >/var/tmp/"${ROUTER_IP_ADDR_V6}"_details
+			# Log network v6 addition
+			$ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccessfully added IPV6 network to /var/tmp/${ROUTER_IP_ADDR_V6}_details\n" | $TEE -a "$LOGFILE_v6"
+			break
+		fi
+
+    else
+	  usage_msg
+
+    fi
+
+
+    user_confirm "Are the details above correct? (Yes|No)" $TEM_DIR/network_details
+    if [ "$ANS" == "Yes" ]; then
+	      # Add the network to DHCP
+        	add_network
+        	break
+    fi
+done
+
+}
+
+### Function:get_ipv4_network_details###
+#
+# Get Client ipv4 network details
+#
+## Arguments:
+#   none
+# Return Values:
+#   none
+get_ipv4_network_details()
+{
+
+    # Get network address and netmask
+     get_network_ip_addr_and_netmask
+    [[ "$NETWORK_IP_ADDR" == "q" ]] && return 0
+
+    printf "%-18s%s\n" "IPv4 Network Address :" "${NETWORK_IP_ADDR}" >> "$TEM_DIR"/network_details
+    printf "%-18s%s\n" "IPv4 Netmask :" "${NETWORK_NETMASK}" >> "$TEM_DIR"/network_details
+
+    # Calculate broadcast address for the network
+    calc_brdcast_address "${NETWORK_IP_ADDR}" "${NETWORK_NETMASK}"
+
+    # Calculate "next_server" DHCP option for the network. This is the TFTP server IP.
+    # The install client must be able to route to the calculated IP to access the boot file.
+    # For networks that do not have a plumbed interface with IP on this host,
+    # next-server defaults to the IP assigned to the host name of this machine.
+    # The calculated IP is stored in $NEXT_SERVER
+    get_next_server "${NETWORK_IP_ADDR}"
+
+    # Get default router for this network
+    get_default_router
+    printf "%-18s%s\n" "IPv4 Default Router:" "${DEFAULTROUTER}" >> "$TEM_DIR"/network_details
+
+    # Get DNS server IP for this network
+    get_dns_server
+    printf "%-18s%s\n" "IPv4 DNS Server IP(s):" "${DNSSERVERS}" >> "$TEM_DIR"/network_details
+
+    # Get DNS domain
+    get_dns_domain
+    printf "%-18s%s\n" "IPv4 DNS Domain Name:" "${DNSDOMAIN}" >> "$TEM_DIR"/network_details
+
+    # Get Timeserver IP for this network
+    get_time_server
+    printf "%-18s%s\n" "IPv4 NTP Timeserver:" "${TIMESERVER}" >> "$TEM_DIR"/network_details 
+    # shellcheck disable=SC2183
+    printf "%-18s%s\n" >> "$TEM_DIR"/network_details
+
+
+}
+
+### Function:get_ipv6_network_details###
+#
+# Get Client ipv6 network details
+#
+## Arguments:
+#   none
+# Return Values:
+#   none
+get_ipv6_network_details()
+{
+
+    
+    # Get default router for this networkv6
+    get_router_ip_v6
+    $ECHO -e "\nIPV6 Network ${ROUTER_IP_ADDR_V6} Details" >> "$TEM_DIR"/networkv6_details
+    $ECHO  
+    $ECHO -e "============================================" >> "$TEM_DIR"/networkv6_details
+
+    printf "%-18s%s\n" "IPv6 Default Router   : " "${ROUTER_IP_ADDR_V6}" >> "$TEM_DIR"/networkv6_details
+  
+    # Get DNS V6 server IP for this network
+    get_dns_server_v6
+    printf "%-18s%s\n" "IPv6 DNS Server IP(s  : " "${DNSSERVERS_V6}" >> "$TEM_DIR"/networkv6_details
+
+    # Get DNS V6 domain
+    get_dnsv6_domain
+    printf "%-18s%s\n" "IPv6 DNS Domain Name  : " "${DNSv6DOMAIN}" >> "$TEM_DIR"/networkv6_details
+
+    # Get Timeserver IP for this network
+    get_time_v6_server
+    printf "%-18s%s\n" "IPv6 NTP Timeserver   : " "${TIMESERVERv6}" >> "$TEM_DIR"/networkv6_details
+
+
+} 
+
+
+
+### Function: get_network_ip_addr_and_netmask ###
+#
+# Get client IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_network_ip_addr_and_netmask()
+{
+
+while :; do
+
+    while :; do
+        read -p "Enter network IP address (or q to quit) [$DEF_PROMPT_NETWORK_IP_ADDR]: "
+        REPLY=$(echo $REPLY)
+        NETWORK_IP_ADDR=${REPLY:-$DEF_PROMPT_NETWORK_IP_ADDR}
+        [[ "$NETWORK_IP_ADDR" = "q" ]] && return 0
+        [[ -z "$NETWORK_IP_ADDR" ]] && continue
+        validate_ip_netmask "$NETWORK_IP_ADDR" || continue
+        break
+    done
+     
+    if is_plumbed_subnet $NETWORK_IP_ADDR; then
+        set_subnet_default_prompts $NETWORK_IP_ADDR
+    else
+        set_subnet_default_prompts "CLEAR"
+    fi
+
+    while :; do
+        read -p "Enter IP netmask for netmask $NETWORK_IP_ADDR [$DEF_PROMPT_NETWORK_NETMASK]: "
+        REPLY=$(echo $REPLY)
+        NETWORK_NETMASK=${REPLY:-$DEF_PROMPT_NETWORK_NETMASK}
+        [[ -z "$NETWORK_NETMASK" ]] && continue
+        validate_ip_netmask "$NETWORK_NETMASK" || continue
+        break
+    done
+    
+    # Check if already a DHCP managed network
+    if is_managed_subnet $NETWORK_IP_ADDR $NETWORK_NETMASK ; then
+        $ECHO -e "\nNetwork IP [$NETWORK_IP_ADDR] with netmask [$NETWORK_NETMASK] is already a DHCP managed network.\n"
+        continue
+    fi
+    break
+    
+done
+
+}
+
+### Function: get_client_networkip_v6 ###
+#
+# Get client Network IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_client_network_ip_v6()
+{
+if [ "${NETWORK_IP_ADDR_V6}" ]; then
+    validate_ipv6_address "${NETWORK_IP_ADDR_V6}"
+    val_netv6=$?
+    if [ ${val_netv6} -ne 0 ]; then
+        _err_msg_="Invalid format for user specified Client Network IPV6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+
+        $ECHO -e "\nEnter the Network IPV6 address with valid subnet , example: 2001:1b70:82a1:000a:0000:0000:0000:0000/64 "
+        read -r _network_ipv6_
+
+        if [ ! "${_network_ipv6_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address "${_network_ipv6_}"
+        val_net6=$?
+        if [ ${val_net6} -eq 0 ]; then
+                #NETWORK_IP_ADDR_V6="${_network_ipv6_}"
+	        SUBNET_v6=$($ECHO "${_network_ipv6_}" | $CUT -d'/' -f2,3,4,5)
+                if [[ ${SUBNET_v6} =~ ^[[:digit:]]+$ ]] ; then
+		     $ECHO -e "Valid Subnet"
+		     break
+		else
+                     $ECHO -e "\n Invalid Network IPV6 Subnet is provided"
+                     continue
+		fi
+	else
+		    $ECHO -e "\n Invalid Network IPV6 provided"
+                    continue
+        fi
+
+        #break
+    done
+
+    NETWORK_IP_ADDR_V6="${_network_ipv6_}"
+
+
+fi
+return 0
+
+}
+
+
+### Function: get_router_ip_v6 ###
+#
+# Get client IP address
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_router_ip_v6()
+{
+if [ "${ROUTER_IP_ADDR_V6}" ]; then
+    validate_ipv6_address "${ROUTER_IP_ADDR_V6}"
+    val_routv6=$?
+    if [ ${val_routv6} -ne 0 ]; then
+        _err_msg_="Invalid format for user specified Router IPV6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+        $ECHO -e "\nEnter the Router IPV6 address for Networkv6 "
+        read -r _router_ipv6_
+
+        if [ ! "${_router_ipv6_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address "${_router_ipv6_}"
+        val_router_v6=$?
+        if [ ${val_router_v6} -ne 0 ]; then
+                continue
+        fi
+        break
+    done
+    ROUTER_IP_ADDR_V6="${_router_ipv6_}"
+fi
+return 0
+}
+
+
+### Function: get_time_server ###
+#
+# Get the time server for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_time_server()
+{
+
+local valid
+local ip
+local ntp_servers=
+
+while :; do
+    read -r -p "Enter space-separated list of NTP time servers for network $NETWORK_IP_ADDR [$DEF_PROMPT_TIMESERVER]: "
+    REPLY=$(echo $REPLY)
+    TIMESERVER=${REPLY:-$DEF_PROMPT_TIMESERVER}
+    [[ -z "$TIMESERVER" ]] && continue
+    # Validate NTP servers and remove duplicates
+    valid=1
+    for ip in $TIMESERVER; do
+        if ! validate_ip_netmask $ip; then
+            valid=0
+            ntp_servers=
+            break
+        fi
+        ! $EGREP "\<$ip\>" <<< "$ntp_servers" >/dev/null && ntp_servers="$ntp_servers $ip"
+    done
+    [[ $valid -eq 0 ]] && continue
+    # remove leading whitespace
+    TIMESERVER=$($ECHO $ntp_servers)
+    break
+done
+
+return 0
+
+}
+
+### Function: get_time_v6_server ###
+#
+# Get the time server for the system
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+get_time_v6_server()
+{
+
+if [ "${TIMESERVERv6}" ]; then
+    validate_ipv6_address "${TIMESERVERv6}"
+    val_ntp6=$?
+    if [ ${val_ntp6} -ne 0 ]; then
+        _err_msg_="Invalid format for user specified TimeServer V6 address"
+        abort_script "$_err_msg_"
+    fi
+else
+    while :; do
+        $ECHO -e "\nEnter the TimeServer V6 address for Networkv6 "
+        read -r _timeserver_ipv6_
+
+        if [ ! "${_timeserver_ipv6_}" ]; then
+                continue
+        fi
+
+        validate_ipv6_address "${_timeserver_ipv6_}"
+        val_ntpv6=$?
+        if [ ${val_ntpv6} -ne 0 ]; then
+                continue
+        fi
+        break
+    done
+    TIMESERVERv6="${_timeserver_ipv6_}"
+fi
+return 0
+}
+
+
+
+get_managed_local_subnets()
+{
+
+local ip ip_pre prefix netmask subnet
+declare -i match=0
+
+# Reset loc service network list
+MANAGED_LOCAL_SUBNETS=
+
+# Check if any managed networks exist
+! $EGREP "^[[:space:]]*\<subnet\>" $DHCP_CONF_FILE >/dev/null 2>&1 && return 1
+
+# Build a list of DHCP managed local networks with an interface and IP plumbed on this host
+# This is required for a valid DHCP configuration
+
+for ip_pre in $($IP -o -f inet addr show | $GAWK '/scope global/ {print $4}'); do
+    ip=$(echo $ip_pre | cut -d '/' -f1)
+    #echo $ip
+    # Skip if not an IPv4 address
+    validate_ip_netmask $ip || continue
+
+    prefix=$(echo $ip_pre | cut -d '/' -f2)
+    netmask=$(get_netmask_from_prefix $prefix)
+    subnet=$(get_subnet_from_ip_and_netmask $ip $netmask)
+
+    # Is this a DHCP managed network?
+    if $EGREP "^[[:space:]]*\<subnet\>[[:space:]]+\<${subnet}\>[[:space:]]+\<netmask\>[[:space:]]+\<${netmask}\>" $DHCP_CONF_FILE >/dev/null 2>&1; then
+        subnet_with_prefix="$subnet/$prefix"
+        if [[ -z "$MANAGED_LOCAL_SUBNETS" ]]; then
+            MANAGED_LOCAL_SUBNETS="$subnet_with_prefix"
+        else
+            MANAGED_LOCAL_SUBNETS="$MANAGED_LOCAL_SUBNETS,$subnet_with_prefix"
+        fi
+        match=1
+    fi
+done
+
+# If no match, DHCP_CONF_FILE is invalid.
+[[ $match -eq 0 ]] && return 1
+
+return 0
+
+}
+
+
+recover_dhcp_service()
+{
+
+local err_msg
+
+# No interrupts allowed from now
+trap "no_intr_allowed" 1 2 3 14 15
+
+if [[ ! -s ${DHCP_CONF_FILE} ]] ; then
+	#Ensure the dhcp service is in inactive state
+	if [[ ${DHCP_SERVICE_STATE} == "inactive" ]] ; then
+	# Report
+		if [[ $ACTION == "list" ]] || [[ $ACTION == "remove" ]] ; then
+       			$ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo managed networks exist.\n" | $TEE -a $LOGFILE
+       			exit 0
+    		fi
+	fi
+    # Release traps
+    trap 1 2 3 14 15
+    return 0
+fi
+
+# Verify existing DHCP config file 
+if ! ${DHCPD} -t -cf ${DHCP_CONF_FILE} >/dev/null 2>&1; then
+    # Handle invalid $DHCP_CONF_FILE 
+
+    # Display invalid file report
+    ${DHCPD} -t -cf ${DHCP_CONF_FILE}
+
+    # Rename the invalid config file
+    $MV $DHCP_CONF_FILE ${DHCP_CONF_FILE}.invalid.$$
+
+    # Report
+    err_msg="[$ACTION]: Error found in DHCP configuration file [$DHCP_CONF_FILE].\n \
+       Moved invalid DHCP configuration file to [${DHCP_CONF_FILE}.invalid.$$].\n \
+       Move back a valid DHCP configuration file and list networks and clients or re-add networks and clients using this script.\n \
+       Disabled DHCP service [$DHCP_SERVICE_SYSTEMCTL]."
+    abort_script "$err_msg"
+fi
+
+# Check the existing DHCP config file for at least one subnet declaration with an IP plumbed on this host
+if ! get_managed_local_subnets; then
+    # No local subnets are declared to DHCP
+
+    # Ensure DHCP service is disabled
+    #crtl_dhcp_service $DHCP_SERVICE_SYSTEMCTL "disable" "disabled"
+
+    # Report
+    if [[ $ACTION != "add" ]]; then
+        $ECHO -e "\nWARNING! DHCP service [$DHCP_SERVICE_SYSTEMCTL] is disabled!"
+        $ECHO -e "         The service will remain disabled until at least one local subnet is added."
+        $ECHO -e "         A local subnet is a subnet with a plumbed interface and IP address on this host.\n"
+        exit 0
+    fi
+fi
+
+
+# Check the DHCP service state
+if [[ $DHCP_SERVICE_STATE == "active" ]]; then
+    # Remove traps on interrupts
+    trap 1 2 3 14 15
+    return 0
+fi
+
+# DHCP service is not online
+# It may have been disabled by the Administrator or could be in maintenance for reasons other than invalid config file.
+# Try to recover with disable/enable
+
+# Disable DHCP service
+#crtl_dhcp_service $DHCP_SERVICE_SYSTEMCTL "disable" "disabled"
+
+# Enable DHCP service only if local subnets are declared
+[[ -n "$MANAGED_LOCAL_SUBNETS" ]] && [[ ${DHCP_SERVICE_STATE} == "active" ]]
+
+# Remove traps on interrupts
+trap 1 2 3 14 15
+return 0
+
+}
+
+### Function: list_managed_networks ###
+#
+# List networks
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+list_managed_networks()
+{
+
+$PRINTF "\033c"
+$RM -f $TEM_DIR/dhcp_network_list $TEM_DIR/managed_networks.$$
+
+# Get a list of managed_networks 
+_managed_network_list_=$( ${EGREP} "^[[:space:]]*\<subnet\>" ${DHCP_CONF_FILE}|$GAWK '{print $2}' )
+
+for i in ${_managed_network_list_} 
+do 
+    $SED -n "/^[[:space:]]*subnet[[:space:]][[:space:]]*${i}/,/[[:space:]]*}[[:space:]]*$/p" ${DHCP_CONF_FILE} | \
+        ${XARGS}| ${SED} 's/{/ /g;s/}/ /g;s/\;/:/g' >> $TEM_DIR/dhcp_network_list
+done
+
+
+_Size_Chk_="0"		
+_Size_Chk_=`$LS -l $TEM_DIR/dhcp_network_list  | $TR -s " " | $GAWK '{ print $5 }'`
+if [[ ${_Size_Chk_} -le "1" ]]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo managed networks exist.\n" | $TEE -a $LOGFILE
+    return 0
+fi
+
+if [ "${USER_NETWORK}" ]; then
+    # Check if user specified network exists
+    _dhcp_network_list_=`$CAT $TEM_DIR/dhcp_network_list|$EGREP  "[[:blank:]]*${USER_NETWORK}[[:blank:]]*"`
+    if [ ! "${_dhcp_network_list_}" ]; then
+        $ECHO -e "\n$NOW -- $SCRIPT_NAME \nDHCP managed network [$USER_NETWORK] does not exist.\n" | $TEE -a $LOGFILE
+	return 0
+    fi
+
+   # Create a new file with just one network deails in it
+    $RM $TEM_DIR/dhcp_network_list
+    $ECHO ${_dhcp_network_list_} >> $TEM_DIR/dhcp_network_list
+
+    # Build arrays of information storing required details
+    build_network_info_arrays $TEM_DIR/dhcp_network_list
+
+    # Set array counter
+    _opt_=1
+
+    printf "%-18s%s\n" "Network" "${NET_ID_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_networks.$$
+    printf "%-18s%s\n" "Netmask" "${NET_NETMASK_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_networks.$$
+    printf "%-18s%s\n" "Default Router" "${NET_DEFROUTER_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_networks.$$
+    printf "%-18s%s\n" "DNS Server IP(s)" "${NET_DNSSERVERS_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_networks.$$
+    printf "%-18s%s\n" "DNS Domain Name" "${NET_DNSDOMAIN_ARRAY[${_opt_}]}" >> $TEM_DIR/managed_networks.$$
+    _timeserv_=${NET_TIMESERVER_ARRAY[${_opt_}]}
+    #if [ "${_timeserv_}" == "none" ]; then
+    #	_timeserv_="Not set"
+    #fi
+    printf "%-18s%s\n\n" "Timeserver" "${_timeserv_}" >> $TEM_DIR/managed_networks.$$
+else
+    # Build arrays of information storing required details
+    build_network_info_arrays $TEM_DIR/dhcp_network_list
+
+    # Build up the display file
+    $RM -f $TEM_DIR/managed_networks.$$
+    $ECHO -e "\nManaged DHCP Networks" >> $TEM_DIR/managed_networks.$$
+    $ECHO "=====================" >> $TEM_DIR/managed_networks.$$
+
+    # Get number of elements
+    _cnt_=${#NET_ID_ARRAY[@]}
+
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	printf "%-8s%-18s%s\n" "[${i}]" "Network" "${NET_ID_ARRAY[${i}]}" >> $TEM_DIR/managed_networks.$$
+	printf "%-8s%-18s%s\n" "" "Netmask" "${NET_NETMASK_ARRAY[${i}]}" >> $TEM_DIR/managed_networks.$$
+	printf "%-8s%-18s%s\n" "" "Default Router" "${NET_DEFROUTER_ARRAY[${i}]}" >> $TEM_DIR/managed_networks.$$
+	printf "%-8s%-18s%s\n" "" "DNS Server IP(s)" "${NET_DNSSERVERS_ARRAY[${i}]}" >> $TEM_DIR/managed_networks.$$
+	printf "%-8s%-18s%s\n" "" "DNS Domain Name" "${NET_DNSDOMAIN_ARRAY[${i}]}" >> $TEM_DIR/managed_networks.$$
+
+	_timeserv_=${NET_TIMESERVER_ARRAY[${i}]}
+	#if [ "${_timeserv_}" == "none" ]; then
+	#    _timeserv_="Not set"
+	#fi
+	printf "%-8s%-18s%s\n\n" "" "Timeserver" "${_timeserv_}" >> $TEM_DIR/managed_networks.$$
+    done
+fi
+#$LESS -F "Press return key to continue" | -d $TEM_DIR/managed_networks.$$
+#$ECHO "Press return key to continue" | $MORE  $TEM_DIR/managed_networks.$$
+$MORE -d $TEM_DIR/managed_networks.$$
+
+# Do I need to hold the Display for User
+if [ "${HOLD_LISTING}" ]; then
+    $ECHO -e "\nPress any key to return to menu"
+    read _any_
+fi
+
+}
+
+### Function: remove_managed_network ###
+#
+# Delete a managed network
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+remove_managed_network()
+{
+
+declare -i localsubs
+local rmnet
+
+$RM -f $TEM_DIR/managed_networks.$$ $TEM_DIR/dhcp_network_list
+$RM -f ${TEM_DIR}/disp_file.$$
+$RM -f ${TEM_DIR}/tmp_dhcp_conf
+$RM -f ${TEM_DIR}/tmp_dhcp_conf2
+
+# Get a list of managed_networks 
+_configured_network_list_=$( ${EGREP} "^[[:space:]]*\<subnet\>" ${DHCP_CONF_FILE}|${GAWK} '{print $2}' )
+
+for net in ${_configured_network_list_}
+do
+    $SED -n "/^[[:space:]]*subnet[[:space:]][[:space:]]*${net}/,/[[:space:]]*}[[:space:]]*$/p" ${DHCP_CONF_FILE} | \
+        ${XARGS}| ${SED} 's/{/ /g;s/}/ /g;s/\;/:/g' >> $TEM_DIR/dhcp_network_list
+done
+
+_Size_Chk_="0"		
+_Size_Chk_=`$LS -l $TEM_DIR/dhcp_network_list  | $TR -s " " | $GAWK '{ print $5 }'`
+if [ ${_Size_Chk_} -le "1" ]; then
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nNo managed networks exist.\n" | $TEE -a $LOGFILE
+    return 0
+fi
+
+if [ "${USER_NETWORK}" ]; then
+    # Check if user specified network exists
+    _dhcp_network_list_=`$CAT $TEM_DIR/dhcp_network_list|$EGREP  "[[:blank:]]*${USER_NETWORK}[[:blank:]]*"`
+    if [ ! "${_dhcp_network_list_}" ]; then
+	$ECHO -e "DHCP network [${USER_NETWORK}] does not exist in [$DHCP_CONF_FILE]\n"
+	return 0
+    fi
+
+   # Create a new file with just one network deails in it
+    $RM $TEM_DIR/dhcp_network_list
+    $ECHO ${_dhcp_network_list_} >> $TEM_DIR/dhcp_network_list
+
+    # Build arrays of information storing required details
+    build_network_info_arrays $TEM_DIR/dhcp_network_list
+
+    # Set array counter
+    _opt_=1
+else
+    # Build arrays of information storing required details
+    build_network_info_arrays $TEM_DIR/dhcp_network_list
+
+    # Build up the display file
+    $RM -f ${TEM_DIR}/delete_menu.$$
+    $ECHO -e "\nDelete DHCP Networks" >> $TEM_DIR/delete_menu.$$
+    $ECHO "=====================" >> $TEM_DIR/delete_menu.$$
+
+    # Get number of elements
+    _cnt_=${#NET_ID_ARRAY[@]}
+
+    for (( i=1; i<=${_cnt_}; i++ )); do
+	printf "%-8s%-18s%s\n" "[${i}]" "Network" "${NET_ID_ARRAY[${i}]}" >> $TEM_DIR/delete_menu.$$
+	printf "%-8s%-18s%s\n" "" "Netmask" "${NET_NETMASK_ARRAY[${i}]}" >> $TEM_DIR/delete_menu.$$
+	printf "%-8s%-18s%s\n" "" "Default Router" "${NET_DEFROUTER_ARRAY[${i}]}" >> $TEM_DIR/delete_menu.$$
+	printf "%-8s%-18s%s\n" "" "DNS Server IP(s)" "${NET_DNSSERVERS_ARRAY[${i}]}" >> $TEM_DIR/delete_menu.$$
+	printf "%-8s%-18s%s\n" "" "DNS Domain Name" "${NET_DNSDOMAIN_ARRAY[${i}]}" >> $TEM_DIR/delete_menu.$$
+
+	_timeserv_=${NET_TIMESERVER_ARRAY[${i}]}
+	#if [ "${_timeserv_}" == "none" ]; then
+	#    _timeserv_="Not set"
+	#fi
+	printf "%-8s%-18s%s\n\n" "" "Timeserver" "${_timeserv_}" >> $TEM_DIR/delete_menu.$$
+    done
+    $ECHO -e "Select number of the DHCP network you wish to delete or (q) to quit" >> $TEM_DIR/delete_menu.$$
+
+    # Display the menu and get user choice
+    while :; do
+	$PRINTF "\033c"
+	$MORE -d  $TEM_DIR/delete_menu.$$
+	read _opt_
+
+	if [ ! ${_opt_} ]; then
+	    continue
+	fi
+
+	if [ "${_opt_}" == "q" ]; then
+	    return 0
+	fi
+
+	$ECHO ${_opt_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	    continue
+	fi
+	if [ ${_opt_} -lt 1 -o ${_opt_} -gt ${_cnt_} ]; then
+	    continue
+	fi
+
+	break
+    done
+
+fi
+
+# Create a user confirmation display file
+printf "%-18s%s\n" "Network" "${NET_ID_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-18s%s\n" "Netmask" "${NET_NETMASK_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-18s%s\n" "Default Router" "${NET_DEFROUTER_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-18s%s\n" "DNS Server IP(s)" "${NET_DNSSERVERS_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+printf "%-18s%s\n" "DNS Domain Name" "${NET_DNSDOMAIN_ARRAY[${_opt_}]}" >> ${TEM_DIR}/disp_file.$$
+_timeserv_=${NET_TIMESERVER_ARRAY[${_opt_}]}
+#if [ "${_timeserv_}" == "none" ]; then
+#    _timeserv_="Not set"
+#fi
+printf "%-18s%s\n\n" "Timeserver" "${_timeserv_}" >> ${TEM_DIR}/disp_file.$$
+rmnet=${NET_ID_ARRAY[${_opt_}]}
+
+# Warn the user if this is the last managed local subnet as the service will be disabled
+# ISC DHCP requires at least one local subnet with a plumbed interface and IP on this host order to remain online 
+# Count current managed local subnets
+localsubs=$($ECHO $MANAGED_LOCAL_SUBNETS|$TR ',' ' ' |$WC -w)
+if [[ $localsubs == 1 ]]; then
+    if $EGREP "\<$rmnet\>" <<< $MANAGED_LOCAL_SUBNETS >/dev/null; then
+        # This is the last managed local subnet
+        $ECHO -e "\nWARNING! Network [$rmnet] is the last managed local subnet with an IP address on this host." | $TEE -a $LOGFILE
+        $ECHO "         The ISC DHCP service requires at least one declared local subnet to remain online." | $TEE -a $LOGFILE
+        $ECHO "         If you proceed the DHCP service will be disabled until at least one local subnet is re-added." | $TEE -a $LOGFILE
+        $ECHO -e "         A local subnet is a subnet with a plumbed interface and IP address on this host.\n" | $TEE -a $LOGFILE
+   fi
+fi
+
+if [ "$NO_CONFIRM" ]; then
+    # Save the details in the logfile
+    $CAT ${TEM_DIR}/disp_file.$$ >> $LOGFILE
+    ANS="Yes"
+else
+    # Get user confirmation if required
+    _msg_="Are you sure you wish to delete the selected network? (Yes|No)"
+    user_confirm "${_msg_}" ${TEM_DIR}/disp_file.$$
+fi
+
+# Are we removing?
+[[ "${ANS}" == "No" ]] && return 0
+
+# Yes
+_rm_network_=${NET_ID_ARRAY[${_opt_}]}
+_rm_netmask_=${NET_NETMASK_ARRAY[${_opt_}]}
+
+# No interrupts allowed from now
+trap "no_intr_allowed" 1 2 3 14 15
+
+# Backing up the configuration file before modifying
+${CP} -p ${DHCP_CONF_FILE} ${DHCP_CONF_FILE}_bkp || abort_script "[$ACTION]: [${CP} -p ${DHCP_CONF_FILE} ${DHCP_CONF_FILE}_bkp] failed."
+        
+# Stage the removal
+${SED} -e "/${_rm_network_}/,/}/ d" -e '$!N; /^\(.*\)\n\1$/!P; D' ${DHCP_CONF_FILE} > ${TEM_DIR}/tmp_dhcp_conf || \
+    abort_script "[$ACTION]: $SED failed at step1 staging removal of network [$_rm_network_]."
+
+# Replace multiple blank lines with single blank line 
+$SED '/^[[:space:]]*$/N;/^[[:space:]]*\n[[:space:]]*$/D' ${TEM_DIR}/tmp_dhcp_conf > ${TEM_DIR}/tmp_dhcp_conf2 || \
+    abort_script "[$ACTION]: $SED failed at step2 staging removal of network [$_rm_network_]."
+
+# Validate temp DHCP file
+if ! ${DHCPD} -t -cf ${TEM_DIR}/tmp_dhcp_conf2 > /dev/null 2>&1; then
+    # Display invalid file report
+    ${DHCPD} -t -cf ${TEM_DIR}/tmp_dhcp_conf2
+    abort_script "[$ACTION]: Temp DHCP config file [${TEM_DIR}/tmp_dhcp_conf2] failed validation."
+fi
+    
+${MV} ${TEM_DIR}/tmp_dhcp_conf2 ${DHCP_CONF_FILE} ||  abort_script "[$ACTION]: [${MV} ${TEM_DIR}/tmp_dhcp_conf2 ${DHCP_CONF_FILE}] failed."
+
+# Confirm network is removed 
+is_managed_subnet $_rm_network_ $_rm_netmask_ && abort_script "[$ACTION]:  Failed to remove network [$_rm_network_] from [$DHCP_CONF_FILE]."
+
+# Log removal
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \nSuccesfully removed network [${_rm_network_}] from the DHCP configuration." | $TEE -a $LOGFILE
+
+# Refresh list of managed local subnets
+get_managed_local_subnets
+
+$ECHO -e "\n$NOW -- $SCRIPT_NAME \n[$ACTION]: Managed subnets: [$MANAGED_LOCAL_SUBNETS]" >> $LOGFILE
+
+# Manage DHCP service
+# Disable if no local managed subnet exists or if no managed subnets of any type exist
+# EQEV-66186 # disable dhcpd service if manage subnet does not exist #19.4.7
+if  [ -z "$MANAGED_LOCAL_SUBNETS" ] || ! is_managed_subnet; then
+    ${SYSTEMCTL} disable $DHCP_SERVICE_NAME >/dev/null 2>&1
+    ${SYSTEMCTL} stop  $DHCP_SERVICE_NAME
+else
+	DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+    if [[ ${DHCP_SERVICE_STATE} == "active" ]]; then
+        ${SYSTEMCTL} reload $DHCP_SERVICE_NAME >/dev/null 2>&1
+        DHCP_SERVICE_STATE=$($SYSTEMCTL status $DHCP_SERVICE_NAME | $GREP -w Active | $GAWK '{print $2}')
+        if [[ ${DHCP_SERVICE_STAT}E != "online" ]]; then
+            ${SYSTEMCTL} stop $DHCP_SERVICE_NAME
+            sleep 5
+            ${SYSTEMCTL} start $DHCP_SERVICE_NAME
+            
+            ${SYSTEMCTL} restart $DHCP_SERVICE_NAME >/dev/null 2>&1
+        fi
+    fi
+fi
+
+
+# Sync install service network list
+#sync_install_service_netlist
+
+if [[ -z "$MANAGED_LOCAL_SUBNETS" ]]; then
+    $ECHO -e "\nWARNING! DHCP service [$DHCP_SERVICE_SYSTEMCTL] is disabled!" | $TEE -a $LOGFILE
+    $ECHO "         The service will remain disabled until at least one local subnet is added." | $TEE -a $LOGFILE
+    $ECHO -e "         A local subnet is a subnet with a plumbed interface and IP address on this host.\n" | $TEE -a $LOGFILE
+fi
+
+# Remove traps on interrupts
+trap 1 2 3 14 15
+
+return 0
+
+}
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+setup_env()
+{
+# Set Remote handled FLAG. Basically determines if we are running
+# remote ERICautoinstall directories. Needed for internal testing where we
+# are trying to avoid the need for multiple MWS. Not required in
+# customer world
+if [ -f ${PARENT_DIR}/etc/remote_dhcp_ai.cfg ]; then
+    _rmt_chk_=`$CAT ${PARENT_DIR}/etc/remote_dhcp_ai.cfg|$EGREP "^[[:blank:]]*DHCP_INSTALLATION_TYPE=" \
+	| $GAWK -F\= '{print $2}'`
+
+    if [ "${_rmt_chk_}" ]; then
+	if [ "${_rmt_chk_}" == "remote" ]; then
+	    REMOTE_DHCP_SERVER=`$CAT ${PARENT_DIR}/etc/remote_dhcp_ai.cfg|$EGREP "^[[:blank:]]*REMOTE_DHCP_SERVER=" \
+	| $GAWK -F\= '{print $2}'`
+	    if [ ! "${REMOTE_DHCP_SERVER}" ]; then
+		_err_msg_="Failed to read parameter REMOTE_DHCP_SERVER from \n${PARENT_DIR}/etc/remote_dhcp_ai.cfg"
+		abort_script "$_err_msg_"
+	    fi
+	    _err_msg_="This ERICautoinstall installation is currently setup towards the remote DHCP server ${REMOTE_DHCP_SERVER}"
+	    abort_script "$_err_msg_"
+	fi
+    fi
+
+    if [ "${_rmt_chk_}" ]; then
+	if [ "${_rmt_chk_}" == "remote" ]; then
+	    _err_msg_="This ERICautoinstall installation is currently setup towards"
+	    abort_script "$_err_msg_"
+	fi
+    fi
+fi
+}
+
+### Function: update_netmasks_file ###
+#
+# Updates /etc/inet/netmasks file
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+update_netmasks_file()
+{
+$CAT /etc/inet/netmasks | $EGREP "^[[:blank:]]*${NETWORK_IP_ADDR}[[:blank:]]+${NETWORK_NETMASK}[[:blank:]]*$" >> /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    if [ ! -f /etc/inet/netmasks.orig ]; then
+	$CP -p /etc/inet/netmasks /etc/inet/netmasks.orig >> /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+	    _err_msg_="Could not make backup of /etc/inet/netmasks"
+	    abort_script "$_err_msg_"
+	fi
+    fi
+    $ECHO -e "\n$NOW -- $SCRIPT_NAME \nUpdating /etc/inet/netmasks with ${NETWORK_IP_ADDR}\t${NETWORK_NETMASK}" | $TEE -a ${LOGFILE}
+    $ECHO "${NETWORK_IP_ADDR}\t${NETWORK_NETMASK}" >> /etc/inet/netmasks
+fi
+}
+
+### Function: user_confirm ###
+#
+# Confirm details
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+user_confirm()
+{
+if [ "$NO_CONFIRM" ]; then
+    ANS="Yes"
+    return
+fi
+
+local _msg_=$1
+local _file_=$2
+
+while :; do
+    $PRINTF "\033c"	
+    if [ -f "$2" ]; then
+	$CAT $2
+    fi
+    $ECHO -e "\n${_msg_}"
+    read _ans_
+
+    if [ ! "${_ans_}" ]; then
+	continue
+    fi
+
+    if [ "${_ans_}" == "Yes" -o "${_ans_}" == "No" ]; then
+	ANS="${_ans_}"
+	break
+    fi
+done
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg()
+{
+$PRINTF "\033c"
+$ECHO "
+Usage: $("$BASENAME" "$0") -a {add|list|remove} -s {network|networkv6}
+
+options:
+
+-a  : Parameter containing action to be performed
+          add : Add a new network or hardware class to DHCP
+         list : List current networks or hardware classes in DHCP
+       remove : Remove a current network or hardware class in DHCP
+
+-s  : Parameter containing which section of DHCP to manage
+      network : Add/list/remove a network in DHCP
+    networkv6 : Add/list/remove a IPv6 network
+"
+}
+
+is_service_online()
+{
+
+local service_fmri=$1 service_state
+
+[[ -n "$service_fmri" ]] || abort_script "$FUNCNAME: No service FMRI was passed!"
+
+service_state=$($SYSTEMCTL -H -o state $service_fmri)
+[[ -n "$service_state" ]] || abort_script "$FUNCNAME: [$SYSTEMCTL -H -o state $service_fmri] failed to return service state!"
+
+[[ "$service_state" == "online" ]] && return 0 # service is online
+
+# service is offline
+return 1
+
+}
+
+is_managed_subnet()
+{
+
+local subnet=$1
+local netmask=$2
+
+if [[ -z $subnet ]]; then
+    #Does any subnet exist?
+    $EGREP "^[[:space:]]*\<subnet\>[[:space:]]+.*\<netmask\>[[:space:]]+" $DHCP_CONF_FILE >/dev/null 2>&1 && return 0
+    return 1
+fi
+# Does specified subnet exist?
+$EGREP "^[[:space:]]*\<subnet\>[[:space:]]+\<${subnet}\>[[:space:]]+\<netmask\>[[:space:]]+\<${netmask}\>" $DHCP_CONF_FILE >/dev/null 2>&1 && return 0
+return 1
+
+}
+
+is_plumbed_subnet()
+{
+local subnet=$1
+local ip ip_pre
+local prefix
+local loop_subnet
+local netmask
+
+for ip_pre in $($IP -o -f inet addr show | $GAWK '/scope global/ {print $4}'); do
+    ip=$(echo $ip_pre | cut -d '/' -f1)
+    #echo $ip
+
+    # Skip if not an IPv4 address
+    validate_ip_netmask $ip || continue
+
+    prefix=$(echo $ip_pre | cut -d '/' -f2)
+    netmask=$(get_netmask_from_prefix $prefix)
+    loop_subnet=$(get_subnet_from_ip_and_netmask $ip $netmask)
+    
+    [[ "$subnet" == "$loop_subnet" ]] && return 0
+done
+
+return 1
+
+}
+
+get_pub_ip()
+{
+
+local pub_ip
+
+# Get IP for host name returned by the 'hostname' command 
+#pub_ip=$($GETENT hosts $(hostname) | $GAWK '{print $1'})
+pub_ip=$($GETENT ahostsv4 $(hostname) | $GAWK '{print $1}' | $HEAD -1)
+
+# Print IP to stdout
+echo $pub_ip
+
+}
+
+get_prefix_from_plumbed_ip()
+{
+
+local ip=$1 
+local netmask
+local addr_obj_name prefix 
+
+# Get IP address object name e.g. net0/v4 from plumbed IP
+#addr_obj_name=$($IPADM show-addr | $GREP "\<$ip\>" | $GAWK '{print $1}')
+# Get subnet prefix from address object name
+#prefix=$($IPADM show-addrprop -c -o CURRENT -p prefixlen $addr_obj_name) 
+
+# Print prefix to stdout
+echo $prefix
+
+}
+
+get_ip_from_plumbed_subnet()
+{
+
+local subnet=$1
+local ip ip_pre
+local prefix
+local loop_subnet
+local netmask
+
+for ip_pre in $($IP -o -f inet addr show | $GAWK '/scope global/ {print $4}'); do
+    ip=$(echo $ip_pre | cut -d '/' -f1)
+
+    # Skip if not an IPv4 address
+    validate_ip_netmask $ip || continue
+
+    prefix=$(echo $ip_pre | cut -d '/' -f2)
+    netmask=$(get_netmask_from_prefix $prefix)
+    loop_subnet=$(get_subnet_from_ip_and_netmask $ip $netmask)
+    [[ "$subnet" == "$loop_subnet" ]] && break
+done
+
+# Print ip to stdout for caller
+echo $ip
+
+}
+
+get_netmask_from_plumbed_subnet()
+{
+
+local subnet=$1
+local ip ip_pre
+local prefix
+local loop_subnet
+local netmask
+
+for ip_pre in $($IP -o -f inet addr show | $GAWK '/scope global/ {print $4}'); do
+    ip=$(echo $ip_pre | cut -d '/' -f1)
+
+    # Skip if not an IPv4 address
+    validate_ip_netmask $ip || continue
+
+    prefix=$(echo $ip_pre | cut -d '/' -f2)
+    netmask=$(get_netmask_from_prefix $prefix)
+    loop_subnet=$(get_subnet_from_ip_and_netmask $ip $netmask)
+
+    [[ "$subnet" == "$loop_subnet" ]] && break
+done
+
+echo $netmask
+
+}
+
+get_subnet_from_ip_and_netmask()
+{
+
+local ip=$1 netmask=$2 
+local saved_IFS=$IFS # Save global field separator
+
+IFS=. 
+read -r i1 i2 i3 i4 <<< "$ip"
+read -r m1 m2 m3 m4 <<< "$netmask"
+IFS=$saved_IFS # Restore global field separator
+
+# Calculate and print subnet to stdout
+printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$((i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
+
+}
+
+get_netmask_from_prefix()
+{
+
+set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
+[ $1 -gt 1 ] && shift $1 || shift
+
+# Print netmask to stdout
+echo ${1-0}.${2-0}.${3-0}.${4-0}
+
+}
+
+get_prefix_from_netmask()
+{
+
+local x
+
+x=${1##*255.}
+set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
+x=${1%%$3*}
+
+# Print prefix to dtdout
+echo $(( $2 + (${#x}/4) ))
+
+}
+
+get_default_gateway()
+{
+
+# Get default gateway from routing table and print to stdout
+#$ROUTE -n get default | $GREP -w gateway | $GAWK '{print $2}'
+ $ROUTE -n | $GAWK 'NR==3 {print $2}'
+
+}
+
+set_subnet_default_prompts()
+{
+
+local subnet=$1
+local pub_ip pub_prefix pub_netmask pub_subnet 
+local def_gateway
+local re='^[0-9]+$'
+local ip netmask dom dns_servers dns_search_domains ntp_servers
+declare -i valid=1
+
+if [[ "$subnet" == "CLEAR" ]]; then
+    DEF_PROMPT_NETWORK_IP_ADDR=
+    DEF_PROMPT_NETWORK_NETMASK=
+    DEF_PROMPT_DEFAULTROUTER=
+    DEF_PROMPT_DNSSERVERS=
+    DEF_PROMPT_DNSDOMAIN=
+    DEF_PROMPT_TIMESERVER=
+    return 0
+fi
+
+if [[ -z $subnet ]]; then
+    # Get public IP
+    # For this script the public IP is the IP resolved for the host name returned by the 'hostname' command.
+    pub_ip=$(get_pub_ip)
+    validate_ip_netmask $pub_ip || valid=0
+
+    # Get public subnet prefix
+    [[ $valid -eq 1 ]] && pub_prefix=$(get_prefix_from_plumbed_ip $pub_ip)
+    [[ "$pub_prefix" =~ $re ]] || valid=0
+
+    # Get netmask from subnet prefix
+    [[ $valid -eq 1 ]] && pub_netmask=$(get_netmask_from_prefix $pub_prefix)
+    validate_ip_netmask $pub_netmask || valid=0
+    [[ $valid -eq 1 ]] && DEF_PROMPT_NETWORK_NETMASK=$pub_netmask
+
+    # Get public subnet address
+    [[ $valid -eq 1 ]] && pub_subnet=$(get_subnet_from_ip_and_netmask $pub_ip $pub_netmask)
+    validate_ip_netmask $pub_subnet && DEF_PROMPT_NETWORK_IP_ADDR=$pub_subnet
+    
+    return 0
+fi
+
+# User entered a local subnet address
+netmask=$(get_netmask_from_plumbed_subnet $subnet)
+validate_ip_netmask $netmask || valid=0
+[[ $valid -eq 1 ]] && DEF_PROMPT_NETWORK_NETMASK=$netmask
+
+# Get defaut gateway
+def_gateway=$(get_default_gateway)
+validate_ip_netmask $def_gateway && DEF_PROMPT_DEFAULTROUTER=$def_gateway
+
+# Get DNS server(s) configured on this host
+#dns_servers=$($SVCPROP -p config/nameserver $DNS_CLIENT_FMRI)
+
+# Fallback to /etc/resolv.conf
+[[ -z "$dns_servers" ]] && dns_servers=$($GAWK '/nameserver/{print $2}' /etc/resolv.conf | $TR '\n' ' ')
+
+valid=1
+for ip in $dns_servers; do
+    validate_ip_netmask $ip || valid=0
+done
+[[ $valid -eq 1 ]] && DEF_PROMPT_DNSSERVERS=$($ECHO $dns_servers)
+
+# Get DNS domain configured on this host
+#dns_domain=$($SVCPROP -p config/search $DNS_CLIENT_FMRI)
+
+# Multiple search domains are not supported in this version
+#dns_domain=$($ECHO $dns_domain|$GAWK '{print $1}')
+
+# Fallback to /etc/resolv.conf
+[[ -z "$dns_domain" ]] && dns_domain=$($EGREP -w "^[[:space:]]*\<search\>" /etc/resolv.conf|$GAWK '{print $2}')
+
+[[ -n "$dns_domain" ]] && DEF_PROMPT_DNSDOMAIN=$dns_domain
+
+# Get NTP servers
+#ntp_servers=$( $EGREP "^[[:space:]]*\<server\>" $NTP_CONF_FILE | $GAWK '{print $2}' )
+#valid=1
+#for ip in $ntp_servers; do
+#    validate_ip_netmask $ip || valid=0
+#done
+#[[ $valid -eq 1 ]] && DEF_PROMPT_TIMESERVER=$ntp_servers
+
+return 0
+
+}
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+#
+RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+# Determine absolute path to software
+get_absolute_path
+
+# Check for the common functions
+_common_funcs_lib_="${PARENT_DIR}/lib/common_ericks_functions.lib"
+if [ ! -s ${_common_funcs_lib_} ]; then
+    _err_msg_="${_common_funcs_lib_} not found or is empty"
+    abort_script "$_err_msg_"
+fi
+
+# Source the common functions
+. ${_common_funcs_lib_}
+if [ $? -ne 0 ]; then
+    _err_msg_="Error sourcing the common functions library\n${_common_funcs_lib_}"
+    abort_script "$_err_msg_"
+fi
+
+# Check the id of the user
+check_id ${DEFAULT_USER}
+if [ $? -ne 0 ]; then
+    _err_msg_="You must be ${DEFAULT_USER} to execute this script."
+    abort_script "$_err_msg_"
+fi
+
+while getopts ":a:c:f:HNn:s:" arg; do
+    case $arg in
+	a) ACTION="$OPTARG"
+	    ;;
+	c) USER_CLASS="$OPTARG"
+	    ;;
+	f) USER_PARAM_FILE="$OPTARG"
+	    ;;
+	H) HOLD_LISTING="YES"
+	    ;;
+	n) USER_NETWORK="$OPTARG"
+	    ;;
+	N) NO_CONFIRM="YES"
+	    ;;
+	s) SECTION="$OPTARG"
+	    ;;
+	\?) usage_msg
+	    exit 1
+	;;
+    esac
+done
+shift `expr $OPTIND - 1`
+
+# Check for the ERICautoinstall config file
+ERICKS_CONFIG_TEMPLATE="${PARENT_DIR}/template/ericks_config_template"
+ERICKS_CONFIG="${PARENT_DIR}/etc/ericks_config"
+if [ ! -s ${ERICKS_CONFIG} ]; then
+    if [ ! -s ${ERICKS_CONFIG_TEMPLATE} ]; then
+	_err_msg_="${ERICKS_CONFIG_TEMPLATE} not found or is empty"
+	abort_script "$_err_msg_"
+    else
+	$CP ${ERICKS_CONFIG_TEMPLATE} ${ERICKS_CONFIG}
+    fi
+fi
+
+# Set up environment variables for script.
+setup_env
+
+# Create a temporary Directory
+# Loop until we get a unique directory name
+TEM_DIR=/tmp/manage_dhcp.$$.$$
+while :; do
+    $LS ${TEM_DIR} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	break
+    fi
+    TEM_DIR=${TEM_DIR}.$$
+done
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory ${TEM_DIR}"
+    abort_script "$_err_msg_"
+fi
+
+# Log file
+if [ ! "${LOGFILE}" ]; then
+    LOGFILE="$PARENT_DIR/log/manage_dhcp.log"
+fi
+
+# V6 Log file
+if [ ! "${LOGFILE_v6}" ]; then
+    LOGFILE_v6="$PARENT_DIR/log/manage_dhcpv6.log"
+fi
+
+
+# Check/Create Logfile
+if [ "$SECTION" == "network" ] ; then
+    chk_create_logfile
+else
+    chk_create_v6logfile
+fi
+
+# Recover DHCP service if required
+recover_dhcp_service
+
+# Check the input parameters
+# check_params uses $MANAGED_LOCAL_SUBNETS set by recover_dhcp_service()
+check_params
+
+# From here on assume $DHCP_CONF_FILE is valid and service is online
+
+# Perform Required Action
+if [ "$SECTION" == "network" ] || [ "$SECTION" == "networkv6" ] ; then
+    case "${ACTION}" in
+	add)      add_managed_network
+	    ;;
+	list) 	  list_managed_networks
+	    ;;
+	remove)	  remove_managed_network
+	    ;;
+	*) 	  usage_msg
+	          exit 1
+	    ;;
+    esac
+fi
+
+cd ${SCRIPTHOME}
+$RM -rf ${TEM_DIR}
+
+exit 0
+

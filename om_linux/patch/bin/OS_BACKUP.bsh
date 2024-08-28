@@ -1,0 +1,219 @@
+#!/bin/bash
+LOGDIR="/opt/OS_CONF_BKP/"
+$(mkdir -p /var/ericsson/log/patch/)
+LOGFILE="/var/ericsson/log/patch/gsmc-system-config-backup.log"
+DATE=`date +%d-%b-%Y`
+TMP_LOGDIR="/tmp"
+BKP=$TMP_LOGDIR/`hostname`.BACKUPS_$DATE
+RDAYS=30
+
+function createdir()
+{        
+	/bin/mkdir -p  $LOGDIR
+        echo "Creating temporary working directory "$BKP >> $LOGFILE
+        /bin/mkdir -p $BKP
+}
+
+function netbackup()
+{
+echo -n "Collecting command Backup" >> $LOGFILE
+
+        /sbin/ifconfig > $BKP/ifconfig 
+        ip a s > $BKP/ip 
+        /sbin/route -n > $BKP/route 
+        /sbin/runlevel > $BKP/runlevel 
+        /sbin/chkconfig --list | grep -w 3:on > $BKP/chkconfig_init_3 
+        /sbin/chkconfig --list | grep -w 5:on > $BKP/chkconfig_init_5 
+        systemctl list-units > $BKP/chkconfigrhel7 
+        /bin/hostname > $BKP/hostname 
+        /sbin/lsmod > $BKP/lsmod 
+        /sbin/multipath -ll > $BKP/multipathcmd 
+        /bin/raw -qa > $BKP/raw 
+        /bin/mount > $BKP/mount 
+        /sbin/fdisk -l > $BKP/fdisk 
+        /usr/sbin/getenforce > $BKP/getenforce 
+        /sbin/iptables -L  > $BKP/iptables_filter 
+        /sbin/iptables -t nat -L > $BKP/iptables_nat 
+        /sbin/iptables-save > $BKP/iptables 
+	/sbin/pvs > $BKP/physical_volumes 
+	/sbin/vgs > $BKP/volume_groups 
+	/sbin/lvs > $BKP/logical_volumes 
+        /bin/netstat -ntpl > $BKP/netstat 
+        echo $PATH > $BKP/path 
+        /bin/rpm -qa | sort > $BKP/rpm  
+        /bin/lsblk    > $BKP/lsblk 
+        /sbin/dmsetup info > $BKP/dmsetup 
+        /sbin/blkid > $BKP/blkid 
+        /sbin/ifconfig -a > $BKP/ifconfig-a 
+        /bin/uname -a > $BKP/uname 
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+function sysbackup()
+{
+echo -n "Collecting System Configuration Backup" >> $LOGFILE
+
+        cat /proc/cpuinfo > $BKP/proc_cpuinfo
+        cat /proc/meminfo > $BKP/proc_meminfo
+        cat /proc/mounts > $BKP/proc__mounts
+        cat /proc/sys/net/ipv4/ip_forward > $BKP/proc_ip_forward
+        cat /proc/version > $BKP/version
+        ls -l /dev/disk/by-id/ > $BKP/dev_byid
+        mkdir $BKP/etc_bkp
+        cp -pr /etc/* $BKP/etc_bkp
+        cat /etc/*-release > $BKP/OSrelease
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+function hardwareinfo()
+{
+echo -n "Collecting Hardware Information Backup" >> $LOGFILE
+
+        /usr/sbin/hwinfo > $BKP/hwinfo 2>&1
+        /usr/sbin/dmidecode > $BKP/dmidecode
+        /usr/bin/getconf LONG_BIT > $BKP/getconf
+        /usr/bin/systool > $BKP/systool
+        /usr/bin/lshal > $BKP/lshal 2>&1
+        /sbin/lsusb -t > $BKP/lsusb 2>&1
+       /usr/sbin/biosdecode > $BKP/biosdecode 2>&1
+#       lshw > $BKP/lshw 2>&1
+        /bin/dmesg> $BKP/dmesg
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+function cronbackup()
+{
+echo -n "Collecting Cron Information Backup" >> $LOGFILE
+
+OLDDIR=$PWD
+
+        mkdir $BKP/`hostname`_crons
+        cd $BKP/`hostname`_crons
+        touch crons.txt
+
+        for i in `ls /var/spool/cron/`
+        do
+
+         USER=`grep -w "$i" /etc/passwd | awk -F: -v user=$i '{if (user == $1) print $1}'`
+
+                crontab -u $USER -l > $i.cron
+                crontab -u $USER -l | grep -v "^#" | sort | uniq | awk {'print $6'} >> crons.txt
+                crontab -u $USER -l | grep -v "^#" | sort | uniq | awk {'print $7'} >> crons.txt
+                crontab -u $USER -l | grep -v "^#" | sort | uniq | awk {'print $8'} >> crons.txt
+        done
+
+        for i in `cat crons.txt`
+        do
+                cp $i ./ 2> /dev/null
+        done
+
+        rm -rf crons.txt > /dev/null
+
+        cd ..
+
+        tar -czf `hostname`_crons.tar.gz2 `hostname`_crons
+        rm -rf `hostname`_crons > /dev/null
+
+cd $OLDDIR
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+
+function zip()
+{
+TARNAME=`hostname`.BACKUPS_$DATE.tar.gz
+
+echo -n "Zipping all the information into "$TARNAME >> $LOGFILE
+
+        cd $TMP_LOGDIR
+
+        tar -czf $TARNAME `hostname`.BACKUPS_$DATE > /dev/null
+
+echo -e "\t[Done]" >> $LOGFILE
+
+echo "Deleting temporary working directory" >> $LOGFILE
+        rm -rf $BKP > /dev/null
+
+
+echo -n "Moving $TARNAME to $LOGDIR " >> $LOGFILE
+
+        mv -f $TARNAME $LOGDIR > /dev/null
+
+        if [ $? = 0 ]
+        then
+                echo -e "\t[Done]" >> $LOGFILE
+        else
+                echo -e "\t[FAILED]" >> $LOGFILE
+                echo -e "\nIssue Occured !!!!! :(" >> $LOGFILE
+                echo "Ending execution at $(/bin/date)" >> $LOGFILE
+                echo "############################################################################################################" >> $LOGFILE
+                exit
+        fi
+
+}
+
+
+function proxybkp()
+{
+echo -n "Collecting Proxy Configuration Backup" >> $LOGFILE
+
+        cp -r /etc/squid $BKP/ > /dev/null
+	
+        /bin/mkdir -p $BKP/dansguardian
+        cd /etc/dansguardian/
+        cp -r `ls | grep -v blacklists` $BKP/dansguardian > /dev/null
+        cd $OLDPWD
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+
+function rotate()
+{
+        cd $LOGDIR
+	echo -n "Checking for older log archive" >> $LOGFILE
+
+        ls | grep -w BACKUP > rotate.txt
+
+        while read FILE
+        do
+                TDATE=`date +%s`
+                CDATE=`stat -c %X $FILE`
+                DIFF=$(( 86400 * ${RDAYS} ))
+
+                ISDEL=$(( TDATE - CDATE ))
+
+                if [ $DIFF -le $ISDEL ]
+                then
+                        rm -rvf $FILE > /dev/null
+                fi
+
+        done < rotate.txt
+
+rm -f rotate.txt > /dev/null
+
+echo -e "\t[Done]" >> $LOGFILE
+}
+
+echo -e "\n\n############################################################################################################" >> $LOGFILE
+echo -e "Staring execution at $(/bin/date)\n" >> $LOGFILE
+
+createdir
+netbackup
+sysbackup
+hardwareinfo
+cronbackup
+#proxybkp
+zip
+rotate
+
+echo -e "\nJOB DONE!!!!! :)" >> $LOGFILE
+echo "Ending execution at $(/bin/date)" >> $LOGFILE
+echo "############################################################################################################" >> $LOGFILE
+#END
+
+

@@ -1,0 +1,2221 @@
+# Patch Configuration Library
+# ********************************************************************
+# Ericsson Radio Systems AB                                    LIBRARY
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : common_funtions.lib
+# Date    : 02/01/2019
+# Revision: A
+# Purpose : This library contains general functions for patch upgrade 
+#			
+#
+#
+# Version Information:
+#	Version Who             Date            Comment
+#   0.1     xkumvig/xanjgop	02/06/2019		initial version
+#
+#
+# ********************************************************************
+CUT=/usr/bin/cut
+ECHO=/usr/bin/echo
+PRINTF=/usr/bin/printf
+BASENAME=/bin/basename
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+FIND=/usr/bin/find
+GAWK=/usr/bin/gawk
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+RMDIR=/usr/bin/rmdir
+SHARE=/usr/sbin/share
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+IFCONFIG=/usr/sbin/ifconfig
+LS=/usr/bin/ls
+LSHAL=/usr/bin/lshal
+DMIDECODE=/usr/sbin/dmidecode
+MKDIR=/usr/bin/mkdir
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PRINTF=/usr/bin/printf
+RM=/usr/bin/rm
+RPM=/usr/bin/rpm
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SERVICE=/usr/sbin/service
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+TAIL=/usr/bin/tail
+TAR=/usr/bin/tar
+TEE=/usr/bin/tee
+TELINIT=/usr/sbin/telinit
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+
+
+if [[ `uname` == "Linux" ]]; then
+	ECHO='/usr/bin/echo -e'
+else
+	ECHO=/usr/bin/echo
+fi
+datestamp() {
+#####################################
+# Function to output a formatted date 
+#####################################
+# Inputs:	$1 [1|2|3] (optional) 
+#				for 4 different output formats
+# Outputs:	none
+# Returns:	0 success
+#####################################
+[[ $1 -eq 1 ]] && $DATE +%H:%M:%S
+[[ $1 -eq 2 ]] && $DATE +%d-%m-%Y_%H-%M-%S
+[[ $1 -eq 3 ]] && $DATE +%Y-%m-%d
+[[ -z $1 ]] && $DATE
+
+return 0
+}
+
+echoOut() {
+#####################################
+# Function to send formatted output to STDOUT only 
+#####################################
+# Inputs:	$1 [DEBUG|WARN|ERROR|INFO|ECHO|BKUP] 
+#				for the type of formatting
+#			$2 <string>
+#				for the message
+# Outputs:	none
+# Returns:	0 success
+#			1 incorrect usage
+#####################################
+
+[[ "$1" == "DEBUG" ]] && {
+        [[ $DEBUG == "y" ]] && $ECHO  "\t[DEBUG]\t${@:2}"
+	return 0
+	}
+[[ "$1" == "WARN" ]] && {
+	$ECHO  "\t\033[1;30;33m[WARNING]\033[0m   ${@:2}"
+	return 0
+	}
+[[ "$1" == "ERROR" ]] && {
+	$ECHO   "\t\033[1;30;31m[ERROR]\033[0m   ${@:2}"
+	return 0
+	}
+[[ "$1" == "INFO" ]] && {
+	$ECHO  "\t\033[1;30;32m[INFO]\033[0m   ${@:2}"
+	return 0
+	}
+[[ "$1" == "ECHO" ]] && {
+	$ECHO  "${@:2}"
+	return 0
+	}
+[[ "$1" == "BKUP" ]] && {
+	$ECHO  $(datestamp 1)"   ${@:2}" >> $BKUP_FILE
+	return 0
+	}
+$ECHO  "[WARNING: bad $FUNCNAME call]\t$@"
+return 1
+}
+
+logOut() {
+#####################################
+# Function to send formatted output to STDOUT and $LOG 
+#####################################
+# Inputs:	$1 [DEBUG|WARN|ERROR|INFO|ECHO] 
+#				for the type of formatting
+#			$2 <string>
+#				for the message
+# Outputs:	none
+# Returns:	0 success
+#			1 incorrect usage
+#####################################
+[[ "$1" == "DEBUG" ]] && {
+        [[ "$DEBUG" == "y" ]] && $ECHO  $(datestamp 1)"   [DEBUG]\t${@:2}" |$TEE -a $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "WARN" ]] && {
+	$ECHO  $(datestamp 1)"   \033[1;30;33m[WARNING]\033[0m   ${@:2}"
+	$ECHO  $(datestamp 1)"   [WARNING]   ${@:2}" >> $LOG 2>&1
+	return 0	
+	}
+[[ "$1" == "ERROR" ]] && {
+	$ECHO   $(datestamp 1)"   \033[1;30;31m[ERROR]\033[0m   ${@:2}"
+	$ECHO   $(datestamp 1)"   [ERROR]   ${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "INFO" ]] && {
+	$ECHO  $(datestamp 1)"   \033[1;30;32m[INFO]\033[0m   ${@:2}"
+	$ECHO  $(datestamp 1)"   [INFO]   ${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "ECHO" ]] && {
+	$ECHO  "${@:2}" |$TEE -a $LOG 2>&1
+	return 0
+	}
+$ECHO  "[WARNING: bad $FUNCNAME call]\t$@" |$TEE -a $LOG 2>&1
+return 1
+}
+
+logOnly() {
+#####################################
+# Function to send formatted output to $LOG only
+#####################################
+# Inputs:	$1 [DEBUG|WARN|ERROR|INFO|ECHO] 
+#				for the type of formatting
+#			$2 <string>
+#				for the message
+# Outputs:	none
+# Returns:	0 success
+#			1 incorrect usage
+#####################################
+[[ "$1" == "DEBUG" ]] && {
+        [[ "$DEBUG" == "y" ]] && $ECHO  $(datestamp 1)"   [DEBUG]\t${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "WARN" ]] && {
+	$ECHO  $(datestamp 1)"   [WARNING]   ${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "ERROR" ]] && {
+	$ECHO   $(datestamp 1)"   [ERROR]   ${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "INFO" ]] && {
+	$ECHO  $(datestamp 1)"   [INFO]   ${@:2}" >> $LOG 2>&1
+	return 0
+	}
+[[ "$1" == "ECHO" ]] && {
+	$ECHO  "${@:2}" >> $LOG 2>&1
+	return 0
+	}
+$ECHO  "[WARNING: bad $FUNCNAME call]\t$@" |$TEE -a $LOG 2>&1
+return 1
+}
+
+exitOut () {
+#####################################
+# Function to exit the script with a code and message 
+#####################################
+# Inputs:	$1 <integer> 
+#				for the exit code to be used
+#			$2 <string>
+#				for the exit message
+# Outputs:	none
+# Returns:	exit
+#####################################
+
+local l_exitCode="${1:-0}"
+local l_exitMsg="${@:2}"
+
+
+if ! [[ $l_exitCode =~ ^[0-9]+$ ]]; then
+	logOut "WARN" "$FUNCNAME was called with an invalid exit code supplied."
+	exit 99
+elif [[ $l_exitCode -eq 1 ]]; then 
+	[[ "${LIVE_HOSTS[@]}" != "$CLUST_NODE_LIST" ]] && logOut "WARN" "Not all cluster nodes were available.  Please re-run when all nodes are online."
+	logOut "INFO" "$l_exitMsg"
+elif [[ $l_exitCode -eq  2 ]]; then
+        [[ "${LIVE_HOSTS[@]}" != "$CLUST_NODE_LIST" ]] && logOut "WARN" "Not all cluster nodes were available.  Please re-run when all nodes are online."
+        logOut "ERROR" "$l_exitMsg"
+else
+	[[ "${LIVE_HOSTS[@]}" != "$CLUST_NODE_LIST" ]] && logOut "WARN" "Not all cluster nodes were available.  Please re-run when all nodes are online."
+	logOut "ECHO" "$l_exitMsg"
+fi
+
+header "MAIN" "Log file location:" "" "[$LOG]"
+exit $l_exitCode
+
+}
+
+header() {
+#####################################
+# Function to format a header output 
+#####################################
+# Inputs:	$1 [NODE|PHASE|STEP|STEP2|MAIN|OK|NOK] 
+#				for the header format to use
+#			$2 <string> (optional)
+#				header message
+#			$3 <string> (optional)
+#				additional header content (optional)
+# Outputs:	none
+# Returns:	0 
+#			1 incorrect usage
+#####################################
+
+[[ "$1" == "NODE" ]] && {
+	logOut "ECHO" "\t+++++----------+++++"
+	logOut "ECHO" "\t$2"
+	[[ -n "$3" ]] && logOut "ECHO" "\t${@:3}"
+	logOut "ECHO" "\t+++++----------+++++"
+	return 0
+	}
+[[ "$1" == "PHASE" ]] && {
+	logOut "ECHO" "----------------------------------------------------------------------"
+	logOut "ECHO" "$2"
+	[[ -n "$3" ]] && $ECHO  "${@:3}"
+	logOut "ECHO" "======================================================================"
+	return 0
+	}
+[[ "$1" == "STEP" ]] && {
+	$ECHO  "\n$(datestamp 1)\t\033[1;30;32m<<< $2 \033[0m"
+	$ECHO  "\n$(datestamp 1)\t<<< $2 " >> "$LOG" 2>&1
+	[[ -n "$3" ]] && logOut "ECHO" "\t${@:3}"
+	return 0
+	}
+[[ "$1" == "STEP2" ]] && {
+	$ECHO  "$(datestamp 1)\t\033[1;30;32m...$2...\033[0m"
+	$ECHO  "$(datestamp 1)\t...$2..." >> "$LOG" 2>&1 
+	[[ -n "$3" ]] && logOut "ECHO" "\t${@:3}"
+	return 0
+	}
+[[ "$1" == "OK" ]] && {
+	$ECHO  "$(datestamp 1)\t\033[1;30;32m ...[OK]${@:2} >>>\033[0m"
+	$ECHO  "$(datestamp 1)\t ...[OK]${@:2} >>>" >> "$LOG" 2>&1
+	[[ -n "$2" ]] && {
+		$ECHO  "\t\t\t\033[1;30;32m<<< ${@:2} >>>\033[0m"
+		$ECHO  "\t\t\t<<< ${@:2} >>>" >> "$LOG" 2>&1
+		}
+	return 0
+	}
+[[ "$1" == "NOK" ]] && {
+	$ECHO  "$(datestamp 1)\t\033[1;30;31m ...[NOK]${@:2} >>>\033[0m"
+	$ECHO  "$(datestamp 1)\t ...[NOK]${@:2} >>>" >> "$LOG" 2>&1
+	[[ -n "$2" ]] && {
+		$ECHO  "\t\t\t\033[1;30;32m<<< ${@:2} >>>\033[0m"
+		$ECHO  "\t\t\t<<< ${@:2} >>>" >> "$LOG" 2>&1
+		}
+	return 0
+	}
+[[ "$1" == "MAIN" ]] && {
+	$ECHO  "\n*********************************************************************************************" >> "$LOG" 2>&1
+	$ECHO  "\n\033[1;30;33m*********************************************************************************************"
+	$PRINTF "%-70s%23s\n" "${@:2}" |$TEE -a "$LOG" 2>&1
+	$ECHO  "*********************************************************************************************\033[0m\n\n"
+	$ECHO  "*********************************************************************************************" >> "$LOG" 2>&1
+	return 0
+	}	
+$ECHO  "[WARNING: bad $FUNCNAME call]\t$@" |$TEE -a $LOG 2>&1
+return 1
+}
+
+printRootpwWarn() {
+#####################################
+# Function to remind users to change root password 
+#####################################
+# Inputs:	none
+# Outputs:	none
+# Returns:	0 
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+print_fixedwidth_line "star" $BANNER_WIDTH 
+print_fixedwidth_line "text" $BANNER_WIDTH  ""  
+print_fixedwidth_line "text" $BANNER_WIDTH  ""  
+print_fixedwidth_line "star" $BANNER_WIDTH
+
+return 0
+}
+
+printRebootWarn() {
+#####################################
+# Function to warn of reboot
+#####################################
+# Inputs:	none
+# Outputs:	none
+# Returns:	0 
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+print_fixedwidth_line "star" $BANNER_WIDTH 
+print_fixedwidth_line "text" $BANNER_WIDTH  ""  
+print_fixedwidth_line "text" $BANNER_WIDTH  "PLEASE STAND BY WHILE CLUSTER REBOOTS"  
+print_fixedwidth_line "text" $BANNER_WIDTH  ""  
+print_fixedwidth_line "star" $BANNER_WIDTH
+
+return 0
+}
+
+checkNode() {
+#####################################
+# Check SSH to a target host
+#####################################
+# Inputs:	$1 <host to check>
+# Outputs:	none
+# Returns:	0 success
+#			1 failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_host=$1
+
+$SSH $l_host 2>/dev/null $ECHO > /dev/null
+return $?
+}
+
+getClusterNodes() {
+#####################################
+# Build a list of nodes in the cluster
+#####################################
+# Inputs:	$1	-q (optional)
+#				for silent running
+# Outputs:	$OTHER_CLUST_NODES
+#				VCS defined cluster nodes other than 'this' host
+#			$CLUST_NODE_LIST
+#				$OTHER_CLUST_NODES plus 'this' host (last in the list)
+#			$CLUST_SIZE
+#				number of nodes in the $CLUST_NODE_LIST
+#			$RUNNING_NODES
+#				cluster nodes which are in a 'RUNNING' VCS state
+#			$DEFINED_NODES
+#				full list of cluster nodes as VCS sees it
+# Returns:	0 
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+unset OTHER_CLUST_NODES
+unset CLUST_NODE_LIST
+unset CLUST_SIZE
+unset RUNNING_NODES
+unset DEFINED_NODES
+
+DEFINED_NODES=$( $HASYS -list |$TR '\n' ' ' )
+OTHER_CLUST_NODES=$($HASYS -list |$GREP -v $( $HOSTNAME ) |$TR '\n' ' ')
+RUNNING_NODES=($($HASYS -state |$GREP RUNNING |$CUT -d' ' -f1))
+[[ -z "$OTHER_CLUST_NODES" ]] && {
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "No other nodes found in the cluster."
+	RUN_ON_CLUSTER=FALSE
+	}
+
+if [[ "$RUN_ON_CLUSTER" == "TRUE" ]]; then
+	CLUST_NODE_LIST="$OTHER_CLUST_NODES$( $HOSTNAME )"
+	CLUST_NODE_LIST_DISP="$OTHER_CLUST_NODES(Slave) $( $HOSTNAME)(Master)"
+elif [[ "$RUN_ON_CLUSTER" == "FALSE" ]]; then
+	CLUST_NODE_LIST=$( $HOSTNAME )	
+fi
+
+CLUST_SIZE=$( $ECHO $CLUST_NODE_LIST |$WC -w )
+showLiveNodes -q "$CLUST_NODE_LIST"
+		
+logOut "DEBUG" "$FUNCNAME: variables set\n
+Other nodes in cluster:[$OTHER_CLUST_NODES]
+Cluster size:[$CLUST_SIZE]
+Running nodes:[$RUNNING_NODES]
+Node list:[$CLUST_NODE_LIST]
+Nodes defined in VCS:[$DEFINED_NODES]
+Live nodes:[${LIVE_HOSTS[@]}]
+run on cluster:[$RUN_ON_CLUSTER]
+"
+return 0
+}
+
+isNodeRunningMgnt() {
+#####################################
+# Determine if node is running management console
+#####################################
+# Inputs:	$1	<host to check>
+# Outputs:	$IS_MGNT_NODE	[TRUE|FALSE]
+# Returns:	0	node is running console
+#			2	node is not running console
+#			1	error in function			
+#####################################
+
+unset IS_MGNT_NODE
+local l_node=$1
+
+[[ -z "$l_node" ]] && {
+	logOut "ERROR" "$FUNCNAME: required parameter missing"
+	return 1
+	}
+local l_state=$( $HAGRP -state ManagementConsole -sys $l_node )
+
+case "$l_state" in
+	ONLINE)
+		IS_MGNT_NODE=TRUE
+		return 0
+		;;
+	OFFLINE)
+		IS_MGNT_NODE=FALSE
+		return 2
+		;;
+	*)
+		logOut "ERROR" "$FUNCNAME: Unexpected state:[$l_state]"
+		return 1
+		;;
+esac
+# something wrong if function reaches here
+return 1
+}
+
+updateRootCron() {
+#####################################
+# adds the specified entry to the root cron
+#####################################
+# Inputs:	$1	<schedule to be added>
+#			$2	<command to go with $1>
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+
+local l_cronSched=$1
+local l_cronScript=$2
+
+if [[ "$( $UNAME )" != "Linux" ]]; then
+	logOut "ERROR" "Unsupported platform: $($UNAME)"
+	return 1
+elif [[ -z "$l_cronSched" || -z "$l_cronScript" ]]; then
+	logOut "ERROR" "updateRootCron(): required parameter missing."
+	return 1
+elif [[ ! -f "$ROOT_CRONTAB_LINUX" ]]; then
+	logOut "INFO" "Creating root crontab file $ROOT_CRONTAB_LINUX"
+	$TOUCH $ROOT_CRONTAB_LINUX || {
+		logOut "ERROR" "Failed to create root crontab file $ROOT_CRONTAB_LINUX"
+		return 1
+		}
+fi
+
+$FGREP -v "$l_cronScript" $ROOT_CRONTAB_LINUX > $ROOT_CRONTAB_LINUX.$$ 
+$ECHO "$l_cronSched $l_cronScript" >> $ROOT_CRONTAB_LINUX.$$ &&
+> $ROOT_CRONTAB_LINUX &&
+$CAT $ROOT_CRONTAB_LINUX.$$ >> $ROOT_CRONTAB_LINUX || {
+	logOut "ERROR" "Failed to update root crontab with entry for $l_cronScript."
+	return 1
+	}
+logOut "INFO" "Updated root crontab with entry $l_cronScript."
+return 0
+}
+
+enableInRootCron() {
+#####################################
+# enables the specified entry in the root cron
+#####################################
+# Inputs:	$1	<command to enable>
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+
+local l_cronScript=$1
+
+if [[ "$( $UNAME )" != "Linux" ]]; then
+	logOut "ERROR" "Unsupported platform: $($UNAME)"
+	return 1
+elif [[ -z "$l_cronScript" ]]; then
+	logOut "ERROR" "$FUNCNAME: required parameter missing."
+	return 1
+fi
+	
+$GREP $l_cronScript $ROOT_CRONTAB_LINUX > /dev/null 2>&1 || {
+	logOut "ERROR" "No cron entry for $l_cronScript"
+	return 1
+	}
+$GREP -v '^#' $ROOT_CRONTAB_LINUX |$GREP "$l_cronScript" > /dev/null 2>&1 && return 0
+$SED -e "s,^#\(.*$l_cronScript.*\),\1," $ROOT_CRONTAB_LINUX > $ROOT_CRONTAB_LINUX.$$ &&
+> $ROOT_CRONTAB_LINUX &&
+$CAT $ROOT_CRONTAB_LINUX.$$ >> $ROOT_CRONTAB_LINUX || {
+	logOut "ERROR" "Failed to enable entry for $l_cronScript in root crontab."
+	return 1
+	}
+logOut "INFO" "Enabled entry for $l_cronScript in root crontab."
+manageLinuxService $G_CRON_SERVICE_LINUX restart|| return 1
+return 0
+}
+
+disableInRootCron() {
+#####################################
+# disables the specified entry in the root cron
+#####################################
+# Inputs:	$1	<command to disable>
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+
+local l_cronScript=$1
+
+if [[ "$( $UNAME )" != "Linux" ]]; then
+	logOut "ERROR" "Unsupported platform: $($UNAME)"
+	return 1
+elif [[ -z "$l_cronScript" ]]; then
+	logOut "ERROR" "$FUNCNAME: required parameter missing."
+	return 1
+fi
+
+$GREP $l_cronScript $ROOT_CRONTAB_LINUX > /dev/null 2>&1 || {
+	logOut "ERROR" "No cron entry for $l_cronScript"
+	return 1
+	}
+$GREP -v '^#' $ROOT_CRONTAB_LINUX |$GREP "$l_cronScript" > /dev/null 2>&1 || return 0
+$SED -e "s,\(.*$l_cronScript.*\),#\1," $ROOT_CRONTAB_LINUX > $ROOT_CRONTAB_LINUX.$$ &&
+> $ROOT_CRONTAB_LINUX
+$CAT $ROOT_CRONTAB_LINUX.$$ >> $ROOT_CRONTAB_LINUX || {
+	logOut "ERROR" "Failed to disable entry for $l_cronScript in root crontab."
+	return 1
+	}
+logOut "INFO" "Disabled entry for $l_cronScript in root crontab."
+#manageLinuxService $G_CRON_SERVICE_LINUX restart|| return 1
+return 0
+}
+
+manageLinuxService() {
+#####################################
+# perform specified action on specified Linux service
+#####################################
+# Inputs:	$1	<service name>
+#			$2	<action>
+#				to perform on the service
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+
+local l_serviceName=$1
+local l_action=$2
+
+if [[ "$( $UNAME )" != "Linux" ]]; then
+	logOut "ERROR" "Unsupported platform: $($UNAME)"
+	return 1
+elif [[ -z "$l_serviceName" ]]; then
+	logOut "ERROR" "$FUNCNAME: service name not specified"
+	return 1
+elif [[ -z "$l_action" ]]; then
+	logOut "ERROR" "$FUNCNAME: service action not specified"
+	return 1
+fi
+
+logOut "INFO" "Performing $l_action on $l_serviceName service"
+$SERVICE $l_serviceName $l_action > /dev/null 2>&1 || { 
+	logOut "ERROR" "Failed to $l_action service $l_serviceName"
+	return 1
+}
+return 0
+}
+
+runClishCmd() {
+#####################################
+# run NAS command using the clish 
+#####################################
+# Inputs:	$1	<clish command to run>
+#			$2	[0|1|2] flag for where to send output
+#				0	to $LOG
+#				1	to STDOUT
+#				2	to $LOG+STDOUT
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_cmd=$1
+local l_showOutput=$2
+        
+if [[ -z "$l_cmd" ]]; then
+	logOut "ERROR" "$FUNCNAME: no command specified"
+	return 1
+elif [[ -z "$l_showOutput" ]]; then
+	logOut "ERROR" "$FUNCNAME: show_output flag not specified"
+	return 1
+elif ! [[ $l_showOutput =~ ^[0-9]+$ ]]; then
+	logOut "ERROR" "$FUNCNAME: show_output flag specified is not a number"
+	return 1
+fi
+
+[[ "$l_silent" != "TRUE" ]] && logOnly "INFO" "Running clish command '$l_cmd'"
+
+if [[ $l_showOutput -eq 0 ]]; then
+	$RUN_CLISH "$l_cmd" |$SED '/^$/d' >> $LOG 2>&1
+elif [[ $l_showOutput -eq 1 ]]; then
+	$RUN_CLISH "$l_cmd" |$SED '/^$/d'
+elif [[ $l_showOutput -eq 2 ]]; then
+	$RUN_CLISH "$l_cmd" |$SED '/^$/d' |$TEE -a $LOG
+else
+	logOut "WARN" "$FUNCNAME called without specifying where to send output.\nRunning command without directing output."
+	$RUN_CLISH "$l_cmd"
+fi
+
+[[ ${PIPESTATUS[0]} -ne 0 ]] && {
+	logOut "ERROR" "problem running clish command '$l_cmd'"
+	return 1
+	}
+return 0
+}
+
+replaceLineNo() {
+#####################################
+# Update given file to replace specified line No
+# with a new line.  Multiple lines can be inserted
+# by separating each with newline character: "\n"
+#####################################
+# Inputs:	$1	<integer>
+#				the line number to be replace
+#			$2	<file>
+#				path and file to be updated
+#			$3	<string>
+#				the new line to be inserted
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with args:[$@]"
+
+local l_lineNo=$1
+local l_file=$2
+local l_newLine="${@:3}"
+local l_fileName=$( $BASENAME $l_file )
+local l_dirName=$( dirname $l_file )
+
+if [[ -z "$l_lineNo" || -z "$l_newLine" || -z  "$l_file" ]]; then
+	logOut "ERROR" "$FUNCNAME: arguments missing.\nExiting..."
+	return 1
+elif [[ "$( $SED -n "$l_lineNo"p $l_file )" == "$l_newLine" ]]; then
+	logOut "WARN" "$FUNCNAME was called to update a file where the update was not needed."
+	return 0
+else
+	backupFile -q $l_file || {
+		logOut "ERROR" "Failed to backup file:[$l_file]"
+		return 1
+		}
+	echoOut "BKUP" "$FUNCNAME: Backed up file:[$l_file] to location:[$BKUP_DIR]"
+	echoOut "BKUP" "$FUNCNAME: Updating file:[$l_file] by replacing line:[$l_lineNo]\n-------------------------------------------------------------------\nOld Line:[$( $SED -n "$l_lineNo"p $l_file )]\nNew Line:[$l_newLine]\n###################################################################"
+	$SED -i "${l_lineNo}s%.*%${l_newLine}%" $l_file || return 1
+	return 0
+fi
+}
+
+allElementSameAs () {
+#####################################
+# check specified array if all elements are
+# the same as a supplied search value.
+# Multiple search values can be separated 
+# with "\|" as an "or" operator
+#####################################
+# Inputs:	$1	<string>
+#				value to compare each array element against
+#			$2	<array content>
+#				pass the entire array as "${array_name[@]}"
+# Outputs:	none
+# Returns:	0	true (elements are the same as $1)
+#			1	false (one or more elements != $1)
+#####################################
+
+local l_elem
+
+for l_elem in "${@:2}"; do 
+	$ECHO "$l_elem" |$GREP -q "$1" || {
+	#[[ "$l_elem" != "$1" ]] && {
+	return 1
+	}
+done
+
+return 0
+}
+
+doesContainElement () {
+#####################################
+# check specified array if any element is
+# the same as a supplied search value.
+# Multiple search values can be separated 
+# with "\|" as an "or" operator
+#####################################
+# Inputs:	$1	<string>
+#				value to compare each array element against
+#			$2	<array content>
+#				pass the entire array as "${array_name[@]}"
+# Outputs:	none
+# Returns:	0	true (one or more elements are the same as $1)
+#			1	false (no elements are the same as $1)
+#####################################
+
+local l_elem
+
+for l_elem in "${@:2}"; do 
+	$ECHO "$l_elem" |$GREP -q "$1" && {
+	#[[ "$l_elem" == "$1" ]] && {
+	return 0
+	}
+done
+
+return 1
+}
+
+getNetSpeed() {
+logOut "DEBUG" "$FUNCNAME: running with args:[$@]"
+#####################################
+# Check network configuration to decide if 
+# the cluster is configured as 1Gb, or 10Gb
+#####################################
+# Inputs:	none
+# Outputs:	$NET_SPEED	[1Gb-VM|1Gb|10Gb]
+#				describes the network type of the cluster	
+#			$NIC_NUM_10GB	<integer>
+#				number of 10Gb NICs on each node		
+#			$NIC_NUM_1GB
+#				number of 1Gb NICs on each node
+#			$NIC_NUM_VM
+#				number of VM NICs on each node
+#			$NICS_VM
+#				list of VM NICs on a node
+#			$NICS_1GB
+#				list of 1Gb NICs on a node
+#			$NICS_10GB
+#				list of 10Gb NICs on a node
+# Returns:	0	success
+#			1	failure
+#####################################
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_driverVM="$NIC_DRIVER_VM"
+local l_driver10g="$NIC_DRIVER_10G"
+local l_driver1g="$NIC_DRIVER_1G"
+local l_cnt=0
+local nicList10g=()
+local nicCount10g=()
+local nicList1g=()
+local nicCount1g=()
+local nicListVM=()
+local nicCountVM=()
+# set vars after comparing master and slave values
+local l_10gArray
+local l_1gArray
+local l_VMArray
+
+local l_bond_file=${NAS_CONF_DIR}/bonddevicefile
+local l_nobond_file=${NAS_CONF_DIR}/net_pub_dev_list.conf
+local l_bondName=$( $BOND_SCRIPT show |$EGREP -o '^bond[[:digit:]]')
+local l_bondNum=$( $ECHO $l_bondName |$WC -w )
+l_bonded="n"
+
+[[ -z "$l_driver1g" || -z "$l_driver10g" ]] && { 
+	logOut "ERROR" "Missing variables for NIC drivers values for function:[$FUNCNAME]"
+	return 1
+	}
+
+if [[ -n "$l_bondName" && $l_bondNum -eq 1 ]]; then
+        l_bonded="y"
+fi
+
+# Build up arrays of network data
+for l_host in "${LIVE_HOSTS[@]}"; do
+        [ "$l_bonded" == "y" ] && NICs=$($SSH root@$l_host $CAT $l_bond_file | $AWK -F "|" '{print $2}') || NICs=$($SSH root@$l_host $CAT $l_nobond_file)
+        OS_NICs=$(for nic in $NICs; do $SSH root@$l_host $IP addr show $nic >/dev/null 2>&1 ; [ $? -eq 0 ] && $ECHO $nic ; done ;)
+        nicList10g[$l_cnt]=$(for nic in $OS_NICs; do $SSH root@$l_host $ETHTOOL -i $nic |$GREP ^driver |$EGREP -wq $l_driver10g; [[ $? -eq 0 ]] && $ECHO $nic; done ;)
+        [[ -z "${nicList10g[$l_cnt]}" ]] && {
+                [[ "$l_silent" != "TRUE" ]] && logOut "WARN" "No 10Gb NICs found on host:[$l_host]"
+                }
+        nicCount10g[$l_cnt]=$($ECHO ${nicList10g[$l_cnt]} |$WC -w)
+
+        nicList1g[$l_cnt]=$(for nic in $OS_NICs; do $SSH root@$l_host $ETHTOOL -i $nic |$GREP ^driver |$EGREP -wq $l_driver1g; [[ $? -eq 0 ]] && $ECHO $nic; done ;)
+        [[ -z "${nicList1g[$l_cnt]}" ]] && {
+                [[ "$l_silent" != "TRUE" ]] && logOut "WARN" "No 1Gb NICs found on host:[$l_host]"
+                }
+        nicCount1g[$l_cnt]=$($ECHO ${nicList1g[$l_cnt]} |$WC -w)
+
+        nicListVM[$l_cnt]=$(for nic in $OS_NICs; do $SSH root@$l_host $ETHTOOL -i $nic |$GREP ^driver |$EGREP -wq $l_driverVM; [[ $? -eq 0 ]] && $ECHO $nic; done ;)
+        [[ -z "${nicListVM[$l_cnt]}" ]] && {
+                [[ "$l_silent" != "TRUE" ]] && logOut "WARN" "No VM NICs found on host:[$l_host]"
+                }
+        nicCountVM[$l_cnt]=$($ECHO ${nicListVM[$l_cnt]} |$WC -w)
+
+        ((l_cnt++))
+done
+
+# Work out if network data is consistent accross the cluster
+if allElementSameAs "${nicCount10g[0]}" "${nicCount10g[@]}"; then
+	l_10gArray="same"
+	allElementSameAs "${nicList10g[0]}" "${nicList10g[@]}" || l_10gArray="diff"
+else
+	l_10gArray="diff"
+fi
+
+if allElementSameAs "${nicCount1g[0]}" "${nicCount1g[@]}"; then
+	l_1gArray="same"
+	allElementSameAs "${nicList1g[0]}" "${nicList1g[@]}" || l_1gArray="diff"
+else
+	l_1gArray="diff"
+fi
+
+if allElementSameAs "${nicCountVM[0]}" "${nicCountVM[@]}"; then
+	l_VMArray="same"
+	allElementSameAs "${nicListVM[0]}" "${nicListVM[@]}" || l_VMArray="diff"
+else
+	l_VMArray="diff"
+fi
+
+# set $NET_SPEED based on rules
+# Rule 1:  all clustered servers have the same NICs available (both number and name)
+# Rule 2:  10Gb must have 4 10Gb NICs; 1Gb must have 6 1Gb NICs
+if [[ -z ${nicList10g[@]} && -z ${nicList1g[@]} && -z ${nicListVM[@]} ]]; then
+	logOut "ERROR" "no nics found"
+	return 1
+elif [[ ${#LIVE_HOSTS[@]} -lt $CLUST_SIZE ]]; then
+	logOut "WARN" "could not get network speed for cluster as not all nodes are available"
+	return 1
+elif [[ ${nicCount10g[0]} -eq 4 && "$l_10gArray" == "same" ]]; then
+	NET_SPEED="10Gb" 
+elif [[ ${nicCount1g[0]} -eq 6 && "$l_1gArray" == "same" ]]; then
+	NET_SPEED="1Gb"
+elif [[ ${nicCountVM[0]} -ge 1 && "$l_VMArray" == "same" ]]; then
+	NET_SPEED="1Gb-VM"
+elif [[ ${nicCount10g[0]} -eq 2 && "$l_10gArray" == "same" && "$HWTYPE" == "blade" ]]; then 
+	NET_SPEED="10Gb-blade"
+else
+	logOut "ERROR" "$FUNCNAME: $LINENO. Unspecified error.  Most likely a mismatch of NIC configuration on Master and Slave servers in the cluster."
+	return 1
+fi
+
+NIC_NUM_10GB="${nicCount10g[0]}"
+[[ -z "$NIC_NUM_10GB" ]] && NIC_NUM_10GB=0
+NIC_NUM_1GB="${nicCount1g[0]}"
+[[ -z "$NIC_NUM_1GB" ]] && NIC_NUM_1GB=0
+NIC_NUM_VM="${nicCountVM[0]}" 
+[[ -z "$NIC_NUM_VM" ]] && NIC_NUM_VM=0
+NICS_VM="${nicListVM[0]}"
+NICS_10GB="${nicList10g[0]}"
+NICS_1GB="${nicList1g[0]}"
+
+return 0
+}
+
+copyFileAllNodes() {
+#####################################
+# copy a specified file to all nodes 
+#####################################
+# Inputs:	$1	<source file>
+#				path/file to copy
+#			$2	<destination file>
+#				specify the destination name to allow changing the name
+#			$3	<host> (optional)
+#				to specify a single target host
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS: $@"
+
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_file=$1
+local l_dest=$2
+local l_target=${@:3}
+local l_host
+[[ -z "${l_target}" ]] && l_target="${LIVE_HOSTS[@]}"
+	
+header "PHASE" "Copying $l_file to the following nodes:\n${LIVE_HOSTS[@]}"
+logOut "DEBUG" "
+$FUNCNAME
+target: ${LIVE_HOSTS[@]}
+Dest: $l_dest
+File: $l_file
+"	
+
+#unset l_host	
+for l_host in $l_target; do
+	header "NODE" "Host:[$l_host]"
+	header "STEP" "Creating destination directory:[$l_host:$l_dest]..."
+	$SSH $l_host $MKDIR -p $l_dest > /dev/null || {
+		header "NOK"
+		logOut "ERROR" "failed to create directory $l_dest on NAS node $l_host"
+		return 1
+		}
+	header "OK"
+		
+	header "STEP" "Copying $l_file to node $l_host..."
+	$SCP $l_file $l_host:$l_dest > /dev/null || {
+		header "NOK"
+		logOut "ERROR" "failed to copy $l_file to node $l_host"
+		return 1
+		}
+	header "OK"
+done
+
+return 0
+}
+
+check_rpm() {
+#####################################
+# get the status of an RPM accross cluster 
+#####################################
+# Inputs:	$1	<RPM name> (optional)
+#				defaults to $RPM_NAME
+#			$2	<host to check> (optional)
+#				defaults to $CLUST_NODE_LIST
+# Outputs:	$RPM_DIR		<dir path>
+#				the install directory of the RPM
+#			$RPM_INSTALLED	[TRUE|FALSE]
+#				if all nodes have the same RPM version installed.
+#			$RPM_STATE <string>
+#				list of all nodes and the installed RPM Rstate 
+# Returns:	0	success
+#			1	failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_rpm=${1:-$RPM_NAME}
+local l_target=${2:-$CLUST_NODE_LIST}
+local l_host
+local l_cnt=0
+local l_rpmInstalledVers
+local l_rpmInstalledNum
+local l_rpmInstalledUniq
+local l_rpmNotInstalled
+local l_tmp
+local l_rpmVers=()
+local l_rpmHost=()
+local l_rStateTmp
+unset RPM_STATE
+
+[[ "$l_silent" != "TRUE" ]] && header "PHASE" "Checking version of $l_rpm installed on the following nodes:\n$l_target"
+	
+for l_host in "${LIVE_HOSTS[@]}" ;do
+	((l_cnt++))
+        l_tmp=$( $SSH root@$l_host $RPM -qi "$l_rpm" |$GREP Version |$AWK '{print $3}' )
+
+	l_rpmHost[$l_cnt]=$l_host
+	
+	if [[ -z "${l_tmp}" ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "RPM:[$l_rpm] not found on host:[$l_host]"
+		l_rpmVers[$l_cnt]="not_installed"
+	elif [[ $($ECHO "$l_tmp" |$WC -w) -eq 1 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "RPM:[$l_rpm] Version:[$l_tmp] found on host:[$l_host]"
+		l_rpmVers[$l_cnt]="$l_tmp"
+	elif [[ $($ECHO "$l_tmp" |$WC -w) -gt 1 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Host:[$l_host] has more than one copy of RPM:[$l_rpm] installed!\nFound these versions:[$l_tmp]"
+		return 1	
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Unspecified Error in $FUNCNAME: $LINENO"
+	fi
+done	
+
+while [[ $l_cnt -gt 0 ]]; do
+	RPM_STATE=$( $ECHO  "$RPM_STATE\n${l_rpmHost[$l_cnt]}:\t[${l_rpmVers[$l_cnt]}]")
+	((l_cnt--))
+done
+logOut "DEBUG" "Found the following versions of [$l_rpm] in the cluster:\n_________________________________________________________________$RPM_STATE\n"
+
+l_rpmInstalledVers=`( IFS=$'\n'; $ECHO "${l_rpmVers[*]}" ) |$GREP -v "not_installed" |$UNIQ`
+l_rpmInstalledUniq=$( $ECHO $l_rpmInstalledVers |$WC -w )
+l_rpmInstalledNum=`( IFS=$'\n'; $ECHO "${l_rpmVers[*]}" ) |$GREP -v "not_installed" |$WC -w`
+l_rpmNotInstalled=`( IFS=$'\n'; $ECHO "${l_rpmVers[*]}" ) |$GREP "not_installed"`
+
+[[ "$l_silent" != "TRUE" ]] && header "STEP" "comparing RPM state across all nodes..."	
+if [[ -z "$l_rpmInstalledVers" ]]; then
+	#RPM is not installed in the cluster
+	logOut "DEBUG" "l_rpmInstalledVers is empty, meaning the RPM is not installed anywhere in the cluster."
+	[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "No installations of RPM:[$l_rpm] found in the cluster."
+	RPM_INSTALLED=FALSE
+elif [[ $l_rpmInstalledNum -lt ${#LIVE_HOSTS[@]} ]];then
+	logOut "DEBUG" "l_rpmInstalledNum is -lt number of nodes in the cluster:[$l_rpmInstalledNum]"
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "RPM:[$l_rpm] is installed on [$l_rpmInstalledNum] out of [${#LIVE_HOSTS[@]}] tested nodes in the cluster.\nRun \"$SCRIPT_NAME -h\" for help to install on all nodes."
+	RPM_INSTALLED=FALSE
+elif [[ $l_rpmInstalledUniq -gt 1 ]]; then
+	#mismatch of RPM versions in the cluster
+	logOut "DEBUG" "l_rpmInstalledUniq is -gt 1:[$l_rpmInstalledUniq], meaning more than 1 version of the RPM is installed accross the cluster."
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Different versions of RPM:[$l_rpm] installed in the cluster."
+	RPM_INSTALLED=FALSE
+elif [[ $l_rpmInstalledNum -eq ${#LIVE_HOSTS[@]} && $l_rpmInstalledUniq -eq 1 ]]; then
+	logOut "DEBUG" "l_rpmInstalledNum = num of nodes. AND l_rpmInstalledUniq = 1.  Only 1 version is installed and on all nodes."
+	[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "RPM:[$l_rpm], Version:[$l_rpmInstalledVers] is installed on [$l_rpmInstalledNum] out of [${#LIVE_HOSTS[@]}] tested nodes."
+	[[ ${#LIVE_HOSTS[@]} -lt $CLUST_SIZE ]] && logOut "WARN" "Only [${#LIVE_HOSTS[@]}] out of [$CLUST_SIZE] cluster nodes are available to check RPM status." 
+	RPM_INSTALLED=TRUE
+	RPM_INST_VER="$l_rpmInstalledVers"
+	RPM_CXP=$($RPM -qi "$l_rpm" |$GREP CXP |$CUT -d' ' -f2)
+        RPM_CXP_REV=$($RPM -qi "$l_rpm" |$GREP REV |$CUT -d' ' -f2)
+else
+	logOut "DEBUG" "Unexpected error: [$FUNCNAME: $LINENO]"
+	RPM_INSTALLED=FALSE
+	[[ "$l_silent" != "TRUE" ]] && header "NOK"
+	return 1
+fi
+	
+[[ -z "$RPM_INSTALLED" ]] && {
+	logOut "ERROR" "$FUNCNAME: Setting \$RPM_INSTALLED failed."
+	[[ "$l_silent" != "TRUE" ]] && header "NOK"
+	return 1
+	}	
+[[ "$l_silent" != "TRUE" ]] && header "OK"
+	
+[[ "$RPM_INSTALLED" == "TRUE" ]] && { 
+        #Hard code for the moment 
+	#RPM_DIR=$( $RPM -ql $l_rpm |$HEAD -1 )
+	RPM_DIR=/opt/ericsson/NASconfig
+	logOut "DEBUG" "Setting RPM install directory from RPM:[$RPM_DIR]"
+	[[ -n "$RPM_FILE_VER" && "$RPM_INST_VER" != "$RPM_FILE_VER" ]] && {
+		unset l_rStateTmp
+		showLatestRstate $l_rpmInstalledVers $RPM_FILE_VER
+		l_rStateTmp=$_rStateTmp
+		[[ "$RPM_FILE_VER" == "$l_rStateTmp" ]] && {
+			[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Newer version of RPM:[$l_rpm] exists in [$SCRIPT_DIR] Recommendation is to update the RPM."
+			[[ "$l_silent" != "TRUE" ]] && logOut "ECHO" "Run \"${SCRIPT_NAME} -h\" for help\n"
+			}
+		}
+	}
+return 0
+}
+
+install_rpm() {
+#####################################
+# Install specified RPM on each cluster node 
+# and check the status of the RPM at the end
+#####################################
+# Inputs:	$1	<RPM filename> (optional)
+#				defaults to $RPM_FILE
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_rpm=${1:-$RPM_FILE}
+local l_target=${LIVE_HOSTS[@]}
+local l_tmpInstaller=/tmp/rpminstall.sh
+local l_host
+showLatestRstate $RPM_FILE_VER $RPM_INST_VER
+local l_rStateTmp=$_rStateTmp
+
+header "PHASE" "Installing $l_rpm on the following nodes:\n$l_target"
+logOut "DEBUG" "
+$FUNCNAME:
+RPM file: $l_rpm
+RPM version: $RPM_FILE_VER
+installed version: $RPM_INST_VER
+Targ: $l_target
+"
+# check if install is required
+if [[ "$RPM_FILE_VER" == "$RPM_INST_VER" ]]; then
+	logOut "INFO" "RPM version found:[$RPM_FILE_VER] is already installed on all available nodes."
+	prompt add_rpm || {
+		logOut "INFO" "RPM re-installation will be skipped..."
+		return 0
+		}
+elif [[ "$l_rStateTmp" == "$RPM_INST_VER" ]]; then
+	logOut "WARN" "About to install RPM version:[$RPM_FILE_VER] which is less than version:[$RPM_INST_VER] installed on [${#LIVE_HOSTS[@]}] nodes checked."
+	prompt add_rpm || {
+		logOut "INFO" "RPM re-installation will be skipped..."
+		return 0
+		}
+fi
+
+header "STEP" "Checking variables are set..."
+	if [[ ! -s "$l_rpm" ]]; then
+		logOut "ERROR" "$FUNCNAME: - rpm file not found"
+		header "NOK"
+		return 1
+	elif [[ -z "$l_target" ]]; then
+		logOut "ERROR" "$FUNCNAME: - host not specified"
+		header "NOK"
+		return 1
+	fi
+header "OK"
+
+local l_RPMname=$( $BASENAME ${l_rpm%.noarch.rpm} )
+local l_RPMbasename=$( $ECHO $l_RPMname |$AWK -F- '{ print $1 }' )
+
+[[ -f "$l_tmpInstaller" ]] && $RM -f $l_tmpInstaller
+$TOUCH $l_tmpInstaller
+
+header "STEP" "Building RPM install script..."
+$CAT << EOF > $l_tmpInstaller
+#!/bin/bash
+LOG="${LOG}"
+ECHO=$ECHO
+DATE=$DATE
+
+$MKDIR -p $(dirname "$LOG")
+
+[[ -f ${LIB_DIR}/common_functions.lib ]] && . ${LIB_DIR}/common_functions.lib
+[[ -f ${SCRIPT_DIR}/common_functions.lib ]] && . ${SCRIPT_DIR}/common_functions.lib
+[[ ! -f ${LIB_DIR}/common_functions.lib && ! -f ${SCRIPT_DIR}/common_functions.lib ]] && {
+	$ECHO  "\t\033[1;30;31m[ERROR]\033[0m\tNo Library found" 
+	exit 1
+	} 
+$RPM -qa |$GREP -qi $l_RPMbasename
+if [[ \${PIPESTATUS[1]} -eq 0 ]]; then
+	header "STEP2" "Upgrading $l_RPMbasename on \$( $HOSTNAME )"
+	# some version of rpm already installed - let's try upgrading it
+	$RPM -U $l_rpm >> $LOG 2>&1 || {
+		header "STEP2" "Warning - upgrading of $l_RPMbasename failed. Will try forcing..."
+		$RPM -U --force $l_rpm || {
+			exitOut 1 "upgrading of $l_RPMbasename failed on \$( $HOSTNAME )"
+		}
+	}
+
+else
+	header "STEP2" "Installing $l_RPMbasename on \$( $HOSTNAME )"
+	$RPM -i $l_rpm || {
+		#header "NOK"
+		exitOut 1 "installation of $l_RPMbasename failed on \$( $HOSTNAME )"
+	}
+fi
+exit 0
+EOF
+$CHMOD +x $l_tmpInstaller 
+if [[ $? -eq 0 ]]; then
+	header "OK"
+else
+	header "NOK"
+fi
+
+for l_host in $l_target; do
+	header "NODE" "Host:[$l_host]"
+	header "STEP" "transferring RPM install script to $l_host..."
+		$SCP $l_tmpInstaller $l_host:/tmp > /dev/null || {
+			logOut "ERROR" "failed to copy tmp install file to host:[$l_host]"
+			header "NOK"
+			return 1
+		}
+	header "OK"
+
+	header "STEP" "Running RPM install script on $l_host..."
+		$SSH $l_host $l_tmpInstaller |$TEE -a $LOG 2>&1 
+		if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+			logOut "ERROR" "failed to install RPM:[$l_rpm] on host:[$l_host]"
+			header "NOK"
+			return 1
+		fi 
+	header "OK"
+done
+
+#recheck status of RPM in the cluster
+logOut "DEBUG" "$FUNCNAME: calling RPM check function to set \$RPM_INSTALLED"
+check_rpm -q $RPM_NAME  || {
+	logOut "ERROR" "Final check of the RPM install has failed."
+	logOut "ECHO" "RPM status in the cluster:\n----------------------------------$RPM_STATE"
+	return 1
+	}
+[[ "$RPM_INSTALLED" != "TRUE" ]] && {
+	logOut "WARN" "The RPM install has resulted in the RPM not being consistent across the cluster"
+	logOut "ECHO" "\t\tThis might happen when installing an RPM to the local node only."
+	}
+return 0
+}
+
+remove_rpm() {
+#####################################
+# Uninstall specified RPM on each cluster node 
+# and check the status of the RPM at the end
+#####################################
+# Inputs:	$1	<RPM name> (optional)
+#				defaults to $RPM_NAME
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#			exit
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_rpm=${1:-$RPM_NAME}
+local l_target="${LIVE_HOSTS[@]}"
+local l_host
+local l_res
+
+header "PHASE" "Removing RPM:[$l_rpm] from the following nodes:\n$l_target"	
+## Get confirmation before removing 
+prompt rm_rpm || exitOut "0" "exiting..."
+
+for l_host in $l_target; do
+	header "NODE" "Host:[$l_host]"
+	
+	#check RPM is installed on host
+	header "STEP" "checking RPM is installed..."
+	$SSH $l_host $RPM -q --quiet $l_rpm || { 
+		logOut "INFO" "RPM:[$l_rpm] is not installed on host:[$l_host].  Skipping..."
+		header "OK"
+		continue 
+		}
+	logOut "INFO" "RPM:[$l_rpm] is installed on host:[$l_host]."
+	header "OK"
+	
+	# remove the RPM
+	header "STEP" "Removing RPM: [$l_rpm] from host:[$l_host]..."
+	$SSH $l_host $RPM -e $l_rpm > /dev/null || {
+		logOut "WARN" "failed to remove RPM: [$l_rpm] from host:[$l_host]"
+		header "NOK"
+		}
+	
+	# double check RPM is gone
+	header "STEP" "Checking RPM: [$l_rpm] is removed from host:[$l_host]..."
+	$SSH $l_host $RPM -q --quiet $l_rpm  && {
+			logOut "ERROR" "RPM: [$l_rpm] was not removed from host:[$l_host]"
+			header "NOK"
+			continue
+			}
+	logOut "INFO" "RPM:[$l_rpm] removed from host:[$l_host] successfully. "
+	header "OK"
+done
+
+check_rpm -q $l_rpm || {
+	logOut "ERROR" "Final check of the RPM install has failed."
+	logOut "ECHO" "RPM status in the cluster:\n----------------------------------$RPM_STATE"
+	return 1
+	}
+[[ "$RPM_INSTALLED" == "TRUE" ]] && {
+	logOut "WARN" "The RPM uninstall has resulted in the RPM state not being consistent across the cluster"
+	logOut "ECHO" "\t\tThis might happen when uninstalling an RPM on the local node only."
+	}
+return 0
+
+}
+
+runScriptOnAllNodes() {
+#####################################
+# Remotely run specified command on 
+# each cluster node 
+#####################################
+# Inputs:	$1	<command> (optional)
+#				defaults to $POSTINSTALLSCRIPT
+#			$2	<host> (optional)
+#				defaults to ${LIVE_HOSTS[@]}
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_script=${1:-$POSTINSTALLSCRIPT}
+local l_target=(${2:-${LIVE_HOSTS[@]}})
+local l_host
+
+[[ "$RPM_INSTALLED" == "FALSE" ]] && exitOut 1 "RPM:[$RPM_NAME] is not installed on every cluster node. Make sure [$RPM_NAME] is fully installed before updating configuration." "\nRPM install status in the cluster:BANANA\n----------------------------------$RPM_STATE\n"
+	
+header "PHASE" "Running $l_script on the following nodes:\n${l_target[@]}"
+for l_host in ${l_target[@]}; do
+	header "NODE" "Host:[$l_host]"
+	[[ ${l_target[@]} != ${LIVE_HOSTS[@]} ]] && {
+		header "STEP" "Checking $l_host is available..."
+		checkNode $l_host || {
+			logOut "WARN" "Unable to SSH to host:[$l_host] Skipping..."
+			logOut "ECHO" "Please re-run \"$SCRIPT_NAME $ARGS\" once host:[$l_host] is available."
+			header "NOK"
+			return 1
+			}
+		header "OK"
+		}
+	header "STEP" "Executing file:[$l_script] on host:[$l_host]..."
+	$SSH $l_host $l_script |$TEE -a $LOG 2>&1 
+		[[ ${PIPESTATUS[0]} -ne 0 ]] && {
+			logOut "ERROR" "Something went wrong running [$l_script] on [$l_host]"
+			header "NOK"
+			return 1
+			}
+	header "OK"
+done
+
+return 0
+}
+
+prompt() {
+#####################################
+# Prompt for user confirmation. 
+# accept only [yes|no|quit] as valid response
+#####################################
+# Inputs:	$1	[console|bond|nfs|reboot|add_rpm|rm_rpm|add_vips]
+#				each prompt type has different prompt text.
+# Outputs:	none
+# Returns:	0	response="yes"
+#			1	response="no"
+# Exits:	0	response="quit"
+#			1	on function error
+#####################################
+local l_ans
+local l_type=$1
+local l_valid="false"
+	
+if [[ "${PROMPT}" == "TRUE" ]]; then
+	if 	[[ "${l_type}" == "console" || "${l_type}" == "bond" ]]; then
+		print_fixedwidth_line "star" $TERM_WIDTH 
+		logOut "WARN" "Interrupting this configuration script could leave the NAS cluster in\n\t\t\tan inconsistent state."
+			if [[ "$l_type" == "bond" ]]; then
+				logOut "ECHO" "Changes to the network bond configuration must be performed while connected to the ilo console."
+			else
+				logOut "ECHO" "It is strongly recommended to run this configuration kit from the ilo console to reduce the \nimpact of a disconnected session."
+			fi
+		logOut "ECHO" "\n\tConfirm you are connected to the console and proceed..?"
+		print_fixedwidth_line "star" $TERM_WIDTH 
+	
+	elif [[ "${l_type}" == "nfs" ]]; then
+		print_fixedwidth_line "star" $TERM_WIDTH 
+		logOut "WARN" "A restart of the NFS service will be required as part of the\n\t\tconfiguration change which will lead to an interruption to NFS shares while\n\t\tthe service is restarting."
+		logOut "ECHO" "\t\tThe time required to restart NFS is directly related to the number of\n\t\tshared filesystems configured."
+		logOut "ECHO" "\n\tContinue with applying configuration changes and allow NFS restart...?"
+		print_fixedwidth_line "star" $TERM_WIDTH 
+	
+	elif [[ "${l_type}" == "reboot" ]]; then
+		print_fixedwidth_line "star" $TERM_WIDTH 
+		logOut "WARN" "A cluster reboot will be automatically performed as part of the configuration change."
+		logOut "ECHO" "\n\tContinue with applying configuration changes and allow cluster restart...?"
+		print_fixedwidth_line "star" $TERM_WIDTH 
+		
+	elif [[ "${l_type}" == "add_rpm" ]]; then
+		logOut "WARN" "Continue with installing RPM version:[$RPM_FILE_VER]...?\n(enter \"no\" to skip RPM install but continue with configuration updates.)"
+	
+	elif [[ "${l_type}" == "rm_rpm" ]]; then
+		logOut "WARN" "Continue with removing RPM...?"
+		
+	elif [[ "${l_type}" == "add_vips" ]]; then
+		logOut "ECHO" "Continue with adding the displayed VIPs...?"
+		
+	else
+		logOut "ECHO" "Continue...?"
+	fi			
+	
+	while [[ "$l_valid" != "true" ]]; do
+		logOut "ECHO" "Enter <yes|no|quit> as appropriate."
+                [[  "$SILENT" == "TRUE" ]] && l_ans="yes"
+                [[  "$SILENT" != "TRUE" ]] && read l_ans
+		logOnly "ECHO" "entered:[$l_ans]"
+		[[ "$l_ans" == "yes" ]] && l_valid="true"
+		[[ "$l_ans" == "no" ]] && l_valid="true" 
+		[[ "$l_ans" == "quit" ]] && l_valid="true"
+	done
+
+else
+	return 0
+fi
+
+[[ "$l_ans" == "yes" ]] && return 0
+[[ "$l_ans" == "no" ]] && return 1 
+[[ "$l_ans" == "quit" ]] && exitOut "0" "exiting..."
+
+exitOut 1 "$FUNCNAME Has encountered an unexpected termination error."
+}
+
+getBond() {
+#####################################
+# checks existing bond configuration
+#####################################
+# Inputs:	none
+# Outputs:	$BOND_NAME	<string>
+# Returns:	0	one bond configured
+#			1	no bond configured
+#			>1	error
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_bondName=$($BOND_SCRIPT show | $EGREP -o '^bond[[:digit:]]')
+local l_bondNum=$( $ECHO $l_bondName |$WC -w ) 
+
+if [[ -n "$l_bondName" && $l_bondNum -eq 1 ]]; then
+	logOut "DEBUG" "$FUNCNAME: Setting bond name to:[$l_bondName]"
+	BOND_NAME=$l_bondName
+	return 0
+elif [[ -n "$l_bondName" && $l_bondNum -gt 1 ]]; then
+	logOut "ERROR" "$FUNCNAME: Too many bonds configured.  Bond name is:[$l_bondName] number of bonds is:[$l_bondNum]"
+	return 2
+elif [[ -n "$l_bondName" && $l_bondNum -eq 0 ]]; then
+	logOut "ERROR" "$FUNCNAME: something went wrong.  Bond name is:[$l_bondName] but number of bonds is:[$l_bondNum]"
+	return 9
+elif [[ -z "$l_bondName" && $l_bondNum -eq 0 ]]; then
+	logOut "DEBUG" "$FUNCNAME: No bond found"
+	BOND_NAME="none"
+	return 1
+elif [[ -z "$l_bondName" && $l_bondNum -ne 0 ]]; then
+	logOut "ERROR" "$FUNCNAME: unexpected error at $LINENO.  Bond name is:[$l_bondName] but number of bonds is:[$l_bondNum]"
+	return 9
+else
+	logOut "ERROR" "$FUNCNAME: unexpected error at $LINENO.  Bond name is:[$l_bondName] but number of bonds is:[$l_bondNum]"
+	return 9
+fi
+	
+}
+
+getVIPs() {
+#####################################
+# checks configured VIPs
+#####################################
+# Inputs:	none
+# Outputs:	$VIP_LIST	<list of IPs>
+#				ordered list of VIPs one VIP per line
+#			$VIP_NUM_CONF	<integer>
+#				number of VIPs currently configured
+#			$VIP_END_CONF <IP>
+#				last IP in the range of configured VIPs
+#			$VIP_START_CONF <IP>
+#				first IP in the range of configured VIPs
+#			$VIP_MASK <IP>
+#				netmask for VIPs
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_conf="${NAS_CONF_DIR}/vipfile"
+local l_mask=($( $CUT -d' ' -f2 "$l_conf" ))
+local l_vipNumReq=$ERIC_10G_NUM_VIPS
+[[ "$HWTYPE" == "blade"  ]] && l_vipNumReq=4
+VIP_LIST=($( $HARES -display |$GREP VIP |$AWK '/Address / {print $4}' |$SORT -t. -nk1,1 -k2,2 -k3,3 -k4,4 ))
+VIP_NUM_CONF=${#VIP_LIST[@]}
+VIP_END_CONF=${VIP_LIST[@]:(-1)}
+VIP_START_CONF=${VIP_LIST[0]}
+allElementSameAs "${l_mask[0]}" "${l_mask[@]}" && VIP_MASK="${l_mask[0]}"
+
+[[ -z "$VIP_NUM_CONF" ]] && {
+	logOut "ERROR" "No VIPs configured"
+	return 1
+	}
+
+logOut "DEBUG" "Variables set:
+VIP_LIST:[${VIP_LIST[@]}]
+VIP_NUM_CONF:[$VIP_NUM_CONF]
+VIP_END_CONF:[$VIP_END_CONF]
+VIP_START_CONF:[$VIP_START_CONF]
+HWTYPE:[$HWTYPE]
+num VIPs req:[$l_vipNumReq]
+"
+
+#report results:
+[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Number of cluster VIPs configured:[$VIP_NUM_CONF] out of a required:[$l_vipNumReq]"
+[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Netmask for VIPs:[$VIP_MASK]; VIP range:[$VIP_START_CONF - $VIP_END_CONF]"
+[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Number of 10Gb NAS pubeth NICs per cluster node:[$NIC_NUM_10GB]"
+[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Number of 1Gb NAS pubeth NICs per cluster node:[$NIC_NUM_1GB]"
+[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "This cluster is designated:[$NET_SPEED]"
+return 0
+}
+
+getBondConfig() {
+#####################################
+# Check existing bond for config values
+#####################################
+# Inputs:	$1 <bond name>
+# Outputs:	$BOND_CONFIG <string>
+#				formatted list of config values
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+
+getBond || {
+	logOut "ERROR" "Failed to check existing bond configuration"
+	return 1
+	}
+[[ "$BOND_NAME" == "none" ]] && {
+	logOut "INFO" "No bond configured"
+	return 0
+	}
+getVIPs || { 
+	logOut "ERROR" "Failed to source existing VIP configuration"
+	return 1
+	}
+local l_host
+local l_bond=${1:-$BOND_NAME}
+local l_conf=${NET_CONF_DIR}/ifcfg-${l_bond}
+local l_bondMask=$( $GREP "^NETMASK" $l_conf 2>/dev/null |$CUT -d\' -f2 )
+local l_bondOpts=($( $GREP "^BONDING_MODULE_OPTS" $l_conf 2>/dev/null |$CUT -d\" -f2 ))
+local l_bondNIClist=($( $GREP "^BONDING_SLAVE" $l_conf 2>/dev/null |$CUT -d= -f2 ))
+
+[[ -f "$l_conf" ]] || {
+	logOut "ERROR" "Bond:[$l_bond] does not seem to be running.  Missing config file:[$l_conf]"
+	return 1
+	}
+	
+# Check for missing entries in the bond cfg file (workaround to be fixed in MP1P2)
+for l_host in ${LIVE_HOSTS[@]}; do
+	$SSH $l_host $CAT $l_conf | $GREP -q "^STARTMODE" || {
+		logOnly "WARN" "Variable [STARTMODE] missing from bond config file:[$l_conf] on host:[$l_host]"
+		logOut "INFO" "Updating bond config file:[$l_conf] on host:[$l_host]"
+		$SSH $l_host "$ECHO STARTMODE=\'onboot\' >> $l_conf"
+		}
+	$SSH $l_host $CAT $l_conf | $GREP -q "^PERSISTENT_NAME" || {
+		logOnly "WARN" "Variable [PERSISTENT_NAME] missing from bond config file:[$l_conf] on host:[$l_host]"
+		logOut "INFO" "Updating bond config file:[$l_conf] on host:[$l_host]"
+		$SSH $l_host "$ECHO PERSISTENT_NAME=\'$l_bond\' >> $l_conf"
+		}
+done
+
+[[ "$l_bond" == $( $GREP "^PERSISTENT_NAME" $l_conf |$CUT -d\' -f2 ) ]] || {
+	logOut "ERROR" "Problem found with bond naming.  Bond name:[$l_bond] does not match in config file:[$l_conf]"
+	return 1
+	}
+
+unset BOND_CONFIG	
+BOND_CONFIG="Displaying [$l_bond] configuration:\n
+\tNetmask of Bonded NICs:[$VIP_MASK]
+\tNumber of VIPs configured across the cluster:[$VIP_NUM_CONF] out of required number:[$ERIC_10G_NUM_VIPS]
+\tList of NICs used per node:[${l_bondNIClist[@]}]"
+
+#compare l_bondOpts[@] with config values to make sure settings are ok and add to result
+doesContainElement "mode=$ERIC_BOND_PROT" ${l_bondOpts[@]}
+if [[ $? -eq 0 ]]; then
+	BOND_CONFIG="$BOND_CONFIG\n\tBonding option:[mode=$ERIC_BOND_PROT] is configured."
+else
+	BOND_CONFIG="$BOND_CONFIG\n\tBonding option:[mode=$ERIC_BOND_PROT] is not configured."
+fi
+
+doesContainElement "$ERIC_BOND_XMIT" ${l_bondOpts[@]}
+if [[ $? -eq 0 ]]; then
+	BOND_CONFIG="$BOND_CONFIG\n\tBonding option:[$ERIC_BOND_XMIT] is configured."
+else
+	BOND_CONFIG="$BOND_CONFIG\n\tBonding option:[$ERIC_BOND_XMIT] is not configured."
+fi
+	
+return 0
+}
+
+validateIP() {
+#####################################
+# Validate an IP address
+#####################################
+# Inputs:	$1 <IP>
+#				address to validate
+# Outputs:	none
+# Returns:	0	valid
+#			1	invalid
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_ip=$1
+local l_stat=1
+local l_oifs=$IFS
+
+    if [[ $l_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        IFS='.'
+        local l_ip=($l_ip)
+        IFS=$l_oifs
+        [[ ${l_ip[0]} -le 255 && ${l_ip[1]} -le 255 && ${l_ip[2]} -le 255 && ${l_ip[3]} -le 255 ]]
+        l_stat=$?
+    fi
+
+return $l_stat
+}
+
+incrementIP() {
+#####################################
+# step an IP address by 1
+#####################################
+# Inputs:	$1 <IP>
+#				address to increment
+# Outputs:	$_newIP	<IP>
+#				the incremented address. ($1 + 1)
+# Returns:	0	success
+#			1	IP can't be incremented
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_octMax=255
+local l_oldIP=$1
+local l_oct1="$($ECHO $l_oldIP |$CUT -d. -f1)"
+local l_oct2="$($ECHO $l_oldIP |$CUT -d. -f2)"
+local l_oct3="$($ECHO $l_oldIP |$CUT -d. -f3)"
+local l_oct4="$($ECHO $l_oldIP |$CUT -d. -f4)"
+unset _newIP
+		if [[ $l_oct4 -eq $l_octMax ]]; then
+			if [[ $l_oct3 -eq $l_octMax ]]; then
+				if [[ $l_oct2 -eq $l_octMax ]]; then
+					if [[ $l_oct1 -eq $l_octMax ]]; then
+						logOut "ERROR" "IP address:[$l_oldIP] can't be incremented."
+						return 1
+					else
+						((l_oct1++))
+						l_newIP="$l_oct1.0.0.1"
+					fi
+				else 
+					((l_oct2++))
+					l_newIP="$l_oct1.$l_oct2.0.1"
+				fi
+			else
+				((l_oct3++))
+				l_newIP="$l_oct1.$l_oct2.$l_oct3.1"
+			fi
+		else
+			((l_oct4++))
+			l_newIP="$l_oct1.$l_oct2.$l_oct3.$l_oct4"
+		fi
+
+_newIP="$l_newIP"
+return 0
+}
+
+IPgetRange() {
+#####################################
+# derive network and highest valid host 
+# address from a supplied IP and netmask
+#####################################
+# Inputs:	$1 <IP>
+#				IP address for checking
+#			$2 <IP>
+#				Netmask for $1
+# Outputs:	results to STDOUT
+#			$_subnet <IP>
+#				the network part of supplied IP
+#			$_lastIP <IP>
+#				the last valid IP address in $_subnet
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_subnet
+local l_lastIP
+local ip1
+local ip2
+local ip3
+local ip4
+local x
+local nm1
+local nm2
+local nm3
+local nm4
+local sn1
+local sn2
+local sn3
+local sn4
+local l_ip=$1
+local l_mask=$2
+
+[[ -z "$l_ip" || -z "$l_mask" ]] && {
+	logOut "ERROR" "$FUNCNAME: called with missing arguments. IP:[$1] Mask:[$2]"
+	return 1
+	}
+# Validate IP and mask
+validateIP $l_ip || { 
+	logOut "ERROR" "$FUNCNAME: Invalid IP address:[$l_ip]"
+	return 1
+	}
+validateIP $l_mask || { 
+	logOut "ERROR" "$FUNCNAME: Invalid netmask:[$l_mask]"
+	return 1
+	}
+
+# calc subnet 
+ip4="${l_ip##*.}" ; x="${l_ip%.*}"
+ip3="${x##*.}" ; x="${x%.*}"
+ip2="${x##*.}" ; x="${x%.*}"
+ip1="${x##*.}"
+
+nm4="${l_mask##*.}" ; x="${l_mask%.*}"
+nm3="${x##*.}" ; x="${x%.*}"
+nm2="${x##*.}" ; x="${x%.*}"
+nm1="${x##*.}"
+
+let sn1="$ip1&$nm1"
+let sn2="$ip2&$nm2"
+let sn3="$ip3&$nm3"
+let sn4="$ip1&$nm4"
+
+l_subnet=$sn1.$sn2.$sn3.$sn4
+
+
+#calc last IP address
+let en1="$ip1|(255-$nm1)"
+let en2="$ip2|(255-$nm2)"
+let en3="$ip3|(255-$nm3)"
+let en4="$ip4|(255-$nm4)"
+
+l_lastIP=$en1.$en2.$en3.$en4
+
+#echo results
+$ECHO "$FUNCNAME result:
+Supplied_IP: $l_ip
+Supplied_Mask: $l_mask
+Calculated_Subnet: $l_subnet
+Calculated_LastIP: $l_lastIP"
+
+unset _subnet
+unset _lastIP
+_subnet=$l_subnet
+_lastIP=$l_lastIP
+
+return 0
+}
+
+showLiveNodes() {
+#####################################
+# build a list of cluster nodes that are 
+# available for SSH.
+#####################################
+# Inputs:	$@ <host>
+#				list of hosts to check
+# Outputs:	$LIVE_HOSTS()	
+#				
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+
+local l_target=(${@})
+local l_host
+LIVE_HOSTS=("${l_target[@]}")
+
+for l_host in ${l_target[@]}; do
+	[[ "$l_silent" != "TRUE" ]] && header "NODE" "Host:[$l_host]"
+	[[ "$l_silent" != "TRUE" ]] && header "STEP" "Checking $l_host is available..."
+	checkNode $l_host || {
+		logOut "WARN" "Unable to SSH to host:[$l_host] Skipping..."
+		# remove unavailable host from list. unavailable hosts is still the target number for comparison
+		LIVE_HOSTS=($($ECHO ${LIVE_HOSTS[@]/$l_host})) ; LIVE_HOSTS=(${LIVE_HOSTS[@]})
+		[[ "$l_silent" != "TRUE" ]] && logOut "ECHO" "Please re-run \"$SCRIPT_NAME $ARGS\" once host:[$l_host] is available."
+		[[ "$l_silent" != "TRUE" ]] && header "NOK"
+		continue
+		}
+	[[ "$l_silent" != "TRUE" ]] && header "OK"
+done
+return 0
+}
+
+getEnvironment() {
+#####################################
+# set global variables describing environment
+#####################################
+# Inputs:	$1	<host> (optional)
+#				defaults to $CLUST_NODE_LIST
+# Outputs:	
+# $HWTYPE			[rack|virtual|blade|none|mismatch]
+# $HWGEN			[<gen integer>|none|mismatch]
+# $HWMODEL			[<model>|none|mismatch]
+# $NASVER			[<version>|none|mismatch]
+# $NASREL			[<numerical release>|none|mismatch]
+# $NASMIN_57HF3		[TRUE|FALSE]
+# $OSTYPE			[<OS>|none|mismatch]
+# $ENVIRON			<summary of all values>
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_NASver=()
+local l_NASrel=()
+local l_HWmodel=()
+local l_HWgen=()
+local l_HWtype=()
+local l_RPMver=()
+local l_OStype=()
+#local l_HWcmd="$LSHAL |$GREP system\.hardware |$GREP 'system.hardware.product' |$SED -e 's/.*'\(.*\)'.*/\1/'"
+local l_HWcmd="$DMIDECODE |$GREP -w 'Product Name' | $SED -e 's/Product Name://' | $SED -e 's/^[[:space:]]*//'"
+local l_tmp
+local l_host
+local l_rel
+local l_err
+local l_target=(${1:-$CLUST_NODE_LIST})
+local l_cnt=0
+
+	###########################
+	#	Set cluster hosts
+	###########################
+ENVIRON="$ENVIRON\nCluster List:[$CLUST_NODE_LIST]"	
+ENVIRON="$ENVIRON\nLive Nodes:[${LIVE_HOSTS[@]}]"
+	
+	###################
+	#	Get NAS version
+	###################
+logOut "DEBUG" "checking [${LIVE_HOSTS[@]}] for NAS version..."
+l_NASver=($( for l_host in ${LIVE_HOSTS[@]}; do $SSH $l_host $CAT $NAS_VER_FILE |$GREP -v ^$ |$CUT -d "|" -f 4; done ))
+l_NASrel=($( for l_host in ${LIVE_HOSTS[@]}; do $SSH $l_host $CAT $NAS_VER_FILE |$GREP -v ^$ |$CUT -d "|" -f 1; done ))
+
+if [[ ${#l_NASver[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to find any NAS version in the cluster."
+	NASVER="none" 
+elif [[ ${#l_NASver[@]} -ne ${#l_target[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got NAS version from [${#l_NASver[@]}] out of [${#l_target[@]}] cluster nodes."
+	NASVER="mismatch"
+else 
+	allElementSameAs "${l_NASver[0]}" "${l_NASver[@]}"
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "NAS version:[${l_NASver[0]}] is the same on all [${#l_target[@]}] cluster nodes."
+		NASVER=${l_NASver[0]}
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "NAS version:[${l_NASver[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		NASVER="mismatch"
+	fi
+fi
+
+if [[ ${#l_NASrel[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to find any NAS release in the cluster."
+	NASREL="none" 
+elif [[ ${#l_NASrel[@]} -ne ${#LIVE_HOSTS[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got NAS release from [${#l_NASrel[@]}] out of [${#LIVE_HOSTS[@]}] available cluster nodes."
+	NASREL="mismatch"
+else 
+	allElementSameAs "${l_NASrel[0]}" "${l_NASrel[@]}"
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "NAS release:[${l_NASrel[0]}] is the same on all [${#LIVE_HOSTS[@]}] available cluster nodes."
+		NASREL=${l_NASrel[0]}
+		# set a flag to tell if the version is at least 5.7HF3
+			NASMIN_57HF3="TRUE"
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "NAS release:[${l_NASrel[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		NASREL="mismatch"
+	fi
+fi
+	
+logOut "DEBUG" "Set NAS version to:[$NASVER]"
+logOut "DEBUG" "Set NAS Release to:[$NASREL]"
+logOut "DEBUG" "Set NAS Version is at least 5.7PHF3 to:[$NASMIN_57HF3]"
+ENVIRON="$ENVIRON\nNAS Version:[$NASVER]\nNAS Release:[$NASREL]\nNAS version is 5.7HF3 or later:[$NASMIN_57HF3]"
+	
+	###################
+	#	Get HW type
+	###################
+logOut "DEBUG" "checking [${LIVE_HOSTS[@]}] for hardware model and type..."
+l_cnt=0
+for l_host in ${LIVE_HOSTS[@]}; do
+	#l_tmp=$( $SSH $l_host $LSHAL |$GREP system\.hardware |$GREP "system.hardware.product" |$SED -e "s/.*'\(.*\)'.*/\1/" )
+        l_tmp=$( $SSH $l_host $DMIDECODE |$GREP -w "Product Name" | head -1 | $SED -e 's/Product Name://' | $SED -e 's/^[[:space:]]*//' )
+	[[ -n "$l_tmp" ]] && { 
+		l_HWmodel[$l_cnt]="$l_tmp"
+		l_HWgen[$l_cnt]=$($ECHO "${l_HWmodel[$l_cnt]}" |$CUT -d' ' -f3 |$TR -cd '[[:digit:]]')
+		$ECHO "${l_HWmodel[$l_cnt]}" |$CUT -d' ' -f2 |$GREP -q "^DL" && { l_HWtype[$l_cnt]="rack"; ((l_cnt++)); continue; }
+		$ECHO "${l_HWmodel[$l_cnt]}" |$CUT -d' ' -f2 |$GREP -q "^BL" && { l_HWtype[$l_cnt]="blade"; ((l_cnt++)); continue; }
+		$ECHO "${l_HWmodel[$l_cnt]}" |$CUT -d' ' -f2 |$GREP -q "^Virtual" && { l_HWtype[$l_cnt]="virtual"; ((l_cnt++)); continue; }	
+		# catch any unknown or new hardware types
+		[[ -z "${l_HWtype[$l_cnt]}" ]] && { logOut "ERROR" "$FUNCNAME: $LINENO. unknown hardware type."; return 1; }
+		}
+	
+	[[ -z "$l_tmp" ]] && { logOut "ERROR" "Unable to get hardware info from:[$l_host]"; return 1; }		
+done
+
+	# compare Model values in cluster
+if [[ ${#l_HWmodel[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to get HW model for all nodes in the cluster."
+	HWMODEL="none"
+elif [[ ${#l_HWmodel[@]} -ne ${#l_target[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got HW model from [${#l_HWmodel[@]}] out of [${#l_target[@]}] cluster nodes."
+	HWMODEL="mismatch"
+else 
+	allElementSameAs "${l_HWmodel[0]}" "${l_HWmodel[@]}" 
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "HW model:[${l_HWmodel[0]}] is the same on all [${#l_target[@]}] cluster nodes."
+		HWMODEL=$($ECHO "${l_HWmodel[0]}" |$AWK '{print $1 "_" $2}')
+		GEN=$($ECHO "${l_HWmodel[0]}" |$AWK '{print $3}')
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "HW model:[${l_HWmodel[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		HWMODEL="mismatch"
+	fi
+fi
+	
+	# compare Type values in cluster
+if [[ ${#l_HWtype[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to get HW type for all nodes in the cluster."
+	HWTYPE="none"
+elif [[ ${#l_HWtype[@]} -ne ${#l_target[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got HW type from [${#l_HWtype[@]}] out of [${#l_target[@]}] cluster nodes."
+	HWTYPE="mismatch"
+else 
+	allElementSameAs "${l_HWtype[0]}" "${l_HWtype[@]}" 
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "HW type:[${l_HWtype[0]}] is the same on all [${#l_target[@]}] cluster nodes."
+		HWTYPE=$($ECHO "${l_HWtype[0]}")
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "HW type:[${l_HWtype[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		HWMODEL="mismatch"
+	fi
+fi
+	
+	# compare Gen values in cluster
+if [[ ${#l_HWgen[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to get HW generation for all nodes in the cluster."
+	HWGEN="none"
+elif [[ ${#l_HWgen[@]} -ne ${#l_target[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got HW generation from [${#l_HWgen[@]}] out of [${#l_target[@]}] cluster nodes."
+	HWGEN="mismatch"
+else 
+	allElementSameAs "${l_HWgen[0]}" "${l_HWgen[@]}" 
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "HW generation:[${l_HWgen[0]}] is the same on all [${#l_target[@]}] cluster nodes."
+		HWGEN=$($ECHO "${l_HWgen[0]}")
+		[[ "$HWTYPE" == "virtual" ]] && HWGEN="virtual"
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "HW generation:[${l_HWgen[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		HWMODEL="mismatch"
+	fi
+fi
+	
+logOut "DEBUG" "Set HW model to:[$HWMODEL]"
+logOut "DEBUG" "Set HW type to:[$HWTYPE]"
+logOut "DEBUG" "Set HW Generation to:[$HWGEN]"
+ENVIRON="$ENVIRON\nHW Model:[$HWMODEL]\nHW Type:[$HWTYPE]\nHW Gen:[$HWGEN]"
+
+	###################
+	#	Get OSTYPE
+	###################
+logOut "DEBUG" "checking [${LIVE_HOSTS[@]}] for operating system type..."
+l_cnt=0
+l_OStype=($( for l_host in ${LIVE_HOSTS[@]}; do $UNAME -o; done ))
+
+if [[ ${#l_OStype[@]} -eq 0 ]];then
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to get OS type for all nodes in the cluster."
+	OSTYPE="none"
+elif [[ ${#l_OStype[@]} -ne ${#l_target[@]} ]]; then
+	[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Got OS type from [${#l_OStype[@]}] out of [${#l_target[@]}] cluster nodes."
+	OSTYPE="mismatch"
+else 
+	allElementSameAs "${l_OStype[0]}" "${l_OStype[@]}" 
+	if [[ $? -eq 0 ]]; then
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "OS type:[${l_OStype[0]}] is the same on all [${#l_target[@]}] cluster nodes."
+		OSTYPE=${l_OStype[0]}
+	else
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "OS type:[${l_OStype[0]}] is not the same on all [${#l_target[@]}] cluster nodes."
+		OSTYPE="mismatch"
+	fi
+fi
+logOut "DEBUG" "Set OS Type to:[$OSTYPE]"
+ENVIRON="$ENVIRON\nOS Type:[$OSTYPE]"
+	
+	#######################
+	#	Get RPM status
+	#######################
+if [[ "$l_silent" == "TRUE" ]]; then
+	check_rpm -q $RPM_NAME || logOut "WARN" "Failed to get RPM status for:[$RPM_NAME]"
+else
+	check_rpm $RPM_NAME || logOut "WARN" "Failed to get RPM status for:[$RPM_NAME]"
+fi
+logOut "DEBUG" "Set RPM Installed flag to:[$RPM_INSTALLED]"
+ENVIRON="$ENVIRON\nRPM Installed:[$RPM_INSTALLED]\nRPM Install Dir:[$RPM_DIR]"
+	
+	#####################
+	#	Get Network speed
+	#####################
+getNetSpeed -q 
+[[ -z "$NET_SPEED" ]] && { 
+	logOut "WARN" "Could not retrieve network speed information."
+	NET_SPEED="none"
+	}
+ENVIRON="$ENVIRON\nNetwork Speed:[$NET_SPEED]"
+	
+	###################################
+	#	Check for issues in the results
+	###################################
+IFS=$($ECHO  '\n')
+l_err=$($ECHO  $ENVIRON |$EGREP "none|mismatch")
+IFS=$IFSORIG
+[[ -n "$l_err" ]] && {
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "The following issues were found when getting environment details:\n$l_err"
+	[[ "${l_target[@]}" != "${LIVE_HOSTS[@]}" ]] && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "If a cluster node is currently unavailable either re-run this script when the cluster is fully online, or run the script locally on the available node(s).\n\"$SCRIPT_NAME -h\" for help."
+		}
+	return 1
+	}
+
+return 0
+}
+	
+getServiceState() {
+#####################################
+# check a VCS service to get the status
+#####################################
+# Inputs:	$1	[res|grp]
+#				VCS service type
+#			$2	<service name>
+# Outputs:	none
+# Returns:	0	service is online
+#			1	service is offline
+#			2	service is inconsistent 
+#			3	service is failed
+#			4	service is partial
+#			9	error
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_svcType="$1"
+local l_svcName="$2"
+local l_svcState=()
+local l_svcNode=()
+local l_hagrp
+local l_paraGrp
+local l_host
+local l_cnt=0
+
+# collect status data
+if [[ -z "$l_svcType" || -z "$l_svcName" ]]; then
+	logOut "ERROR" "$FUNCNAME called with missing arguments. Service Type:[$l_svcType] Service Name:[$l_svcName]"
+	return 1
+elif [[ "$l_svcType" == "grp" ]]; then
+	l_hagrp=$l_svcName
+	l_paraGrp=$($HAGRP -value $l_hagrp Parallel)
+	
+	#get the group state for all nodes
+	for l_host in $($HASYS -state |$GREP "RUNNING" |$CUT -d' ' -f1); do
+		l_svcNode[$l_cnt]="$l_host"
+		l_svcState[$l_cnt]=$($HAGRP -state "$l_svcName" |$GREP "$l_host" |$AWK '{ print $4 }' |$TR -d '|')
+		((l_cnt++))
+	done
+elif [[ "$l_svcType" == "res" ]]; then
+	l_hagrp=$($HARES -value "$l_svcName" Group)
+	l_paraGrp=$($HAGRP -value "$l_hagrp" Parallel)
+	
+	#get the resource state for all nodes
+	for l_host in $($HASYS -state |$GREP "RUNNING" |$CUT -d' ' -f1); do
+		l_svcNode[$l_cnt]="$l_host"
+		l_svcState[$l_cnt]=$($HARES -state "$l_svcName" |$GREP "$l_host" |$AWK '{ print $4 }')
+		((l_cnt++))
+	done
+else
+	logOut "ERROR" "$FUNCNAME called with unsupported Service Type:[$l_svcType]"
+	return 1
+fi
+
+# process the status data	
+if [[ $l_paraGrp -eq 1 ]]; then
+	allElementSameAs "ONLINE" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is ONLINE."
+		return 0
+		}
+	allElementSameAs "OFFLINE" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is OFFLINE."
+		return 1
+		}
+	allElementSameAs "PARTIAL" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is PARTIAL."
+		return 4
+		}
+	allElementSameAs "FAULTED" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is FAULTED."
+		return 3
+		}
+	allElementSameAs "ONLINE\|OFFLINE\|PARTIAL\|FAULTED" "${l_svcState[@]}" || {
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Service:[$l_svcType] [$l_svcName] is parallel and has a state other than ONLINE, OFFLINE, PARTIAL, or FAULTED\n${l_svcState[@]}"
+		return 9
+		}
+	allElementSameAs "ONLINE\|OFFLINE" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Service:[$l_svcType] [$l_svcName] is parallel but has a mismatched state.\n${l_svcState[@]}"
+		return 2
+		}
+elif [[ $l_paraGrp -eq 0 ]]; then
+	doesContainElement "FAULTED" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is FAULTED."
+		return 3
+		}
+	doesContainElement "ONLINE" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is ONLINE."
+		return 0
+		}
+	allElementSameAs "OFFLINE" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is OFFLINE."
+		return 1
+		}
+	doesContainElement "PARTIAL" "${l_svcState[@]}" && {
+		[[ "$l_silent" != "TRUE" ]] && logOut "INFO" "Service:[$l_svcType] [$l_svcName] is PARTIAL."
+		return 4
+		}
+	allElementSameAs "ONLINE\|OFFLINE\|PARTIAL\|FAULTED" "${l_svcState[@]}" || {
+		[[ "$l_silent" != "TRUE" ]] && logOut "WARN" "Service:[$l_svcType] [$l_svcName] has a state other than ONLINE, OFFLINE, PARTIAL, or FAULTED\n${l_svcState[@]}"
+		return 9
+		}
+else
+	logOut "ERROR" "Unspecified error:$FUNCNAME $LINENO"
+	return 9
+fi
+	
+}
+	
+backupFile() {
+#####################################
+# copy specified file to a backup directory
+#####################################
+# Inputs:	$1	<file to backup>
+#			$2	<backup location> (optional)
+#				defaults to $BKUP_DIR
+# Outputs:	none
+# Returns:	0	success
+#			1	failure
+# Exits:	no
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+######################
+# copy file to backup location
+#######################
+# $1 file to backup
+# $2 optional destination
+
+local l_silent=FALSE
+[[ "$1" == "-q" || "$SILENT" == "TRUE" ]] && {
+	l_silent=TRUE
+	[[ "$1" == "-q" ]] && shift
+	}
+local l_file="$1"
+local l_dest=${2:-$BKUP_DIR}
+
+[[ -z "$l_file" || -z "$l_dest" ]] && {
+	logOut "ERROR" "$FUNCNAME called with missing arguments: File:[$l_file] Destination:[$l_dest]"
+	return 1
+	}
+$MKDIR -p "$l_dest" || {
+	logOut "ERROR" "Unable to create directory:[$l_dest]"
+	return 1
+	}
+$CP "$l_file" $BKUP_DIR/$($BASENAME $l_file).$(datestamp 2) >> $LOG 2>&1 || {
+	[[ "$l_silent" != "TRUE" ]] && logOut "ERROR" "Failed to back up file:[$l_file] to dir:[$l_dest]"
+	return 1
+	}
+return 0
+}
+
+
+

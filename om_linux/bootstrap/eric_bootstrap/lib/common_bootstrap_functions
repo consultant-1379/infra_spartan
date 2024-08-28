@@ -1,0 +1,511 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used 
+# and/or copied only with the written permission from Ericsson Radio 
+# Systems AB or in accordance with the terms and conditions stipulated 
+# in the agreement/contract under which the program(s) have been 
+# supplied.
+#
+# ********************************************************************
+# Name    : common_bootstrap_functions
+# Date    : 07/31/2018
+# Revision: A.3
+# Purpose : This file contails a set of functions that can be sourced from the bash
+#           shell. 
+#           NOTE : THESE FUNCTIONS ARE FOR ERICSSON BOOTSTRAP ONLY AND THEREFORE IF 
+#                  THEY NEED TO BE CHANGED ONLY THE ERICSSON BOOTSTRAP SCRIPTS WILL
+#                  BE CONSIDERED.
+#
+# Usage   : common_bootstrap_functions
+#
+# ********************************************************************
+#
+# 	Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DFSHARES=/usr/sbin/
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+DTCONFIG=/usr/dt/bin/dtconfig
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FUSER=/usr/sbin/fuser
+GETENT=/usr/bin/getent
+GETTEXT=/usr/bin/gettext
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MORE=/usr/bin/more
+MOUNT=/usr/bin/mount
+MV=/usr/bin/mv
+PGREP=/usr/bin/pgrep
+PING=/usr/sbin/ping
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+RCP=/usr/bin/rcp
+RSH=/usr/bin/rsh
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SU=/usr/bin/su
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UADMIN=/usr/sbin/uadmin
+UMOUNT=/usr/bin/umount
+UNAME=/usr/bin/uname
+WC=/usr/bin/wc
+BLKID=/usr/sbin/blkid
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+# SET THE RUN TIME
+COM_RUN_TIME=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+# ********************************************************************
+#
+# 	functions
+#
+# ********************************************************************
+
+### Function: ejectdvd ###
+#
+# Eject DVD from Derive if any present
+#
+# Arguments:
+#	none
+# Return Values:
+#	none
+ejectdvd()
+{
+$FUSER -ck /dev/cdrom  >/dev/null 2>&1
+$EJECT cdrom >/dev/null 2>&1
+$EJECT cdrom1 >/dev/null 2>&1
+$UMOUNT /dev/sr0 >/dev/null 2>&1
+$UMOUNT /dev/sr1 >/dev/null 2>&1
+}
+
+### Function: iniget ###
+#
+# Read specified parts from a given ini file
+#
+# Arguments:
+#       -f  : specified ini file
+#	-p  : gives whole matching <line>
+#	-v  : gives only value of matching <line>
+#       raw : will print even commented (;) lines
+# Return Values:
+#	none
+#
+iniget() 
+{
+if [ -n "$1" ]; then
+    INIBLOCK="$1"
+    shift 1
+else
+    $ECHO "Usage: iniget <block> -f <configfile> [-<p|v> <line>] [raw]"
+    return 1
+fi
+
+unset INIWLINE INILINE INICONFIGFILE INIPRINTTYPE
+while [ -n "$1" ]; do
+    case $1 in
+	-p)	INIWLINE=parameter
+		INILINE=$2
+		shift 2
+		;;
+	-v)	INIWLINE=value
+		INILINE=$2
+		shift 2
+		;;
+	-f)	INICONFIGFILE=$2
+		shift 2
+		;;
+	raw)	INIPRINTTYPE=raw
+		shift 1
+		;;
+	*)	return 1
+		;;
+    esac
+done
+
+if [ -z "$INICONFIGFILE" ]; then
+    $ECHO "Usage: iniget <block> -f <configfile> [-<p|v> <line>] [raw]"
+    return 1
+fi
+
+$AWK -F= -v printtype=$INIPRINTTYPE -v line="$INILINE" -v way=$INIWLINE '
+  { sub(/[	 ]*$/,"");	#remove trailing whitespace and tabs
+    if ($1=="['$INIBLOCK']") {
+	while ((getline) > 0) {
+		if ($0 ~ /^ *\[/) exit
+		if (($0 ~ /^ *;/) && (printtype!="raw")) continue
+		if ($1==line) {
+			if (way=="parameter") {print $0; exit}
+			if (way=="value")     {sub(/^[^=]*=/,""); print $0; exit}
+		}
+		else if (! line) print $0
+	}
+    }
+  }' $INICONFIGFILE
+}
+
+
+
+### Function: iniset ###
+#
+# Set specified parts from a given ini file
+#
+# Arguments:
+#	-p  : gives whole matching <line>
+#	-v  : gives only value of matching <line>
+#       -f  : defaults to /ericsson/config/system.ini
+#       raw : will print even commented (;) lines
+# Return Values:
+#	none
+#
+# iniset <block> [-f <configfile>] [del] <text>
+#
+iniset() 
+{
+if [ -n "$1" ]; then
+    INIBLOCK="$1"
+    shift 1
+else
+    $ECHO "Usage: iniset <block> [-f <configfile>] [del] <param1=value> [<param2=value2>]"
+    return 1
+fi
+
+unset INICONFIGFILE INIDEL
+$RM -f /tmp/.file.$$
+while [ -n "$1" ]; do
+    case $1 in
+	-f)	INICONFIGFILE="$2"
+		shift 2
+		;;
+	del)	INIDEL=y
+		shift 1
+		;;
+	*)	echo "$1" >> /tmp/.file.$$ 
+		shift 1
+		;;
+    esac
+done
+if [ -z "$INICONFIGFILE" ]; then
+    $ECHO "Usage: iniset <block> [-f <configfile>] [del] <param1=value> [<param2=value2>]"
+    return 1
+fi
+
+# Permission-keeping copy
+$CP -p $INICONFIGFILE $INICONFIGFILE.$$ || return 1
+$ECHO "" > $INICONFIGFILE.$$ || return 1
+
+$AWK -F= -v del=$INIDEL -v textfile=/tmp/.file.$$ '
+  BEGIN {
+	while((getline < textfile) > 0) {
+	foo=$1
+	sub(/^[^=]*=/,"")
+	line[foo]=$0
+	}
+  }
+  {	sub(/[	 ]*$/,"");	#remove trailing whitespace and tabs
+	if (($1=="['$INIBLOCK']") && (edited=="done")) {
+		print "ERROR: Multiple instances of ['$INIBLOCK'] found, exiting" > "/dev/stderr"
+		exit 1
+	}
+	if ($1=="['$INIBLOCK']") { found="y"; print $0; next }
+	if (! found) { print $0; next }
+	if ($0 ~ /^ *\[/) {
+		# End of block, flush all remaining entries
+		for (entry in line) { print entry "=" line[entry] }
+		found=""; edited="done"; print $0; next
+	}
+	if (! del) {
+		for (entry in line) {
+			if (entry==$1) { print entry "=" line[entry]; delete line[entry]; next }
+		}
+		print $0
+	}
+  }
+  END {
+	if (found=="y") {
+		# End of file, flush all remaining entries
+		for (entry in line) { print entry "=" line[entry] }
+	}
+	else if (edited!="done") {
+		# Create new block, flush all entries
+		print; print "['$INIBLOCK']"
+		for (entry in line) { print entry "=" line[entry] }
+	}
+
+  }' $INICONFIGFILE > $INICONFIGFILE.$$
+  [ $? = 0 ] && mv $INICONFIGFILE.$$ $INICONFIGFILE || return 1
+  rm -f /tmp/.file.$$
+}
+
+### Function: insert_media ###
+#
+# Mounts the require DVD/Directory and returns the path 
+# in variable SW_DIR.
+#
+# Arguments:
+#	-a) : File to be appended to returned SW_DIR/CDDIR PATH (Optional) 
+#	-f) : File underneath that directory 
+#	-l) : DVD label 
+#	-n) : Number of tries before giving up (optional)
+#	-s) : Path of the SW location file (optional)
+# Return Values:
+#	$SW_DIR : Variable containing path to required data
+insert_media() 
+{
+unset APPEND_PATH FILE_IDENT LABEL_IDENT NAME_IDENT NUM_TRIES SW_LOC_FILE
+while [ -n "$1" ]; do
+    case $1 in
+	-a)	APPEND_PATH="$2"
+		shift 2
+		;;
+	-f)	FILE_IDENT="$2"
+		shift 2
+		;;
+	-l)	LABEL_IDENT="$2"
+		shift 2
+		;;
+	-n)	NUM_TRIES="$2"
+		shift 2
+		;;
+	-s)	SW_LOC_FILE="$2"
+		shift 2
+		;;
+	*)	NAME_IDENT="$*"
+		shift $#
+		;;
+    esac
+done
+
+if [ ! "${LABEL_IDENT}" -o ! "${FILE_IDENT}"  ]; then
+    log error "<- insert_media usage error"
+    exit 1
+fi
+
+if [ "${SW_LOC_FILE}" ]; then
+    if [ ! -s ${SW_LOC_FILE} ]; then
+	log error " ${SW_LOC_FILE} does not exist or is empty"
+	exit 1
+    fi
+fi
+
+if [ "${SW_LOC_FILE}" ]; then
+    INSTALL_SERVER=`$CAT ${SW_LOC_FILE} |  $AWK -F\@ '{print $1}'`
+    ((count = 3))
+    while [[ $count -ne 0 ]]
+    do
+	${PORT_PING} $INSTALL_SERVER >> /dev/null 2>&1 
+	res=$?
+	if [[ $res -eq 0 ]]; then 
+		((count = 1))
+	else
+		sleep 30
+	fi
+	((count = count - 1))
+    done 
+    ${PORT_PING} $INSTALL_SERVER >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	log error "$INSTALL_SERVER does not seem to be alive"
+	exit 1
+    fi
+
+    _share_dir_=`$CAT ${SW_LOC_FILE} | $AWK -F\@ '{print $2}'|$SED -e 's/\/[\/]*/\//g' -e 's/\/$//'`
+    if [ ! "${_share_dir_}" ]; then
+	log error "Corrupt entry in ${SW_LOC_FILE}"
+	exit 1
+    fi
+
+    # Loop until I get a unique name for the temp dir
+    _tem_dir_=/tmp/_mp_pt_.$$
+    while :; do
+	$LS ${_tem_dir_} >> /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+	    break
+	fi
+	_tem_dir_=${_tem_dir_}.$$
+    done
+
+    # Set error flag
+    _err_=0
+
+    # Check that machine is sharing out its file systems.
+     showmount -e $INSTALL_SERVER >> /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+	$MKDIR -p  ${_tem_dir_}
+	if [ $? -ne 0 ];then
+	    _err_msg_="Could not make temporary directory ${tem_dir}"
+	    abort_script "$_err_msg_"
+	fi
+
+        # Strip off any duplicate or trailing '/'
+	_mount_path_=`$CAT ${SW_LOC_FILE}|$SED -e 's|@|:|' -e 's/\/[\/]*/\//g' -e 's/\/$//'`
+
+        # Try to mount our share up
+        $MOUNT -o nolock ${_mount_path_} ${_tem_dir_} >> /dev/null 2>&1
+
+	if [ $? -ne 0 ]; then
+	    _err_=1
+	fi
+    else
+	_err_=1
+    fi
+
+    # Not sharing out correctly
+    if [ ${_err_} -ne 0 ]; then
+	log error "$INSTALL_SERVER does not seem to be sharing filesystem\n${_share_dir_}"
+	exit 1
+    fi
+
+    # Umount the directory
+    $UMOUNT ${_tem_dir_} >> /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	$UMOUNT -f ${_tem_dir_} >> /dev/null 2>&1
+    fi
+fi
+
+_dvd_dir_label_=`$ECHO ${LABEL_IDENT}|$TR "[:upper:]" "[:lower:]"`
+_chk_dir_="/cdrom/${_dvd_dir_label_}"
+
+# Update ksdir if using alternate kickstart structure, due to CR??.
+if [ "${SW_LOC_FILE}" ]; then
+    ksdir=`$CAT ${SW_LOC_FILE} | $AWK -F\@ '{print $2}' |$SED 's/\/$//'`
+else
+    ksdir=/kickstart
+fi
+
+log info "-> Looking for $NAME_IDENT"
+
+# Get a list of files to look for
+_identity_files_=`$ECHO ${FILE_IDENT}|$SED -e 's|,| |g'`
+if [ $? -ne 0 ]; then
+    log error "Could not get list of identity files"
+    exit 1
+fi
+
+_cnt_=0
+# Loop until we find the DVD/Directory we are looking for
+while :; do
+    if [ "$NUM_TRIES" ]; then
+	if [ $_cnt_ -ge $NUM_TRIES ]; then
+            unset SW_DIR
+	    return 1
+	else
+	    _cnt_=`expr $_cnt_ + 1`
+	fi
+    fi
+
+    # Is there a DVD inserted
+    _dvd_inserted_=""
+     $BLKID /dev/sr0
+    if [ $? -ne 0 ]; then
+	_dvd_inserted_=yes
+        $SLEEP 5
+    fi
+
+    unset SW_DIR DVD_USED
+
+    # Already inserted CDROM/DVD
+    if [ "$_dvd_inserted_" ]; then
+        # Perform checks
+        if [ -d $_chk_dir_ ]; then
+	    for _id_file_ in ${_identity_files_}; do
+		if [ -s $_chk_dir_/${_id_file_} ]; then
+		    SW_DIR=${_chk_dir_}/${APPEND_PATH}
+		    DVD_USED=1
+		    break
+		fi
+	    done
+	    if [ "${SW_DIR}" ]; then
+		break
+	    fi
+	fi
+    fi
+
+    # Jumpstart server
+    if [ "$INSTALL_SERVER" ]; then
+	if [ -d /net/$INSTALL_SERVER/${ksdir}/${LABEL_IDENT} ]; then
+	    for _id_file_ in ${_identity_files_}; do
+		if [ -s /net/${INSTALL_SERVER}/${ksdir}/${LABEL_IDENT}/${_id_file_} ]; then
+		    SW_DIR="/net/${INSTALL_SERVER}/${ksdir}/${LABEL_IDENT}/${APPEND_PATH}"
+		    break
+		fi
+	    done
+	    if [ "${SW_DIR}" ]; then
+		break
+	    fi
+	fi
+    fi
+	
+    # Nothing found, eject any present DVD and ask for Required DVD
+    ejectdvd
+    $SLEEP 5
+    log info "\n<- Please insert the $NAME_IDENT now. The installation will proceed when the DVD is detected."
+    while :; do
+        $BLKID /dev/sr0
+	if [ $? -ne 0 ]; then
+	    break
+	fi
+        $SLEEP 3
+    done
+done
+log info "<- $NAME_IDENT found, using $SW_DIR"
+
+SW_DIR=`$ECHO ${SW_DIR}|$SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g'`
+
+CDDIR=${SW_DIR}
+export CDDIR SW_DIR DVD_USED
+}
+
+### Function: log ###
+#
+# I will create the function log if one does not already exist
+# This allows user to have his/her own log function and still 
+# work with the commmon functions
+#
+# Arguments:
+#	None
+# Return Values:
+#	None
+type log > /dev/null 2>&1 	# Check if log() is defined, else define log()
+if [ $? -gt 0 ]; then
+    log()
+    {
+	if [ "${LOGFILE}" ]; then
+	    $ECHO "$*" |$TEE -a ${LOGFILE}
+	else
+	    $ECHO "$*"
+        fi
+    }
+fi
+
+

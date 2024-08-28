@@ -1,0 +1,8 @@
+EMC/x86_64:mws
+ddc:all
+EMC/x86_64:all
+HWcomm:mws
+omtools/eric_kickstart:mws
+storconfig:mws
+mwshealthcheck:mws
+nasupdate:mws

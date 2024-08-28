@@ -1,0 +1,256 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Data::Dumper;
+use File::Basename;
+use File::Copy;
+use POSIX;
+use English;
+
+our $DEBUG = 0;
+our %configuration = ();
+
+# Force autoflush of stdout so that we play nice with tee
+$OUTPUT_AUTOFLUSH  = 1;
+
+sub saveConfiguration() {
+    my $configFile = getRootDir() . "/etc/storage.conf";
+    if ( ! ( open CONFIG, ">$configFile" ) ) {
+        print "ERROR: Failed to open configuration file $configFile, $@\n";
+        exit 1;
+    }
+    foreach my $key ( sort keys %configuration ) {
+        if ( ! ( printf CONFIG "%s=%s\n", $key, $configuration{$key} ) ) {
+            print "ERROR: Failed to save configuration file $configFile, $!\n";
+            exit 1;
+        }
+    }
+    close CONFIG;
+}
+
+sub loadConfiguration() {
+    my $configFile = getRootDir() . "/etc/storage.conf";
+    if ( ! ( open CONFIG, "$configFile" ) ) {
+        print "ERROR: Failed to open configuration file $configFile, $!\n";
+        exit 1;
+    }
+    while ( my $line = <CONFIG> ) {
+        if ( $line =~ /^([^ =]+)=(.+)$/ ) {
+            my ($key,$value) = ($1,$2);
+            $configuration{$key} = $value;
+        }
+    }
+    close CONFIG;
+}
+
+sub getRootDir() {
+    my $scriptName = $0;
+    my $scriptDir = dirname($scriptName);
+    my $rootDir = dirname($scriptDir);
+
+    return $rootDir;
+}
+
+sub getPlugin($) {
+    my ($pluginName) = @_;
+
+    my $rootDir = getRootDir();
+    my $pluginDir = $rootDir . "/plugins/" . $pluginName;
+    if ( ! -d $pluginDir ) {
+        print "ERROR: Invalid plugin $pluginName, $pluginDir does not exist\n";
+        exit 1;
+    }
+
+    my $plugInModule = $pluginDir . "/lib/" . $pluginName . ".pm";
+    if ( ! -r $plugInModule ) {
+        print "ERROR: Invalid plugin $pluginName, $plugInModule does not exist\n";
+        exit 1;
+    }
+
+    # Add the storage lib dir to include path
+    push @INC, $rootDir . "/lib";
+
+    # Add the plugins lib dir to include path
+    push @INC, $plugInModule . "/lib";
+
+    eval {
+        require "$plugInModule";
+    };
+    if ( $@ ) {
+        print "ERROR: Failed to load plugin $pluginName, $@\n";
+        exit 1;
+    }
+
+    my $pluginImpl = $pluginName->new();
+}
+
+sub printUsageAndDie($) {
+    my ($errMsg) = @_;
+
+    if ( defined $errMsg ) {
+        print "ERROR: $errMsg\n";
+    }
+
+    print <<END;
+Usage: blkcli --action <actiontype> [action parameters]
+
+    where actiontype is one of the following
+
+    configure
+    This performs the initial configuration and take a manditory
+    parameter, --plugin <plugin name>. The optional parameter
+    --config <file> may be supported by the plugin. The context/format
+    of this file depends on the plugin
+
+    listluns
+    Prints the list of available LUNs. This consists of three columns
+    seperated by a ";". The columns are the local id of the LUN, device
+    and a description column
+
+    listsnapshots
+    Prints the list of snapshots active on the specified LUNS. The LUNs are
+    specified using the --ids <id[,id..]> manditory parameter. The printout
+    consists of two ";" seperated columns, containing the lun id and the
+    corresponding snapshot id
+
+    createsnapshot
+    Create a new snapshot of the specified LUNs. The LUNs are
+    specified using the --ids <id[,id..]> manditory parameter
+    A second manidatory parameter is --tag <tag>. The plugin may
+    use this when creating the snapshot
+
+    deletesnapshot
+    Delete the specified LUN snapshots. The LUN snapshots are
+    specified using the --ids <id[,id..]> manditory parameter
+
+    rollbacksnapshot
+    Roll the LUNs back to the specified snapshots. The LUN snapshots are
+    specified using the --ids <id[,id..]> manditory parameter
+END
+
+    exit 1;
+}
+
+sub createSnapshot($$$) {
+    my ($pluginImpl,$idStr,$globalId) = @_;
+
+    my @ids = split(",", $idStr );
+    my $r_snapShots = $pluginImpl->createSnapshot(\@ids,$globalId);
+    foreach my $r_snapshot ( @{$r_snapShots} ) {
+        print $r_snapshot->{'lunid'} . ";" . $r_snapshot->{'snapid'} . "\n";
+    }
+}
+
+sub deleteSnapshot($$) {
+    my ($pluginImpl,$idStr) = @_;
+
+    my @ids = split(",", $idStr );
+    $pluginImpl->deleteSnapshot(\@ids);
+}
+
+sub rollbackSnapshot($$) {
+    my ($pluginImpl,$idStr) = @_;
+
+    my @ids = split(",", $idStr );
+    $pluginImpl->rollbackSnapshot(\@ids);
+}
+
+sub listSnapshots($$) {
+    my ($pluginImpl,$idStr) = @_;
+    my @ids = split(",", $idStr );
+    my $r_snapShots = $pluginImpl->listSnapshots(\@ids);
+    if ( $DEBUG > 3 ) { print Dumper("main::listSnapshots r_snapShots", $r_snapShots); }
+    foreach my $r_snapshot ( @{$r_snapShots} ) {
+        print $r_snapshot->{'lunid'} . ";" . $r_snapshot->{'snapid'} . ";" . $r_snapshot->{'state'} . "\n";
+   }
+}
+
+sub listLUNs($) {
+    my ($pluginImpl) = @_;
+
+    my $r_LUNs = $pluginImpl->listLUNs();
+    if ( $DEBUG > 5 ) { print Dumper("main::listLUNs r_LUNs", $r_LUNs); }
+    foreach my $r_LUN ( @{$r_LUNs} ) {
+        if ( $r_LUN->{'device'} =~ /;/ ||
+             $r_LUN->{'lunid'} =~ /;/ ||
+             $r_LUN->{'desc'} =~ /;/ ) {
+            print "ERROR: Invalid content returned, \";\" is not allowed\n";
+            exit 1;
+        }
+        printf "%s;%s;%s\n", $r_LUN->{'lunid'} , $r_LUN->{'device'}, $r_LUN->{'desc'};
+    }
+}
+
+sub main() {
+    my ($action,$pluginName, $configFile, $ids, $tag);
+    my $result = GetOptions(
+        "action=s" => \$action,
+        "plugin=s" => \$pluginName,
+        "config=s" => \$configFile,
+        "ids=s"    => \$ids,
+        "tag=s" => \$tag,
+        "debug=s" => \$DEBUG,
+        );
+    ($result == 1) or printUsageAndDie(undef);
+
+    if ( getuid() != 0 ) {
+        print "ERROR: This command can only executed by root or ENIQ Privileged Users\n";
+        exit 1;
+    }
+
+    defined $action or printUsageAndDie("action is a manidatory parameter");
+
+    # Special handling for configure as we don't know the plugin name
+    # yet
+    if ( $action eq "configure" ) {
+        defined $pluginName or printUsageAndDie("configure requires the manditory parameter plugin");
+        my $pluginImpl = getPlugin($pluginName);
+
+        if ( $pluginImpl->configure($configFile) == 0 ) {
+            $configuration{'plugin'} = $pluginName;
+            saveConfiguration();
+            return 0;
+        } else {
+            print "ERROR: configure failed\n";
+            exit 1;
+        }
+    }
+
+    loadConfiguration();
+    my $pluginImpl = getPlugin($configuration{'plugin'});
+
+    if ($configuration{'plugin'} eq "vnx") {
+        my $clariionDir = getRootDir() . "/plugins/clariion/";
+        my $vnxDir = getRootDir() . "/plugins/vnx/";
+        if (glob($clariionDir . "cred/SecuredCLI*") && not glob($vnxDir . "cred/SecuredCLI*")) {
+            foreach (glob($clariionDir . "cred/*")) {
+                copy($clariionDir . "cred/" . basename($_), $vnxDir . "cred/" . basename($_));
+            }
+            copy($clariionDir . "etc/clariion.conf", $vnxDir . "etc/clariion.conf");
+        }
+    }
+
+    if ( $action eq "listluns" ) {
+        listLUNs($pluginImpl);
+    } elsif ( $action eq "listsnapshots" ) {
+        defined $ids or printUsageAndDie("listsnapshots requires the manditory parameter ids");
+        listSnapshots($pluginImpl,$ids);
+    } elsif ( $action eq "createsnapshot" ) {
+        defined $ids or printUsageAndDie("createsnapshot requires the manditory parameter ids");
+        defined $tag or printUsageAndDie("createsnapshot requires the manditory parameter tag");
+        createSnapshot($pluginImpl,$ids,$tag);
+    } elsif ( $action eq "deletesnapshot" ) {
+        defined $ids or printUsageAndDie("deletesnapshot requires the manditory parameter ids");
+        deleteSnapshot($pluginImpl,$ids);
+    } elsif ( $action eq "rollbacksnapshot" ) {
+        defined $ids or printUsageAndDie("rollbacksnapshot requires the manditory parameter ids");
+        rollbackSnapshot($pluginImpl,$ids);
+    } else {
+        printUsageAndDie("Unknown action $action");
+    }
+}
+
+main();
+
